@@ -21,6 +21,7 @@ let ui = {
     activeTag: null,
     tagFilterQuery: '',
     searchQuery: '',
+    categorySearchQuery: '',
     sortOrder: 'title',
     sortAscending: true,
     noteSortOrder: 'page', // 'page' | 'newest' | 'oldest' | 'color'
@@ -652,7 +653,9 @@ function renderSidebar() {
         </div>
     `;
 
-    const catsHTML = (state.categories || []).map(cat => childRowHTML(
+    const categoryQuery = ui.categorySearchQuery.toLocaleLowerCase();
+    const categories = (state.categories || []).filter(cat => cat.toLocaleLowerCase().includes(categoryQuery));
+    const catsHTML = categories.map(cat => childRowHTML(
         'cat:' + cat,
         cat,
         `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#5B89C8" stroke-width="1.35" stroke-linejoin="round"><path d="M1.5 3.5A1.2 1.2 0 0 1 2.7 2.3h3.3l1.4 1.6h5.9a1.2 1.2 0 0 1 1.2 1.2v7.2a1.2 1.2 0 0 1-1.2 1.2H2.7a1.2 1.2 0 0 1-1.2-1.2V3.5z"/></svg>`
@@ -663,7 +666,7 @@ function renderSidebar() {
         ${childRowHTML('favorites', '我的出版物', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#4CAF50" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 1.8h6l3 3v9.4h-9V1.8z"/><path d="M9.5 1.8v3h3"/><path d="M5.5 7.2h5M5.5 9.8h5M5.5 12h3"/></svg>`)}
         ${childRowHTML('status:reading', '重复条目', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#F59E0B" stroke-width="1.35" stroke-linejoin="round"><rect x="2.5" y="1.8" width="8.2" height="10.2" rx="1"/><path d="M5.5 4.2h7.5v10H5.5z" fill="var(--bg-sidebar)" stroke="#F59E0B" stroke-width="1.35"/></svg>`)}
         ${childRowHTML('status:unread', '未分类条目', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#E06C45" stroke-width="1.35" stroke-linejoin="round"><rect x="2.5" y="1.8" width="7.8" height="10" rx="1"/><path d="M6 4.5h7v9.5H6z" fill="var(--bg-sidebar)" stroke="#E06C45" stroke-width="1.35"/></svg>`)}
-        ${catsHTML}
+        ${catsHTML || (categoryQuery ? '<div class="sidebar-empty-search" role="status">未找到匹配分类</div>' : '')}
         ${childRowHTML('notes', '全局笔记', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#EAB308" stroke-width="1.35" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="1.2"/><path d="M5.5 5.5h5M5.5 8.2h5M5.5 10.8h3"/></svg>`)}
         ${childRowHTML('status:completed', '回收站', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#D96B4F" stroke-width="1.3" stroke-linecap="round"><path d="M3 4.2h10M6 4.2V2.8h4v1.4M4.2 4.2l.6 9.3h6.4l.6-9.3"/><path d="M6.8 6.8v4.8M9.2 6.8v4.8"/></svg>`)}
     ` : '';
@@ -1273,6 +1276,19 @@ function renderAll() {
     renderInspector();
 }
 
+document.getElementById('categorySearchInput').addEventListener('input', (e) => {
+    ui.categorySearchQuery = e.target.value.trim();
+    if (ui.categorySearchQuery) ui.treeExpanded = true;
+    renderSidebar();
+});
+document.getElementById('categorySearchInput').addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.target.value = '';
+    ui.categorySearchQuery = '';
+    renderSidebar();
+});
 document.getElementById('searchInput').addEventListener('input', (e) => {
     ui.searchQuery = e.target.value.trim();
     renderCenter();

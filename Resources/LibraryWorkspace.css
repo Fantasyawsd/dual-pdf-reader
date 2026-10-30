@@ -118,22 +118,40 @@ button, input, select, textarea {
     justify-content: space-between;
     flex-shrink: 0;
 }
-.zotero-icon-btn {
-    width: 32px;
-    height: 32px;
-    border: none;
-    background: transparent;
-    color: var(--text-secondary);
-    border-radius: 6px;
-    cursor: pointer;
-    display: inline-flex;
+.sidebar-category-search {
+    display: flex;
     align-items: center;
-    justify-content: center;
-    padding: 0;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--border-hairline);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
 }
-.zotero-icon-btn:hover {
-    background: var(--bg-subtle-hover);
+.sidebar-category-search:focus-within {
+    border-color: var(--zotero-row-focus);
+    box-shadow: 0 0 0 2px rgba(91, 155, 248, 0.2);
+}
+.sidebar-category-search > svg { flex-shrink: 0; }
+.sidebar-category-search input {
+    flex: 1;
+    min-width: 0;
+    height: 26px;
+    padding: 0;
+    border: none;
+    outline: none;
+    background: transparent;
     color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+}
+.sidebar-empty-search {
+    padding: 8px 12px 8px 32px;
+    color: var(--text-tertiary);
+    font-size: 13px;
 }
 .sidebar-scroll {
     flex: 1;

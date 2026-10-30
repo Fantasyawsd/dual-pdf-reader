@@ -340,6 +340,75 @@ func runBuiltInSelfTests() -> Int32 {
                 // Give pushStateToWeb a brief runloop turn to render cards and sync drop slot rects
                 RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.08))
 
+                // Sidebar search must stay local to categories and leave paper search untouched.
+                let sidebarChecks = evalJS("""
+                (function() {
+                    const input = document.getElementById('categorySearchInput');
+                    if (!input) return {};
+                    const globalInput = document.getElementById('searchInput');
+                    const savedCategories = state.categories;
+                    const savedQuery = ui.categorySearchQuery;
+                    const savedExpanded = ui.treeExpanded;
+                    const savedValue = input.value;
+                    const savedFocus = document.activeElement;
+                    const checks = {};
+                    const names = () => Array.from(document.querySelectorAll('#sidebarScroll .tree-label')).map(el => el.textContent);
+                    const search = value => {
+                        input.value = value;
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                    };
+                    try {
+                        state.categories = ['LLM 架构', '默认分类', "O'Reilly & <PDF>"];
+                        renderSidebar();
+                        const centerHTML = document.querySelector('.center-pane').innerHTML;
+                        const globalValue = globalInput.value;
+                        const globalQuery = ui.searchQuery;
+                        const filter = ui.filterKind;
+                        const selected = state.selectedPaperId;
+                        input.focus();
+                        checks.localFocus = document.activeElement === input && !document.querySelector('.sidebar-toolbar button');
+                        ui.treeExpanded = false;
+                        search('  llm  ');
+                        checks.filtered = names().includes('LLM 架构') && !names().includes('默认分类') && ui.treeExpanded;
+                        checks.independent = document.querySelector('.center-pane').innerHTML === centerHTML &&
+                            globalInput.value === globalValue && ui.searchQuery === globalQuery &&
+                            ui.filterKind === filter && state.selectedPaperId === selected && document.activeElement === input;
+                        window.updateLibraryState(state);
+                        checks.refresh = names().includes('LLM 架构') && !names().includes('默认分类') &&
+                            input.value === '  llm  ' && document.activeElement === input;
+                        search('默认');
+                        checks.chinese = names().includes('默认分类') && !names().includes('LLM 架构');
+                        search('<pdf>');
+                        checks.escaped = names().includes("O'Reilly & <PDF>") && !document.querySelector('#sidebarScroll pdf');
+                        search('no-matching-category');
+                        checks.empty = document.querySelector('.sidebar-empty-search')?.textContent === '未找到匹配分类';
+                        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                        checks.cleared = input.value === '' && ui.categorySearchQuery === '' &&
+                            names().includes('LLM 架构') && names().includes('默认分类') &&
+                            !document.querySelector('.sidebar-empty-search') && globalInput.value === globalValue;
+                        window.focusLibrarySearch();
+                        checks.globalFocus = document.activeElement === globalInput;
+                    } finally {
+                        state.categories = savedCategories;
+                        ui.categorySearchQuery = savedQuery;
+                        ui.treeExpanded = savedExpanded;
+                        input.value = savedValue;
+                        renderAll();
+                        if (savedFocus && savedFocus.isConnected) savedFocus.focus();
+                    }
+                    return checks;
+                })()
+                """) as? [String: Bool] ?? [:]
+                check(sidebarChecks["localFocus"] == true, "Sidebar category search has its own focus and no misleading import button")
+                check(sidebarChecks["filtered"] == true, "Sidebar search filters categories case-insensitively and expands collapsed results")
+                check(sidebarChecks["independent"] == true, "Sidebar search preserves paper search, selection, filter, center DOM and focus")
+                check(sidebarChecks["refresh"] == true, "Category search and focus survive native library state updates")
+                check(sidebarChecks["chinese"] == true, "Sidebar category search supports Chinese names")
+                check(sidebarChecks["escaped"] == true, "Category search renders quotes and HTML-like names as literal text")
+                check(sidebarChecks["empty"] == true, "Unmatched category search shows an explicit empty state")
+                check(sidebarChecks["cleared"] == true, "Escape clears only category search and restores the category list")
+                check(sidebarChecks["globalFocus"] == true, "Global library search shortcut retains its paper-search focus")
+
                 // 1) Verify selectPaper preserves DOM node identity so double-click (ondblclick) works on cards & table rows
                 let domPreserved = evalJS("""
                 (function() {
