@@ -21,6 +21,7 @@ let ui = {
     activeTag: null,
     tagFilterQuery: '',
     searchQuery: '',
+    categorySearchQuery: '',
     sortOrder: 'title',
     sortAscending: true,
     noteSortOrder: 'page', // 'page' | 'newest' | 'oldest' | 'color'
@@ -718,14 +719,16 @@ function renderSidebar() {
         </div>
     `;
 
-    const catsHTML = (state.categories || []).map(cat => childRowHTML(
+    const categoryQuery = ui.categorySearchQuery.toLocaleLowerCase();
+    const categories = (state.categories || []).filter(cat => cat.toLocaleLowerCase().includes(categoryQuery));
+    const catsHTML = categories.map(cat => childRowHTML(
         'cat:' + cat,
         cat,
         `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#5B89C8" stroke-width="1.35" stroke-linejoin="round"><path d="M1.5 3.5A1.2 1.2 0 0 1 2.7 2.3h3.3l1.4 1.6h5.9a1.2 1.2 0 0 1 1.2 1.2v7.2a1.2 1.2 0 0 1-1.2 1.2H2.7a1.2 1.2 0 0 1-1.2-1.2V3.5z"/></svg>`
     )).join('');
 
     const childrenBlock = ui.treeExpanded ? `
-        ${catsHTML}
+        ${catsHTML || (categoryQuery ? '<div class="sidebar-empty-search" role="status">未找到匹配分类</div>' : '')}
         <div class="tree-row child" style="color:var(--accent); font-size:13px;" onclick="promptCreateNewCategory(event)">
             <span class="tree-icon" style="font-size:15px; font-weight:bold;">＋</span>
             <span class="tree-label">新建分类…</span>
@@ -1294,6 +1297,19 @@ function renderAll() {
     renderInspector();
 }
 
+document.getElementById('categorySearchInput').addEventListener('input', (e) => {
+    ui.categorySearchQuery = e.target.value.trim();
+    if (ui.categorySearchQuery) ui.treeExpanded = true;
+    renderSidebar();
+});
+document.getElementById('categorySearchInput').addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.target.value = '';
+    ui.categorySearchQuery = '';
+    renderSidebar();
+});
 document.getElementById('searchInput').addEventListener('input', (e) => {
     ui.searchQuery = e.target.value.trim();
     renderCenter();
