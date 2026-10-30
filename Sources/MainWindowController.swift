@@ -134,17 +134,17 @@ final class MultiTabMainWindowController: NSWindowController {
         libraryVC.onOpenPaperInTab = { [weak self] paperId, jumpAnnot in
             self?.openOrSwitchToPaperTab(paperId: paperId, jumpToAnnot: jumpAnnot, switchImmediately: true)
         }
-        libraryVC.onOpenPaperInLeftPDFRightNoteMode = { [weak self] paperId in
+        libraryVC.onOpenPaperNotesSidebar = { [weak self] paperId in
             guard let self = self else { return }
             self.openOrSwitchToPaperTab(paperId: paperId, jumpToAnnot: nil, switchImmediately: true)
-            self.openReaderTabs[paperId]?.setDisplayMode(3)
+            self.openReaderTabs[paperId]?.openNotesSidebar()
         }
         libraryVC.onOpenPaperAndJumpURL = { [weak self] paperId, jumpURL in
             guard let self = self else { return }
             self.openOrSwitchToPaperTab(paperId: paperId, jumpToAnnot: nil, switchImmediately: true)
             if let readerVC = self.openReaderTabs[paperId] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    readerVC.handleNoteJumpURL(jumpURL, fromNoteCol: nil)
+                    readerVC.handleNoteJumpURL(jumpURL)
                 }
             }
         }
@@ -417,7 +417,6 @@ final class MultiTabMainWindowController: NSWindowController {
     @objc func readerModeDualShortcut() { activeReaderVC?.setDisplayMode(2) }
     @objc func readerModeOrigShortcut() { activeReaderVC?.setDisplayMode(0) }
     @objc func readerModeTransShortcut() { activeReaderVC?.setDisplayMode(1) }
-    @objc func readerModeLeftPDFRightNoteShortcut() { activeReaderVC?.setDisplayMode(3) }
     @objc func configureLLMTranslationShortcut() { LLMTranslationService.shared.presentSettingsModal(from: window) }
     @objc func readerSwapColumnsShortcut() { activeReaderVC?.swapColumnsAction() }
     @objc func readerResetAlignmentShortcut() { activeReaderVC?.resetSyncAlignmentAction() }

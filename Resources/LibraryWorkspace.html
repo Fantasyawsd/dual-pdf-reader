@@ -67,6 +67,7 @@
 
         <!-- Mode A: Upload Local PDF -->
         <div id="modalLocalSection">
+            <input type="hidden" id="mLocalArxivId" value="">
             <p class="modal-sub">支持上传 PDF 文件，系统优先解析 arXiv ID 并在联网时拉取官方元数据与引用数，否则通过内置引擎极速提取。</p>
             <div style="display:flex; gap:8px; margin-bottom:14px;">
                 <button class="btn-primary" style="flex:1; justify-content:center; height:38px;" onclick="sendBridge({action:'pickModalPDFs', mode:'both'})">

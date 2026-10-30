@@ -82,10 +82,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mTrans.keyEquivalentModifierMask = [.control]
         viewMenu.addItem(mTrans)
 
-        let mNote = NSMenuItem(title: "左栏论文 + 右栏精读笔记", action: #selector(MultiTabMainWindowController.readerModeLeftPDFRightNoteShortcut), keyEquivalent: "4")
-        mNote.keyEquivalentModifierMask = [.control]
-        viewMenu.addItem(mNote)
-
         viewMenu.addItem(NSMenuItem.separator())
         let swapItem = NSMenuItem(title: "左右两栏互换", action: #selector(MultiTabMainWindowController.readerSwapColumnsShortcut), keyEquivalent: "X")
         swapItem.keyEquivalentModifierMask = [.command, .shift]

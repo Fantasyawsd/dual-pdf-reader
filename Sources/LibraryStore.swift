@@ -21,6 +21,7 @@ final class LibraryStore {
     private(set) var rootDirectory: URL
     private(set) var papers: [PaperItem] = []
     private var papersByID: [String: PaperItem] = [:]
+    private var categories: [String] = []
     private var pendingReadingUpdates: [String: PaperItem] = [:]
     private var readingSaveTask: DispatchWorkItem?
     private let summaryCache = PDFSummaryCache()
@@ -69,7 +70,9 @@ final class LibraryStore {
         do {
             try FileManager.default.createDirectory(at: newURL, withIntermediateDirectories: true)
             let loaded = try readPapers(at: newURL)
+            let loadedCategories = try LibraryCategoryStorage(rootDirectory: newURL).readCategories()
             rootDirectory = newURL.standardizedFileURL
+            categories = loadedCategories
             replacePapers(loaded)
             summaryCache.removeAll()
             UserDefaults.standard.set(rootDirectory.path, forKey: "DualPDF_LibraryRootPath")
@@ -109,7 +112,12 @@ final class LibraryStore {
 
     func reloadAllPapers() {
         guard flushReadingState() else { return }
-        do { replacePapers(try readPapers(at: rootDirectory)) }
+        do {
+            let loaded = try readPapers(at: rootDirectory)
+            let loadedCategories = try LibraryCategoryStorage(rootDirectory: rootDirectory).readCategories()
+            categories = loadedCategories
+            replacePapers(loaded)
+        }
         catch { report(error) }
     }
 
@@ -194,7 +202,7 @@ final class LibraryStore {
     private func changedFields(from previous: PaperItem?, to paper: PaperItem) -> LibraryChange.Fields {
         guard let old = previous else { return .all }
         var fields: LibraryChange.Fields = []
-        if old.title != paper.title || old.authors != paper.authors || old.year != paper.year || old.venue != paper.venue || old.category != paper.category || old.tags != paper.tags || old.isFavorite != paper.isFavorite || old.status != paper.status || old.customSortIndex != paper.customSortIndex {
+        if old.title != paper.title || old.authors != paper.authors || old.year != paper.year || old.venue != paper.venue || old.category != paper.category || old.tags != paper.tags || old.isFavorite != paper.isFavorite || old.status != paper.status || old.customSortIndex != paper.customSortIndex || old.arxivId != paper.arxivId || old.citationCount != paper.citationCount {
             fields.insert(.metadata)
         }
         if old.originalFilename != paper.originalFilename || old.translatedFilename != paper.translatedFilename || old.additionalPDFs != paper.additionalPDFs { fields.insert(.pdf) }
@@ -337,12 +345,15 @@ final class LibraryStore {
             completion?(false)
             return
         }
+        let requestedRoot = rootDirectory
         ArxivMetadataService.fetchMetadata(arxivId: cleanId) { [weak self] freshMeta in
             guard let self = self, let freshMeta = freshMeta else {
                 completion?(false)
                 return
             }
-            guard var current = self.paper(withId: paperId) else {
+            guard self.rootDirectory == requestedRoot,
+                  var current = self.paper(withId: paperId),
+                  current.cleanArxivId == item.cleanArxivId else {
                 completion?(false)
                 return
             }
@@ -353,8 +364,8 @@ final class LibraryStore {
             if let citations = freshMeta.citationCount {
                 current.citationCount = citations
             }
-            self.savePaper(current, notify: true)
-            completion?(true)
+            let saved = self.savePaper(current, notify: true)
+            completion?(saved)
         }
     }
 
@@ -720,7 +731,24 @@ final class LibraryStore {
         _ = commitPapers(updated, notify: true)
     }
 
-    func allCategories() -> [String] { Array(Set(papers.map(\.category).filter { !$0.isEmpty })).sorted() }
+    @discardableResult
+    func createCategory(_ name: String) -> Bool {
+        let category = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !category.isEmpty else {
+            errorHandler?("分类名称不能为空。")
+            return false
+        }
+        guard !categories.contains(category) else { return true }
+        let updated = Array(Set(categories + [category])).sorted()
+        do {
+            try LibraryCategoryStorage(rootDirectory: rootDirectory).writeCategories(updated)
+            categories = updated
+            publish(ids: [], fields: .metadata)
+            return true
+        } catch { report(error); return false }
+    }
+
+    func allCategories() -> [String] { Array(Set(categories + papers.map(\.category).filter { !$0.isEmpty })).sorted() }
     func allTags() -> [String] { Array(Set(papers.flatMap(\.tags).filter { !$0.isEmpty })).sorted() }
     func extractMetadata(from url: URL) -> (title: String, authors: String, year: String, arxivId: String?) { PDFMetadataExtractor.extractMetadata(from: url) }
     func classifyPDFPair(_ urls: [URL]) -> (original: URL?, translated: URL?) { PDFMetadataExtractor.classifyPDFPair(urls) }

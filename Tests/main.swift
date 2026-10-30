@@ -336,7 +336,7 @@ check(sortJSContext.evaluateScript("ui.sortOrder = 'notes'; ui.sortAscending = f
 check(sortJSContext.evaluateScript("ui.sortOrder = 'status'; ui.sortAscending = true; getFilteredPapers()[0].id === 'p2'")?.toBool() == true, "Sorting by status places unread before completed")
 check(sortJSContext.evaluateScript("ui.sortOrder = 'custom'; ui.sortAscending = true; getFilteredPapers()[0].id === 'p2'")?.toBool() == true, "Sorting by customSortIndex respects user custom ordering")
 
-// --- New Feature Tests: 2. Paper Collection PDFs, Left-PDF Right-Note Mode, & Selection Jumpable Link ---
+// --- Paper Collection PDFs, Sidebar Notes, & Selection Jumpable Link ---
 _ = LibraryStore.shared.switchLibraryRoot(to: sampleRoot)
 let extraPDFURL = root.appendingPathComponent("appendix.pdf")
 try writePDF(extraPDFURL, pages: 2, text: "Appendix Proofs and Ablation Table")
@@ -367,17 +367,27 @@ autoreleasepool {
     check(reader.leftCol.contentSource == .pdf(id: "original"),
           "Column rejects foreign PDF IDs outside the current paper collection")
 
-    // 切换为左栏论文 + 右栏笔记
+    // 旧第四模式已删除；无效模式不能再打开笔记或替换 PDF。
+    let modeControl = descendants(reader.view).compactMap { $0 as? NSSegmentedControl }.first { $0.segmentCount == 3 && $0.label(forSegment: 2) == "双栏对照" }
+    reader.openNotesSidebar()
+    reader.toggleRightDrawerAction()
+    let pdfSources = [reader.leftCol.contentSource, reader.rightCol.contentSource]
     reader.setDisplayMode(3)
-    check(reader.leftCol.contentSource.isPDF && reader.rightCol.contentSource.isNote,
-          "Display mode 3 switches to Left-PDF + Right-Note layout")
+    check([reader.leftCol.contentSource, reader.rightCol.contentSource] == pdfSources && reader.sidebarNoteView.isHiddenOrHasHiddenAncestor && modeControl?.selectedSegment == 2,
+          "Removed fourth mode falls back to PDFs without opening or embedding notes")
+    check(!reader.sidebarNoteView.isDescendant(of: reader.leftCol) && !reader.sidebarNoteView.isDescendant(of: reader.rightCol),
+          "Note editor is outside both PDF columns")
+    reader.openNotesSidebar(noteId: createdNote?.id)
+    reader.setDisplayMode(0)
 
-    // 在左栏 PDF 第 2 页选中文本，直接在右栏笔记中创建可跳转链接
+    // 在左栏 PDF 第 2 页选中文本，直接在右侧笔记中创建可跳转链接
     if let doc = reader.leftCol.pdfView.document,
        let page1 = doc.page(at: 1),
        let sel = doc.selection(from: page1, atCharacterIndex: 0, to: page1, atCharacterIndex: min(25, (page1.string?.count ?? 1) - 1)) {
         let quoteRes = reader.quoteSelectionToPaperNote(from: reader.leftCol.pdfView, selection: sel)
-        check(quoteRes != nil, "Selecting PDF text directly creates jumpable link in paper note")
+        check(quoteRes != nil, "Selecting PDF text directly creates jumpable link in sidebar note")
+        check(reader.rightCol.isHidden && [reader.leftCol.contentSource, reader.rightCol.contentSource] == pdfSources,
+              "Quoting selection preserves single-PDF layout and both PDF sources")
         let linkMD = quoteRes?.linkMarkdown ?? ""
         check(linkMD.contains("dualpdf://jump?annot=") && linkMD.contains("&pdf=original&page=1"),
               "Generated Markdown link encodes annotation ID, PDF ID, and page index")
@@ -385,20 +395,21 @@ autoreleasepool {
         check(renderedHTML.contains("class=\"pdf-jump-link\"") && renderedHTML.contains("data-jump-url=\"dualpdf://jump"),
               "Markdown renderer transforms dualpdf://jump link into interactive jump pill")
 
-        // 先回到第 1 页，再模拟点击右栏笔记中的跳转链接，验证左栏跳转到第 2 页并在左栏显示“返回”按钮
+        // 先回到第 1 页，再模拟点击右侧笔记中的跳转链接，验证左栏跳转到第 2 页并在左栏显示“返回”按钮
         if let page0 = doc.page(at: 0) {
             reader.leftCol.pdfView.go(to: page0)
         }
         if let annotId = quoteRes?.annotation.id {
             let jumpURL = "dualpdf://jump?annot=\(annotId)&pdf=original&page=1"
-            reader.handleNoteJumpURL(jumpURL, fromNoteCol: reader.rightCol)
+            reader.handleNoteJumpURL(jumpURL)
             let currentLeftPage = reader.leftCol.pdfView.currentPage.map { doc.index(for: $0) } ?? -1
-            check(currentLeftPage == 1, "Clicking jump link in right-column note scrolls left PDF column to target page")
+            check(currentLeftPage == 1, "Clicking sidebar note jump link scrolls matching PDF column to target page")
             check(reader.leftCol.backJumpBanner.isHidden == false && reader.leftCol.backJumpButton.title == "返回",
                   "Jumping from note to left PDF column shows '返回' button on left column")
         }
     }
 
+    reader.setDisplayMode(2)
     // 连续跳转只保留最近一次起点，返回后不可继续回溯；两栏分别验证。
     reader.setColumnSource(reader.rightCol, source: .pdf(id: "translated"))
     reader.syncScrollBtn.state = .off
@@ -412,12 +423,11 @@ autoreleasepool {
             continue
         }
         let side = column.side.rawValue
-        let otherColumn = column === reader.leftCol ? reader.rightCol : reader.leftCol
         column.pdfView.go(to: firstPage)
         var latestOrigin = scrollView.contentView.bounds.origin.y
         for pageIndex in [1, 0, 1, 0] {
             latestOrigin = scrollView.contentView.bounds.origin.y
-            reader.handleNoteJumpURL("dualpdf://jump?pdf=\(column.activePDFDocumentId)&page=\(pageIndex)", fromNoteCol: otherColumn)
+            reader.handleNoteJumpURL("dualpdf://jump?pdf=\(column.activePDFDocumentId)&page=\(pageIndex)")
         }
         check(abs(scrollView.contentView.bounds.origin.y - latestOrigin) > 1,
               "\(side) consecutive jumps reach a different scroll position")
@@ -430,7 +440,7 @@ autoreleasepool {
         reader.popBackJumpAction(for: column)
         check(abs(scrollView.contentView.bounds.origin.y - returnedOrigin) < 1 && column.backJumpBanner.isHidden,
               "\(side) repeated back cannot reach an older jump")
-        reader.handleNoteJumpURL("dualpdf://jump?pdf=\(column.activePDFDocumentId)&page=0", fromNoteCol: otherColumn)
+        reader.handleNoteJumpURL("dualpdf://jump?pdf=\(column.activePDFDocumentId)&page=0")
         check(!column.backJumpBanner.isHidden, "\(side) a new jump enables back again")
         reader.popBackJumpAction()
         check(abs(scrollView.contentView.bounds.origin.y - returnedOrigin) < 1 && column.backJumpBanner.isHidden,
@@ -448,15 +458,17 @@ autoreleasepool {
           reader.leftCol.backJumpButton.keyEquivalent.isEmpty && reader.rightCol.backJumpButton.keyEquivalent.isEmpty,
           "Each column has exactly one independent return point")
 
-    if let extraId = addedExtra?.id, let scrollView = reader.leftCol.internalScrollView() {
+    let extraTargetColumn = reader.primaryActiveColumn()
+    if let extraId = addedExtra?.id, let scrollView = extraTargetColumn.internalScrollView() {
+        let previousSource = extraTargetColumn.contentSource
         let originalOrigin = scrollView.contentView.bounds.origin.y
-        reader.handleNoteJumpURL("dualpdf://jump?pdf=\(extraId)&page=1", fromNoteCol: reader.rightCol)
-        check(reader.leftCol.contentSource == .pdf(id: extraId), "Jump can target another PDF in the same paper")
-        reader.popBackJumpAction(for: reader.leftCol)
-        check(reader.leftCol.contentSource == .pdf(id: "original") && reader.leftCol.backJumpBanner.isHidden,
-              "Single-step back restores the original PDF and consumes its return point")
-        check(abs((reader.leftCol.internalScrollView()?.contentView.bounds.origin.y ?? -1) - originalOrigin) < 1,
-              "Single-step back restores the original PDF scroll position")
+        reader.handleNoteJumpURL("dualpdf://jump?pdf=\(extraId)&page=1")
+        check(extraTargetColumn.contentSource == .pdf(id: extraId), "Jump can target another PDF in the active column")
+        reader.popBackJumpAction(for: extraTargetColumn)
+        check(extraTargetColumn.contentSource == previousSource && extraTargetColumn.backJumpBanner.isHidden,
+              "Single-step back restores the previous PDF and consumes its return point")
+        check(abs((extraTargetColumn.internalScrollView()?.contentView.bounds.origin.y ?? -1) - originalOrigin) < 1,
+              "Single-step back restores the previous PDF scroll position")
     }
 
     reader.pushJumpRecord(from: reader.leftCol)
@@ -467,22 +479,51 @@ autoreleasepool {
           reader.leftCol.backJumpButton.keyEquivalent.isEmpty && reader.rightCol.backJumpButton.keyEquivalent.isEmpty,
           "Reloading documents clears both single-step return points and shortcuts")
 
+    reader.setColumnSource(reader.rightCol, source: .pdf(id: "translated"))
+    reader.setDisplayMode(0)
+    reader.handleNoteJumpURL("dualpdf://jump?pdf=translated&page=1")
+    check(!reader.leftCol.isHidden && !reader.rightCol.isHidden && modeControl?.selectedSegment == 2,
+          "Sidebar bookmark to hidden PDF synchronizes visible columns and display mode")
+    if let doc = reader.rightCol.pdfView.document, let page = doc.page(at: 0), let selection = page.selection(for: page.bounds(for: .mediaBox)),
+       let quote = reader.quoteSelectionToPaperNote(from: reader.rightCol.pdfView, selection: selection) {
+        reader.setDisplayMode(0)
+        reader.jumpToAnnotation(quote.annotation)
+        check(!reader.rightCol.isHidden && modeControl?.selectedSegment == 2,
+              "Sidebar annotation jump to hidden PDF updates display mode consistently")
+    } else { check(false, "Translated fixture provides text for annotation jump regression") }
+
+    if let noteId = createdNote?.id {
+        reader.openNotesSidebar(noteId: noteId)
+        let lastDraft = "最后输入，立即切换笔记"
+        reader.sidebarNoteView.editorTextView.string = lastDraft
+        reader.sidebarNoteView.textDidChange(Notification(name: NSText.didChangeNotification))
+        reader.openNotesSidebar(noteId: "main")
+        check(LibraryStore.shared.paper(withId: sample.id)?.effectiveNoteDocuments.first(where: { $0.id == noteId })?.markdownContent == lastDraft,
+              "Switching sidebar notes immediately flushes the last debounced edit")
+        reader.openNotesSidebar(noteId: noteId)
+        check(reader.sidebarNoteView.editorTextView.string == lastDraft, "Switching back preserves latest note draft")
+        reader.sidebarNoteView.onDeleteCurrentNoteRequested?(noteId)
+        check(reader.sidebarNoteView.currentNote?.id != noteId && LibraryStore.shared.paper(withId: sample.id)?.effectiveNoteDocuments.contains(where: { $0.id == noteId }) == false,
+              "Deleting selected sidebar note selects a remaining note without touching PDFs")
+    }
+    check(reader.addTags(" #回归标签，sidebar, sidebar"), "Reader tag editor saves normalized tags")
+    check(LibraryStore.shared.paper(withId: sample.id)?.tags.contains("回归标签") == true, "Reader tags update real paper metadata")
+    func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants($0) } }
+    let removeTag = descendants(reader.view).compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "回归标签" }
+    removeTag?.performClick(nil)
+    check(removeTag != nil && LibraryStore.shared.paper(withId: sample.id)?.tags.contains("回归标签") == false,
+          "Reader tag remove button deletes persisted tag")
+    check(ReaderTabViewController.detectedLanguage(in: nil) == "未识别", "Missing source PDF does not invent a document language")
+    let closingNoteId = reader.sidebarNoteView.currentNote?.id
+    reader.sidebarNoteView.editorTextView.string = "关闭前最后输入"
+    reader.sidebarNoteView.textDidChange(Notification(name: NSText.didChangeNotification))
     reader.prepareForClose()
+    check(LibraryStore.shared.paper(withId: sample.id)?.effectiveNoteDocuments.first(where: { $0.id == closingNoteId })?.markdownContent == "关闭前最后输入",
+          "Closing reader flushes pending sidebar note content")
 }
 
-// --- New Feature Tests: 3. Selection LLM Translation (划词支持 LLM 翻译) ---
-var translatedOutput: LLMTranslationResult?
-LLMTranslationService.shared.translate(
-    text: "We propose Multi-head Latent Attention (MLA) and an auxiliary-loss-free strategy for load balancing in Mixture-of-Experts (MoE).",
-    mode: .academicChinese,
-    pairedPageText: "我们提出了多头潜在注意力机制（MLA）以及用于混合专家（MoE）负载均衡的无辅助损失策略。"
-) { res in
-    translatedOutput = res
-}
-check(waitUntil { translatedOutput != nil }, "Selection LLM translation service completes")
-check((translatedOutput?.translatedMarkdown.contains("多头潜在注意力") == true) &&
-      (translatedOutput?.translatedMarkdown.contains("无辅助损失") == true),
-      "Selection LLM translation accurately translates academic terms and incorporates paired context")
+// 业务持久化、通知、标签与真实 AI 成功/失败行为（不发网络请求）。
+try runFunctionalGapTests()
 
 // --- 4. PDF Metadata Extraction (跳过版权免责页眉并提取真实标题与多行作者) ---
 let attentionPDF = root.appendingPathComponent("attention_test.pdf")
@@ -685,6 +726,49 @@ testReader.switchWorkbenchTab(to: 5) // Links
 testReader.view.layoutSubtreeIfNeeded()
 check(testReader.currentWorkbenchTab == 5, "Switched to Links tab")
 check(!testReader.tabLinksContainer.isHidden, "Links container is visible")
+
+// Translation failures survive tab changes, and clearing ignores queued callbacks.
+do {
+    let defaults = UserDefaults.standard
+    let keys = ["DualPDF_LLM_Endpoint", "DualPDF_LLM_APIKey"]
+    let saved = defaults.dictionaryRepresentation().filter { keys.contains($0.key) }
+    defer { for key in keys { defaults.set(saved[key], forKey: key) } }
+    defaults.set("http://[", forKey: keys[0])
+    defaults.set("regression-test-key", forKey: keys[1])
+
+    func translationDescendants(_ view: NSView) -> [NSView] {
+        [view] + view.subviews.flatMap { translationDescendants($0) }
+    }
+    testReader.switchWorkbenchTab(to: 2)
+    let views = translationDescendants(testReader.tabTranslationContainer)
+    let source = views.compactMap { $0 as? NSTextView }.first { $0.isEditable }
+    let status = views.compactMap { $0 as? NSTextField }.first { $0.stringValue.hasPrefix("●") }
+    if let source = source, let status = status {
+        source.string = "A failed request must never become a usable translation."
+        NSApp.sendAction(NSSelectorFromString("sidebarTranslateAction"), to: testReader, from: nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        check(status.stringValue.contains("翻译失败"), "Translation workbench displays endpoint failure")
+        let resultButtons = views.compactMap { $0 as? NSButton }.filter {
+            $0.action == NSSelectorFromString("sidebarCopyTranslationAction") ||
+            $0.action == NSSelectorFromString("sidebarInsertTranslationToNoteAction")
+        }
+        check(resultButtons.count == 2 && resultButtons.allSatisfy { !$0.isEnabled }, "Failed translation disables copy and note insertion")
+        let failureStatus = status.stringValue
+        testReader.switchWorkbenchTab(to: 0)
+        testReader.switchWorkbenchTab(to: 2)
+        check(status.stringValue == failureStatus, "Switching workbench tabs preserves translation failure")
+
+        source.string = "This queued failure belongs to the cleared request."
+        NSApp.sendAction(NSSelectorFromString("sidebarTranslateAction"), to: testReader, from: nil)
+        NSApp.sendAction(NSSelectorFromString("sidebarClearTransSourceAction"), to: testReader, from: nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        check(source.string.isEmpty && !status.stringValue.contains("翻译失败"), "Clearing translation ignores the queued stale callback")
+        check(resultButtons.allSatisfy { !$0.isEnabled }, "Clearing translation keeps result actions disabled")
+    } else {
+        check(false, "Translation workbench exposes source and status controls")
+    }
+}
+
 
 print("\nRegression tests: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)

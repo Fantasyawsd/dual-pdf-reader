@@ -21,6 +21,9 @@ final class StandaloneReaderWindowController: NSWindowController, NSWindowDelega
 
         super.init(window: window)
         window.delegate = self
+        readerVC.onRequestOpenPaperTab = { targetId in
+            StandaloneReaderWindowManager.shared.openWindow(for: targetId)
+        }
 
         guard let contentView = window.contentView else { return }
         readerVC.view.translatesAutoresizingMaskIntoConstraints = false
@@ -48,6 +51,8 @@ final class StandaloneReaderWindowManager {
     private var openWindows: [String: StandaloneReaderWindowController] = [:]
 
     func openWindow(for paperId: String) {
+        guard LibraryStore.shared.paper(withId: paperId) != nil else { return }
+
         if let existing = openWindows[paperId] {
             existing.window?.makeKeyAndOrderFront(nil)
             return

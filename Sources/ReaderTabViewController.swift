@@ -151,6 +151,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let sidebarTransModeSeg = NSSegmentedControl(labels: ["学术精读", "术语解析", "要点提炼", "英文润色"], trackingMode: .selectOne, target: nil, action: nil)
     private var sidebarTransActiveTask: URLSessionDataTask?
     private var sidebarTransResultMarkdown: String = ""
+    private var sidebarTransLastResult: LLMTranslationResult?
+    private var sidebarTransActionButtons: [NSButton] = []
+    private var sidebarTransRequestID = UUID()
 
     // 侧边栏附件管理 (Tab 3)
     private let attachmentsListStack = FlippedStackView()
@@ -169,6 +172,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private var outlineItems: [(title: String, pageIndex: Int, depth: Int)] = []
     private var isUpdatingOutlineSelection = false
     private var notesWebView: WKWebView!
+    let sidebarNoteView = PaperNoteColumnView()
+    private let noteSelector = NSPopUpButton()
+    private var selectedSidebarNoteId: String?
+    private var translationActionButtons: [NSButton] = []
+    private var translationRequestID = UUID()
 
     // 同步滚动、对齐微调偏移与缩放状态
     private var isScrollSyncEnabled = true
@@ -226,8 +234,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     func prepareForClose() {
         guard !isClosed else { return }
-        leftCol.noteColumnView.cleanupForClose()
-        rightCol.noteColumnView.cleanupForClose()
+        sidebarNoteView.cleanupForClose()
         LibraryStore.shared.flushReadingState()
         isClosed = true
         activeTranslationTask?.cancel()
@@ -245,8 +252,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     func didResignActiveTab() {
-        leftCol.noteColumnView.flushPendingSave()
-        rightCol.noteColumnView.flushPendingSave()
+        sidebarNoteView.flushPendingSave()
         LibraryStore.shared.flushReadingState()
     }
 
@@ -817,6 +823,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     func switchWorkbenchTab(to index: Int) {
+        sidebarNoteView.flushPendingSave()
         currentWorkbenchTab = index
         for btn in workbenchRailButtons {
             let isActive = (btn.tag == index)
@@ -836,6 +843,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         if index == 0 {
             updateRightSidebarMetadataUI()
         } else if index == 1 {
+            refreshSidebarNotes()
             notesNeedRefresh = true
             refreshNotesDrawerWebView()
         } else if index == 2 {
@@ -972,7 +980,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         noteIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
         noteIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
-        let secTitle = NSTextField(labelWithString: "随手笔记 (notes.md)")
+        let secTitle = NSTextField(labelWithString: "论文笔记")
         secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
         secTitle.textColor = .labelColor
 
@@ -998,11 +1006,26 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         notesWebView.translatesAutoresizingMaskIntoConstraints = false
 
         tabNotesContainer.addArrangedSubview(secHeader)
+        noteSelector.target = self
+        noteSelector.action = #selector(sidebarNoteSelectionChanged(_:))
+        noteSelector.translatesAutoresizingMaskIntoConstraints = false
+        noteSelector.setAccessibilityLabel("选择论文笔记")
+        tabNotesContainer.addArrangedSubview(noteSelector)
+        sidebarNoteView.translatesAutoresizingMaskIntoConstraints = false
+        tabNotesContainer.addArrangedSubview(sidebarNoteView)
+        let annotationsTitle = NSTextField(labelWithString: "划线与批注")
+        annotationsTitle.font = .systemFont(ofSize: 13, weight: .semibold)
+        tabNotesContainer.addArrangedSubview(annotationsTitle)
         tabNotesContainer.addArrangedSubview(notesWebView)
+        configureSidebarNoteCallbacks()
+        refreshSidebarNotes()
 
         NSLayoutConstraint.activate([
             tabNotesContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
             secHeader.widthAnchor.constraint(equalTo: tabNotesContainer.widthAnchor),
+            noteSelector.widthAnchor.constraint(equalTo: tabNotesContainer.widthAnchor),
+            sidebarNoteView.widthAnchor.constraint(equalTo: tabNotesContainer.widthAnchor),
+            sidebarNoteView.heightAnchor.constraint(equalToConstant: 440),
             notesWebView.widthAnchor.constraint(equalTo: tabNotesContainer.widthAnchor),
             notesWebView.heightAnchor.constraint(greaterThanOrEqualToConstant: 420)
         ])
@@ -1051,6 +1074,58 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     // MARK: - Tab 2: 划词翻译与学术解析 (Translation)
+
+    private func configureSidebarNoteCallbacks() {
+        sidebarNoteView.onCreateNewNoteRequested = { [weak self] in self?.promptToCreateNewNote() }
+        sidebarNoteView.onDeleteCurrentNoteRequested = { [weak self] noteId in
+            guard let self = self else { return }
+            self.sidebarNoteView.flushPendingSave()
+            if LibraryStore.shared.deleteNoteDocument(for: self.paperId, noteId: noteId) {
+                self.selectedSidebarNoteId = nil
+                self.refreshSidebarNotes()
+            }
+        }
+        sidebarNoteView.onNoteContentChanged = { [weak self] note in
+            guard let self = self else { return }
+            LibraryStore.shared.saveNoteDocument(for: self.paperId, note: note, notify: true)
+        }
+        sidebarNoteView.onJumpLinkClicked = { [weak self] url in self?.handleNoteJumpURL(url) }
+        sidebarNoteView.onInsertCurrentPDFSelectionLinkRequested = { [weak self] in
+            guard let self = self else { return }
+            self.insertJumpLinkFromPDFColumn(self.primaryActiveColumn())
+        }
+    }
+
+    private func refreshSidebarNotes() {
+        // 先落稿，再读取最新 store 快照，避免旧快照覆盖刚保存的正文。
+        sidebarNoteView.flushPendingSave()
+        guard let paper = currentPaper else { return }
+        let notes = paper.effectiveNoteDocuments
+        guard let note = notes.first(where: { $0.id == selectedSidebarNoteId }) ?? notes.first else { return }
+        selectedSidebarNoteId = note.id
+        noteSelector.removeAllItems()
+        for item in notes {
+            noteSelector.addItem(withTitle: item.title)
+            noteSelector.lastItem?.representedObject = item.id
+        }
+        if let index = notes.firstIndex(where: { $0.id == note.id }) { noteSelector.selectItem(at: index) }
+        sidebarNoteView.loadNote(note, allNotes: notes)
+    }
+
+    @objc private func sidebarNoteSelectionChanged(_ sender: NSPopUpButton) {
+        guard let id = sender.selectedItem?.representedObject as? String else { return }
+        sidebarNoteView.flushPendingSave()
+        selectedSidebarNoteId = id
+        refreshSidebarNotes()
+    }
+
+    func openNotesSidebar(noteId: String? = nil) {
+        sidebarNoteView.flushPendingSave()
+        if let id = noteId { selectedSidebarNoteId = id }
+        if !isDrawerOpen { toggleRightDrawerAction() }
+        switchWorkbenchTab(to: 1)
+    }
+
     private func setupTranslationTab(in parentStack: NSStackView) {
         tabTranslationContainer.orientation = .vertical
         tabTranslationContainer.alignment = .leading
@@ -1212,6 +1287,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         let copyBtn = makeCompactActionButton(title: "复制", symbol: "doc.on.doc", action: #selector(sidebarCopyTranslationAction))
         let insertNoteBtn = makeCompactActionButton(title: "存入笔记", symbol: "plus.square", action: #selector(sidebarInsertTranslationToNoteAction))
+        sidebarTransActionButtons = [copyBtn, insertNoteBtn]
+        sidebarTransActionButtons.forEach { $0.isEnabled = false }
 
         resultHeaderRow.addArrangedSubview(resultTitle)
         resultHeaderRow.addArrangedSubview(resultSpacer)
@@ -1372,6 +1449,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         inputRow.translatesAutoresizingMaskIntoConstraints = false
 
         tagsInputField.placeholderString = "输入新标签名称，按回车添加…"
+        tagsInputField.identifier = NSUserInterfaceItemIdentifier("readerTagInput")
         tagsInputField.controlSize = .small
         tagsInputField.target = self
         tagsInputField.action = #selector(addTagFromInput)
@@ -1432,6 +1510,25 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     // MARK: - Tab 5: 外部链接与文献引用 (External Links)
+
+    @discardableResult
+    func addTags(_ text: String) -> Bool {
+        guard var paper = currentPaper, let tags = LibraryViewController.metadataTags(from: text), !tags.isEmpty else { return false }
+        for tag in tags where !paper.tags.contains(tag) { paper.tags.append(tag) }
+        guard LibraryStore.shared.savePaper(paper) else { return false }
+        refreshTagsTabUI()
+        return true
+    }
+
+    static func detectedLanguage(in document: PDFDocument?) -> String {
+        guard let document = document else { return "未识别" }
+        let sample = (0..<min(document.pageCount, 2)).compactMap { document.page(at: $0)?.string }.joined(separator: " ")
+        let text = String(sample.prefix(4000)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= 20, let code = NSLinguisticTagger.dominantLanguage(for: text) else { return "未识别" }
+        let name = Locale.current.localizedString(forLanguageCode: code) ?? code
+        return "\(name)（PDF 自动识别）"
+    }
+
     private func setupLinksTab(in parentStack: NSStackView) {
         tabLinksContainer.orientation = .vertical
         tabLinksContainer.alignment = .leading
@@ -1537,7 +1634,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             metadataFieldsStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: metadataFieldsStack.widthAnchor).isActive = true
         }
-        addRow(key: "条目类型", value: "预印本")
+        addRow(key: "条目类型", value: p.cleanArxivId == nil ? "PDF 文档" : "arXiv 文献")
         addRow(key: "标题", value: p.title)
 
         let authorList = p.authors.components(separatedBy: CharacterSet(charactersIn: ";,，；")).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
@@ -1554,7 +1651,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
 
         addRow(key: "分类", value: p.category.isEmpty ? "—" : p.category)
-        addRow(key: "仓库", value: p.venue.isEmpty ? "arXiv" : p.venue)
+        addRow(key: "仓库", value: p.venue.isEmpty ? (p.cleanArxivId == nil ? "—" : "arXiv") : p.venue)
 
         let aid = p.cleanArxivId ?? ""
         addRow(key: "存档ID", value: aid.isEmpty ? "—" : "arXiv:\(aid)")
@@ -1567,11 +1664,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             addRow(key: "网址", value: "—")
         }
 
-        addRow(key: "语言", value: "en-US")
-
-        if !aid.isEmpty {
-            addRow(key: "其他", value: "arXiv:\(aid) [cs.CL]")
-        }
+        let sourceDocument = LibraryStore.shared.pdfURL(for: p, side: .original).flatMap { PDFDocument(url: $0) }
+        addRow(key: "语言", value: Self.detectedLanguage(in: sourceDocument))
 
         if let citations = p.citationCount {
             addRow(key: "引用数", value: "\(citations.formatted()) 次")
@@ -1583,10 +1677,16 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // MARK: - Tab 2: 翻译与学术解析 (Actions & UI Refresh)
     private func refreshTranslationTabUI() {
+        if let result = sidebarTransLastResult {
+            sidebarTransStatusLabel.stringValue = result.isSuccess ? "● 引擎：\(result.providerLabel)" : "● 翻译失败：\(result.providerLabel)"
+            sidebarTransStatusLabel.textColor = result.isSuccess ? .secondaryLabelColor : .systemRed
+            return
+        }
+        guard sidebarTransActiveTask == nil else { return }
         let model = LLMTranslationService.shared.modelName
         let isConfigured = LLMTranslationService.shared.isRemoteConfigured
         if isConfigured {
-            sidebarTransStatusLabel.stringValue = "● 引擎: \(model) (已连接)"
+            sidebarTransStatusLabel.stringValue = "● 引擎: \(model) (已配置)"
             sidebarTransStatusLabel.textColor = NSColor(calibratedRed: 0.1, green: 0.65, blue: 0.25, alpha: 1.0)
         } else {
             sidebarTransStatusLabel.stringValue = "● 本地引擎: 双栏对照内置解析 (未配置 API Key)"
@@ -1621,6 +1721,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let rawText = sidebarTransSourceTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawText.isEmpty else { return }
 
+        sidebarTransRequestID = UUID()
+        let requestID = sidebarTransRequestID
+        sidebarTransResultMarkdown = ""
+        sidebarTransLastResult = nil
+        sidebarTransActionButtons.forEach { $0.isEnabled = false }
+        sidebarTransStatusLabel.stringValue = "● 正在生成结果…"
+        sidebarTransStatusLabel.textColor = .secondaryLabelColor
         sidebarTransProgress.startAnimation(nil)
         let loadingHTML = MarkdownMathRenderer.buildSinglePreviewHTML(markdown: "*正在调用学术大模型进行翻译与术语解析…*")
         sidebarTransResultWebView.loadHTMLString(loadingHTML, baseURL: nil)
@@ -1632,9 +1739,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             pairedPageText: nil
         ) { [weak self] result in
             guard let self = self, !self.isClosed else { return }
+            guard self.sidebarTransRequestID == requestID else { return }
+            self.sidebarTransActiveTask = nil
             self.sidebarTransProgress.stopAnimation(nil)
-            self.sidebarTransResultMarkdown = result.translatedMarkdown
-            self.sidebarTransStatusLabel.stringValue = "● 引擎：\(result.providerLabel)"
+            self.sidebarTransResultMarkdown = result.isSuccess ? result.translatedMarkdown : ""
+            self.sidebarTransActionButtons.forEach { $0.isEnabled = result.isSuccess }
+            self.sidebarTransLastResult = result
+            self.refreshTranslationTabUI()
             let html = MarkdownMathRenderer.buildSinglePreviewHTML(markdown: result.translatedMarkdown)
             self.sidebarTransResultWebView.loadHTMLString(html, baseURL: nil)
         }
@@ -1650,8 +1761,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     @objc private func sidebarClearTransSourceAction() {
+        sidebarTransRequestID = UUID()
+        sidebarTransActiveTask?.cancel()
+        sidebarTransActiveTask = nil
+        sidebarTransProgress.stopAnimation(nil)
         sidebarTransSourceTextView.string = ""
         sidebarTransResultMarkdown = ""
+        sidebarTransLastResult = nil
+        sidebarTransActionButtons.forEach { $0.isEnabled = false }
         refreshTranslationTabUI()
     }
 
@@ -1671,9 +1788,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         } else {
             snippet = "\n\n\(sidebarTransResultMarkdown)\n"
         }
-        let targetNoteCol = rightCol.contentSource.isNote ? rightCol : leftCol
-        targetNoteCol.noteColumnView.appendOrInsertMarkdownLink(snippet)
-        switchWorkbenchTab(to: 1)
+        openNotesSidebar()
+        sidebarNoteView.appendOrInsertMarkdownLink(snippet)
     }
 
     // MARK: - Tab 3: PDF 附件与文档 (Actions & UI Refresh)
@@ -2096,15 +2212,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     @objc private func addTagFromInput() {
-        guard let p = currentPaper else { return }
-        let raw = tagsInputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return }
-        let parts = raw.components(separatedBy: CharacterSet(charactersIn: ",，;；")).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        for t in parts {
-            LibraryStore.shared.addTag(t, for: p.id)
-        }
+        guard addTags(tagsInputField.stringValue) else { return }
         tagsInputField.stringValue = ""
-        refreshTagsTabUI()
     }
 
     @objc private func removeTagFromBtn(_ sender: NSButton) {
@@ -2784,40 +2893,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                     self.setColumnSource(col, source: .pdf(id: col.side.rawValue))
                 }
             }
-            col.onCreateNoteRequested = { [weak self, weak col] in
-                guard let self = self, let col = col else { return }
-                self.promptToCreateNewNote(in: col)
-            }
-
-            col.noteColumnView.onSelectNoteId = { [weak self, weak col] noteId in
-                guard let self = self, let col = col else { return }
-                self.setColumnSource(col, source: .note(id: noteId))
-            }
-            col.noteColumnView.onCreateNewNoteRequested = { [weak self, weak col] in
-                guard let self = self, let col = col else { return }
-                self.promptToCreateNewNote(in: col)
-            }
-            col.noteColumnView.onDeleteCurrentNoteRequested = { [weak self, weak col] noteId in
-                guard let self = self, let col = col else { return }
-                if LibraryStore.shared.deleteNoteDocument(for: self.paperId, noteId: noteId),
-                   let firstNote = self.currentPaper?.effectiveNoteDocuments.first {
-                    self.setColumnSource(col, source: .note(id: firstNote.id))
-                }
-            }
-            col.noteColumnView.onNoteContentChanged = { [weak self] updatedNote in
-                guard let self = self else { return }
-                LibraryStore.shared.saveNoteDocument(for: self.paperId, note: updatedNote, notify: true)
-            }
-            col.noteColumnView.onJumpLinkClicked = { [weak self, weak col] urlStr in
-                guard let self = self else { return }
-                self.handleNoteJumpURL(urlStr, fromNoteCol: col)
-            }
-            col.noteColumnView.onInsertCurrentPDFSelectionLinkRequested = { [weak self, weak col] in
-                guard let self = self, let col = col else { return }
-                let pdfCol = (col === self.leftCol) ? self.rightCol : self.leftCol
-                self.insertJumpLinkFromPDFColumn(pdfCol, intoNoteColumn: col)
-            }
-
             col.onBindPDFRequested = { [weak self, weak col] side in
                 guard let self = self, let col = col else { return }
                 self.promptToImportOrReplacePDF(in: col)
@@ -3028,6 +3103,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         loadColumnContent(for: leftCol, source: leftCol.contentSource, in: paper)
         loadColumnContent(for: rightCol, source: rightCol.contentSource, in: paper)
+        refreshSidebarNotes()
+        refreshTagsTabUI()
 
         applyAnnotationsToPDFViews()
         rebuildOutlineData()
@@ -3071,7 +3148,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         updateRightSidebarMetadataUI()
         updateDrawerBadgeTitles()
         view.layoutSubtreeIfNeeded()
-        if (modeSeg.selectedSegment == 2 || modeSeg.selectedSegment == 3) && splitView.bounds.width > 100 {
+        if modeSeg.selectedSegment == 2 && splitView.bounds.width > 100 {
             let leftW = leftCol.frame.width
             let rightW = rightCol.frame.width
             if leftW < 50 || rightW < 50 {
@@ -3107,22 +3184,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         if !view.isHidden { applyPendingLibraryChanges() }
     }
 
-    /// 为单栏设置要展示的内容源（仅限当前论文集内的任意 PDF 或当前论文的笔记文档）
+    /// PDF 栏只显示当前论文的 PDF，笔记始终在右侧边栏。
     func setColumnSource(_ col: CleanPDFColumnView, source: ColumnContentSource, syncModeSeg: Bool = true) {
         guard let paper = currentPaper, !isClosed else { return }
-        col.noteColumnView.flushPendingSave()
         loadColumnContent(for: col, source: source, in: paper)
         annotationRenderer.apply(paper.annotations, to: col)
         rebuildOutlineData()
         updatePageIndicatorAndSaveProgress()
-
-        if syncModeSeg, !leftCol.isHidden, !rightCol.isHidden {
-            if leftCol.contentSource.isPDF && rightCol.contentSource.isNote {
-                modeSeg.selectedSegment = 3
-            } else if leftCol.contentSource.isPDF && rightCol.contentSource.isPDF {
-                modeSeg.selectedSegment = 2
-            }
-        }
     }
 
     private func loadColumnContent(for col: CleanPDFColumnView, source: ColumnContentSource, in paper: PaperItem) {
@@ -3140,10 +3208,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 col.applyContentSource(.pdf(id: effectivePDFId), paper: paper, hasPDFDocument: false)
             }
 
-        case .note(let requestedNoteId):
-            let notes = paper.effectiveNoteDocuments
-            let effectiveNoteId = notes.contains(where: { $0.id == requestedNoteId }) ? requestedNoteId : (notes.first?.id ?? "main")
-            col.applyContentSource(.note(id: effectiveNoteId), paper: paper, hasPDFDocument: false)
         }
     }
 
@@ -3152,16 +3216,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         pendingLibraryFields = []
         guard !fields.isEmpty else { return }
         if fields.contains(.pdf) { loadPaperDocuments(); return }
-        if fields.contains(.metadata) { updateRightSidebarMetadataUI() }
+        if fields.contains(.metadata) {
+            updateRightSidebarMetadataUI()
+        }
         if fields.contains(.annotations) {
             notesNeedRefresh = true
             applyAnnotationsToPDFViews()
             refreshNotesDrawerWebView()
-            if let paper = currentPaper {
-                for col in [leftCol, rightCol] where col.contentSource.isNote {
-                    col.applyContentSource(col.contentSource, paper: paper, hasPDFDocument: false)
-                }
-            }
+            refreshSidebarNotes()
         }
         if fields.contains(.resources) {
             linksNeedRefresh = true
@@ -3326,9 +3388,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         guard LibraryStore.shared.savePaper(paper, notify: true) else { return nil }
         pdfView.clearSelection()
 
-        let sourceCol = (pdfView === rightCol.pdfView) ? rightCol : leftCol
-        let oppositeCol = (sourceCol === leftCol) ? rightCol : leftCol
-
         let pdfBadge = annotation.shortSourceBadge(in: paper)
         let compactExcerpt = annotation.selectedText
             .replacingOccurrences(of: "\n", with: " ")
@@ -3339,44 +3398,23 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         var snippet = "- [📍 \(pdfBadge) · P.\(annotation.pageIndex + 1): “\(shortLabelExcerpt)”](\(jumpURL))\n  > \(compactExcerpt)"
         if let trans = customTranslation?.trimmingCharacters(in: .whitespacesAndNewlines), !trans.isEmpty {
             let formattedTrans = trans.replacingOccurrences(of: "\n", with: "\n  ")
-            snippet += "\n  **AI 译注**：\(formattedTrans)"
+            snippet += "\n  **AI 结果**：\(formattedTrans)"
         }
 
-        // 确保有一栏正在展示笔记（若当前均未展示笔记，则自动在另一栏打开论文主笔记并开启双栏模式）
-        let targetNoteCol: CleanPDFColumnView
-        if oppositeCol.contentSource.isNote {
-            targetNoteCol = oppositeCol
-        } else if sourceCol.contentSource.isNote {
-            targetNoteCol = sourceCol
-        } else {
-            targetNoteCol = oppositeCol
-            let firstNoteId = currentPaper?.effectiveNoteDocuments.first?.id ?? "main"
-            setColumnSource(targetNoteCol, source: .note(id: firstNoteId), syncModeSeg: true)
-        }
-
-        if leftCol.isHidden || rightCol.isHidden {
-            leftCol.isHidden = false
-            rightCol.isHidden = false
-            if leftCol.contentSource.isPDF && rightCol.contentSource.isNote {
-                modeSeg.selectedSegment = 3
-            }
-            splitView.adjustSubviews()
-            splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
-        }
-
-        targetNoteCol.noteColumnView.appendOrInsertMarkdownLink(snippet)
-        guard let updatedNote = targetNoteCol.noteColumnView.currentNote else { return nil }
+        openNotesSidebar()
+        sidebarNoteView.appendOrInsertMarkdownLink(snippet)
+        guard let updatedNote = sidebarNoteView.currentNote else { return nil }
         return (annotation, snippet, updatedNote)
     }
 
-    private func insertJumpLinkFromPDFColumn(_ pdfCol: CleanPDFColumnView, intoNoteColumn noteCol: CleanPDFColumnView) {
+    private func insertJumpLinkFromPDFColumn(_ pdfCol: CleanPDFColumnView) {
         if let sel = pdfCol.pdfView.currentSelection,
            let str = sel.string?.trimmingCharacters(in: .whitespacesAndNewlines),
            !str.isEmpty {
             _ = quoteSelectionToPaperNote(from: pdfCol.pdfView, selection: sel)
             return
         }
-        // 若另一栏当前未划选文字，则直接插入指向该栏当前阅读页码的可跳转书签链接
+        // 若当前 PDF 未划选文字，则直接插入指向该栏当前阅读页码的可跳转书签链接
         guard let paper = currentPaper,
               let doc = pdfCol.pdfView.document else { return }
         let pageIdx = pdfCol.pdfView.currentPage.map { doc.index(for: $0) } ?? 0
@@ -3384,7 +3422,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let pdfTitle = paper.pdfTitle(for: pdfId)
         let jumpURL = "dualpdf://jump?pdf=\(pdfId)&page=\(pageIdx)"
         let snippet = "- [📍 \(pdfTitle) · 第 \(pageIdx + 1) 页书签](\(jumpURL))"
-        noteCol.noteColumnView.appendOrInsertMarkdownLink(snippet)
+        openNotesSidebar()
+        sidebarNoteView.appendOrInsertMarkdownLink(snippet)
     }
 
     // MARK: - 6B. Selection LLM Translation Popover (划词支持 LLM 翻译)
@@ -3485,7 +3524,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         copyTransBtn.bezelStyle = .rounded
         copyTransBtn.controlSize = .small
 
-        let actionRow = NSStackView(views: [insertNoteBtn, saveAnnotBtn, copyTransBtn])
+        translationActionButtons = [insertNoteBtn, saveAnnotBtn, copyTransBtn]
+        translationActionButtons.forEach { $0.isEnabled = false }
+        let actionRow = NSStackView(views: translationActionButtons)
         actionRow.orientation = .horizontal
         actionRow.spacing = 6
         rootStack.addArrangedSubview(actionRow)
@@ -3566,13 +3607,18 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         translationPreviewWebView?.loadHTMLString(loadingHTML, baseURL: nil)
 
         activeTranslationTask?.cancel()
+        translationRequestID = UUID()
+        let requestID = translationRequestID
+        currentTranslatedMarkdown = ""
+        translationActionButtons.forEach { $0.isEnabled = false }
         activeTranslationTask = LLMTranslationService.shared.translate(
             text: rawText,
             mode: currentTranslationMode,
             pairedPageText: pairedPageText
         ) { [weak self] result in
-            guard let self = self, !self.isClosed else { return }
-            self.currentTranslatedMarkdown = result.translatedMarkdown
+            guard let self = self, !self.isClosed, self.translationRequestID == requestID else { return }
+            self.currentTranslatedMarkdown = result.isSuccess ? result.translatedMarkdown : ""
+            self.translationActionButtons.forEach { $0.isEnabled = result.isSuccess }
             self.translationProviderLabel?.stringValue = "引擎：\(result.providerLabel)"
             let html = MarkdownMathRenderer.buildSinglePreviewHTML(markdown: result.translatedMarkdown)
             self.translationPreviewWebView?.loadHTMLString(html, baseURL: nil)
@@ -3862,7 +3908,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     func openUniversalLink(_ urlOrPath: String) {
         if urlOrPath.hasPrefix("dualpdf://jump") {
-            handleNoteJumpURL(urlOrPath, fromNoteCol: nil)
+            handleNoteJumpURL(urlOrPath)
             return
         }
         if urlOrPath.hasPrefix("paper://") {
@@ -3885,10 +3931,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // MARK: - 8. Top Bar, Page Navigation & Menu Shortcut Actions
     func setDisplayMode(_ segment: Int) {
-        if segment < modeSeg.segmentCount {
-            modeSeg.selectedSegment = segment
-        }
-        applyDisplayMode(segment)
+        // 非法模式回到双 PDF；笔记仅由右侧栏入口打开。
+        let pdfMode = (0..<modeSeg.segmentCount).contains(segment) ? segment : 2
+        modeSeg.selectedSegment = pdfMode
+        applyDisplayMode(pdfMode)
     }
 
     func focusSearchField() {
@@ -3901,36 +3947,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     private func applyDisplayMode(_ segment: Int) {
         switch segment {
-        case 0: // 仅原文
-            if leftCol.contentSource.isNote {
-                setColumnSource(leftCol, source: .pdf(id: PDFSide.original.rawValue), syncModeSeg: false)
-            }
+        case 0:
             leftCol.isHidden = false
             rightCol.isHidden = true
-        case 1: // 仅译文
-            if rightCol.contentSource.isNote {
-                setColumnSource(rightCol, source: .pdf(id: PDFSide.translated.rawValue), syncModeSeg: false)
-            }
+        case 1:
             leftCol.isHidden = true
             rightCol.isHidden = false
-        case 3: // 左文右记 (兼容测试与编程式调用)
-            if leftCol.contentSource.isNote {
-                setColumnSource(leftCol, source: .pdf(id: PDFSide.original.rawValue), syncModeSeg: false)
-            }
-            if !rightCol.contentSource.isNote {
-                let firstNoteId = currentPaper?.effectiveNoteDocuments.first?.id ?? "main"
-                setColumnSource(rightCol, source: .note(id: firstNoteId), syncModeSeg: false)
-            }
-            leftCol.isHidden = false
-            rightCol.isHidden = false
-            splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
-        default: // 双栏对照 (默认左栏原文 EN + 右栏译文 ZH)
-            if leftCol.contentSource.isNote {
-                setColumnSource(leftCol, source: .pdf(id: PDFSide.original.rawValue), syncModeSeg: false)
-            }
-            if rightCol.contentSource.isNote {
-                setColumnSource(rightCol, source: .pdf(id: PDFSide.translated.rawValue), syncModeSeg: false)
-            }
+        default:
             leftCol.isHidden = false
             rightCol.isHidden = false
             splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
@@ -4065,6 +4088,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     @objc func toggleRightDrawerAction() {
+        sidebarNoteView.flushPendingSave()
         isDrawerOpen.toggle()
         drawerToggleBtn.state = isDrawerOpen ? .on : .off
         rightDrawer.isHidden = !isDrawerOpen
@@ -4135,10 +4159,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
     }
 
-    private func promptToCreateNewNote(in col: CleanPDFColumnView) {
+    private func promptToCreateNewNote() {
+        sidebarNoteView.flushPendingSave()
         let alert = NSAlert()
         alert.messageText = "新建本论文精读笔记"
-        alert.informativeText = "每篇论文可包含多篇独立 Markdown + LaTeX 笔记，支持在左栏或右栏与任意 PDF 对照。"
+        alert.informativeText = "每篇论文可包含多篇独立 Markdown + LaTeX 笔记，统一在右侧边栏编辑和预览。"
         alert.addButton(withTitle: "创建并打开")
         alert.addButton(withTitle: "取消")
 
@@ -4149,7 +4174,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         if alert.runModal() == .alertFirstButtonReturn {
             if let created = LibraryStore.shared.createNoteDocument(for: paperId, title: titleField.stringValue) {
-                setColumnSource(col, source: .note(id: created.id))
+                openNotesSidebar(noteId: created.id)
             }
         }
     }
@@ -4239,7 +4264,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
               var paper = currentPaper else { return }
 
         if action == "jumpLink", let url = dict["extra"], !url.isEmpty {
-            handleNoteJumpURL(url, fromNoteCol: nil)
+            handleNoteJumpURL(url)
             return
         }
 
@@ -4263,7 +4288,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
     }
 
-    func handleNoteJumpURL(_ urlString: String, fromNoteCol: CleanPDFColumnView? = nil) {
+    func handleNoteJumpURL(_ urlString: String) {
         guard !isClosed, let paper = currentPaper else { return }
         guard urlString.hasPrefix("dualpdf://jump") else {
             openUniversalLink(urlString)
@@ -4277,7 +4302,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         if let annotId = params["annot"],
            let annot = paper.annotations.first(where: { $0.id == annotId }) {
-            jumpToAnnotation(annot, preferredFromNoteCol: fromNoteCol)
+            jumpToAnnotation(annot)
             return
         }
 
@@ -4285,19 +4310,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let targetPageIdx = params["page"].flatMap { Int($0) } ?? 0
 
         let targetCol: CleanPDFColumnView
-        if let fromNoteCol = fromNoteCol {
-            targetCol = (fromNoteCol === rightCol) ? leftCol : rightCol
-        } else if leftCol.contentSource == .pdf(id: targetPDFId) {
+        if leftCol.contentSource == .pdf(id: targetPDFId) {
             targetCol = leftCol
         } else if rightCol.contentSource == .pdf(id: targetPDFId) {
             targetCol = rightCol
         } else {
-            targetCol = leftCol.contentSource.isPDF ? leftCol : rightCol
+            targetCol = primaryActiveColumn()
         }
 
         if targetCol.isHidden {
-            targetCol.isHidden = false
-            splitView.adjustSubviews()
+            setDisplayMode(2)
+            view.layoutSubtreeIfNeeded()
         }
         pushJumpRecord(from: targetCol, label: "返回")
         if targetCol.contentSource != .pdf(id: targetPDFId) {
@@ -4316,30 +4339,22 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         updatePageIndicatorAndSaveProgress()
     }
 
-    func jumpToAnnotation(_ annot: PaperAnnotation, preferredFromNoteCol: CleanPDFColumnView? = nil) {
+    func jumpToAnnotation(_ annot: PaperAnnotation) {
         guard !isClosed else { return }
         let targetPDFId = annot.effectivePDFId
 
         let targetCol: CleanPDFColumnView
-        if let fromNoteCol = preferredFromNoteCol {
-            targetCol = (fromNoteCol === rightCol) ? leftCol : rightCol
-        } else if leftCol.contentSource == .pdf(id: targetPDFId) {
+        if leftCol.contentSource == .pdf(id: targetPDFId) {
             targetCol = leftCol
         } else if rightCol.contentSource == .pdf(id: targetPDFId) {
-            targetCol = rightCol
-        } else if rightCol.contentSource.isNote {
-            targetCol = leftCol
-        } else if leftCol.contentSource.isNote {
             targetCol = rightCol
         } else {
             targetCol = (annot.side == .original) ? leftCol : rightCol
         }
 
         if targetCol.isHidden {
-            leftCol.isHidden = false
-            rightCol.isHidden = false
-            splitView.adjustSubviews()
-            splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
+            setDisplayMode(2)
+            view.layoutSubtreeIfNeeded()
         }
         pushJumpRecord(from: targetCol, label: "笔记跳转前")
         if targetCol.contentSource != .pdf(id: targetPDFId) {

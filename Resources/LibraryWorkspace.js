@@ -75,6 +75,11 @@ function sendBridge(payload) {
 
 window.updateLibraryState = function(newState) {
     state = newState;
+    if (ui.filterKind.startsWith('cat:') && !(state.categories || []).includes(ui.filterKind.slice(4))) {
+        ui.filterKind = 'all';
+        ui.filterTitle = '我的文库';
+        ui.activeTag = null;
+    }
     if (!state.selectedPaperId && state.papers && state.papers.length > 0) {
         state.selectedPaperId = state.papers[0].id;
     }
@@ -94,6 +99,7 @@ window.openCreatePaperModal = function() {
     const defaultCat = ui.filterKind.startsWith('cat:') ? ui.filterKind.slice(4) : '大模型架构 (LLM)';
     document.getElementById('mCategory').value = defaultCat;
     document.getElementById('mTags').value = '';
+    document.getElementById('mLocalArxivId').value = '';
     document.getElementById('modalOrigStatus').textContent = '点击选择或通过上方按钮自动配对…';
     document.getElementById('modalTransStatus').textContent = '点击选择或通过上方按钮自动配对…';
     const arxivInput = document.getElementById('mArxivInput');
@@ -157,6 +163,7 @@ window.onModalPDFsPicked = function(info) {
     if (!tEl.value && info.title) tEl.value = info.title;
     if (!aEl.value && info.authors) aEl.value = info.authors;
     if (info.year) yEl.value = info.year;
+    document.getElementById('mLocalArxivId').value = info.arxivId || '';
 };
 
 window.submitCreatePaperModal = function() {
@@ -167,7 +174,8 @@ window.submitCreatePaperModal = function() {
         year: document.getElementById('mYear').value,
         venue: document.getElementById('mVenue').value,
         category: document.getElementById('mCategory').value,
-        tags: document.getElementById('mTags').value
+        tags: document.getElementById('mTags').value,
+        arxivId: document.getElementById('mLocalArxivId').value
     });
     closeCreatePaperModal();
 };
@@ -358,7 +366,7 @@ function openNoteQuickMenu(evt) {
     const pidAttr = escapeJSAttr(pid || '');
     const menu = document.getElementById('ctxMenu');
     menu.innerHTML = `
-        ${pid ? `<div class="ctx-item" onclick="closeContextMenu(); sendBridge({action:'openPaperLeftPDFRightNote', paperId:'${pidAttr}'})"><span>左栏论文 + 右栏笔记打开 (左文右记)</span></div>` : ''}
+        ${pid ? `<div class="ctx-item" onclick="closeContextMenu(); sendBridge({action:'openPaperNotesSidebar', paperId:'${pidAttr}'})"><span>打开论文与右侧笔记</span></div>` : ''}
         ${pid ? `<div class="ctx-item" onclick="closeContextMenu(); activateInspectorSection('notes')"><span>在右侧栏查看该论文笔记</span></div>` : ''}
         <div class="ctx-sep"></div>
         <div class="ctx-item" onclick="closeContextMenu(); setFilter('notes', '全局笔记')"><span>查看全局笔记流</span></div>
@@ -463,10 +471,8 @@ function setPaperCategory(paperId, category) {
 }
 
 function promptNewCategoryForPaper(paperId) {
-    const cat = prompt('请输入新分类名称：');
-    if (cat && cat.trim()) {
-        sendBridge({ action: 'setPaperCategory', paperId, category: cat.trim() });
-    }
+    flushPendingMetadata();
+    sendBridge({ action: 'createCategory', paperId });
 }
 
 function openPaperContextMenu(paperId, evt) {
@@ -754,16 +760,14 @@ function renderSidebar() {
 
 function promptCreateNewCategory(evt) {
     if (evt) evt.stopPropagation();
-    const name = prompt('请输入新分类名称：');
-    if (name && name.trim()) {
-        const cat = name.trim();
-        if (!state.categories) state.categories = [];
-        if (!state.categories.includes(cat)) {
-            state.categories.push(cat);
-        }
-        setFilter('cat:' + cat, cat);
-    }
+    flushPendingMetadata();
+    sendBridge({ action: 'createCategory' });
 }
+
+window.onCategoryCreated = function(category) {
+    ui.treeExpanded = true;
+    setFilter('cat:' + category, category);
+};
 
 function renderTagPanelOnly() {
     // Tag panel removed per user request for minimal unit library design
@@ -971,8 +975,8 @@ function renderInspectorInfoTab(bodyEl, p) {
             <button class="btn-hero-read" onclick="openPaperDual('${pidAttr}', event)">
                 中英双栏打开
             </button>
-            <button class="btn-secondary" style="height:34px;padding:0 12px;font-size:13.5px;font-weight:600;" onclick="sendBridge({action:'openPaperLeftPDFRightNote', paperId:'${pidAttr}'})" title="左栏显示论文 PDF，右栏显示可跳转精读笔记">
-                左文右记
+            <button class="btn-secondary" style="height:34px;padding:0 12px;font-size:13.5px;font-weight:600;" onclick="sendBridge({action:'openPaperNotesSidebar', paperId:'${pidAttr}'})" title="打开阅读器，在右侧边栏编辑和预览笔记">
+                右侧笔记
             </button>
             <button class="btn-secondary btn-icon" style="height:34px;width:34px;font-size:16px;color:${p.isFavorite ? '#f59e0b' : 'var(--text-tertiary)'};" onclick="toggleStar('${pidAttr}', event)" title="切换星标收藏">★</button>
         </div>
@@ -1175,7 +1179,7 @@ function renderInspectorNotesTab(bodyEl, p) {
         <div class="note-card" style="border-left:3px solid var(--accent);">
             <div class="note-card-header">
                 <span class="note-page-pill">📝 ${escapeHTML(nd.title)}</span>
-                <button class="btn-secondary" style="height:26px;padding:0 9px;font-size:12px;" onclick="sendBridge({action:'openPaperLeftPDFRightNote', paperId:'${pidAttr}'})">左文右记打开</button>
+                <button class="btn-secondary" style="height:26px;padding:0 9px;font-size:12px;" onclick="sendBridge({action:'openPaperNotesSidebar', paperId:'${pidAttr}'})">打开右侧笔记</button>
             </div>
             <div class="md-body selectable">${renderMarkdownWithMath(nd.markdownContent)}</div>
         </div>
@@ -1185,9 +1189,9 @@ function renderInspectorNotesTab(bodyEl, p) {
         bodyEl.innerHTML = `
             <div style="text-align:center;padding:36px 14px;color:var(--text-secondary);">
                 <div style="font-size:14.5px;font-weight:600;margin-bottom:6px;">该论文暂无高亮或精读笔记</div>
-                <div style="font-size:13px;color:var(--text-tertiary);line-height:1.6;margin-bottom:14px;">进入阅读器后可切换为「左文右记」模式，划选 PDF 文字点击「引用笔记」即可直接创建可跳转链接。</div>
+                <div style="font-size:13px;color:var(--text-tertiary);line-height:1.6;margin-bottom:14px;">论文笔记统一在阅读器右侧边栏编辑；划选 PDF 文字后点击「引用笔记」，即可添加返回原文的链接。</div>
                 <div style="display:flex;justify-content:center;gap:8px;">
-                    <button class="btn-primary" onclick="sendBridge({action:'openPaperLeftPDFRightNote', paperId:'${pidAttr}'})">左文右记打开</button>
+                    <button class="btn-primary" onclick="sendBridge({action:'openPaperNotesSidebar', paperId:'${pidAttr}'})">打开右侧笔记</button>
                     <button class="btn-secondary" onclick="openPaperDual('${pidAttr}', event)">中英双栏打开</button>
                 </div>
             </div>
@@ -1198,7 +1202,7 @@ function renderInspectorNotesTab(bodyEl, p) {
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:6px;">
             <span style="font-size:13px;font-weight:600;color:var(--text-secondary);">${noteDocs.length} 篇笔记 · ${notes.length} 条高亮</span>
             <div style="display:flex;gap:5px;align-items:center;">
-                <button class="btn-secondary" style="height:26px;font-size:12px;" onclick="sendBridge({action:'openPaperLeftPDFRightNote', paperId:'${pidAttr}'})">左文右记</button>
+                <button class="btn-secondary" style="height:26px;font-size:12px;" onclick="sendBridge({action:'openPaperNotesSidebar', paperId:'${pidAttr}'})">右侧笔记</button>
                 <button class="btn-secondary" style="height:26px;font-size:12px;" onclick="sendBridge({action:'revealMarkdown', paperId:'${pidAttr}'})">notes.md</button>
             </div>
         </div>
