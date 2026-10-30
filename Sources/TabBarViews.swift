@@ -1,6 +1,7 @@
 import Cocoa
 import PDFKit
 import JavaScriptCore
+import QuartzCore
 import UniformTypeIdentifiers
 
 // MARK: - NSWindow Extension for Titlebar Double Click Action
@@ -204,7 +205,6 @@ final class NonDraggableStackView: NSStackView {
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         stopDraggingFeedback()
-        super.draggingExited(sender)
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -225,7 +225,10 @@ final class NonDraggableStackView: NSStackView {
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
         stopDraggingFeedback()
-        super.draggingEnded(sender)
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        stopDraggingFeedback()
     }
 
     private var tabViews: [ZoteroTabItemView] {
@@ -362,10 +365,9 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
         didSet {
             guard oldValue != isActiveTab else { return }
             titleLabel.textColor = isActiveTab ? .labelColor : .secondaryLabelColor
-            titleLabel.font = isActiveTab ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: 13.5, weight: .regular)
-            activeIndicator.isHidden = !isActiveTab
+            titleLabel.font = isActiveTab ? .systemFont(ofSize: 13.5, weight: .medium) : .systemFont(ofSize: 13.5, weight: .regular)
             updateCloseButtonAppearance()
-            needsDisplay = true
+            updateTabBackground()
         }
     }
     let isClosable: Bool
@@ -377,13 +379,14 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
     private let iconView = NonDraggableImageView()
     private let titleLabel = NonDraggableTextField(labelWithString: "")
     let closeButton = NSButton()
-    private let activeIndicator = NonDraggableView()
+    private let tabBackgroundLayer = CAShapeLayer()
+    private let dividerLayer = CALayer()
     private var mouseDownLocation: NSPoint?
     private var isDraggingTab = false
     private var isHovered = false {
         didSet {
             updateCloseButtonAppearance()
-            needsDisplay = true
+            updateTabBackground()
         }
     }
 
@@ -427,7 +430,12 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
         self.isClosable = closable
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        focusRingType = .none
         wantsLayer = true
+        layer?.masksToBounds = false
+        layer?.addSublayer(tabBackgroundLayer)
+        layer?.addSublayer(dividerLayer)
+        dividerLayer.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.55).cgColor
 
         setupSubviews(title: title, symbol: symbol, symbolTint: symbolTint)
         toolTip = "拖拽调整标签页位置"
@@ -445,22 +453,15 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
             closeButton.isHidden = true
             return
         }
-        closeButton.isHidden = false
-        closeButton.alphaValue = isActiveTab ? 0.88 : (isHovered ? 0.95 : 0.52)
-        closeButton.contentTintColor = (isActiveTab || isHovered) ? .labelColor : .secondaryLabelColor
+        closeButton.isHidden = !(isActiveTab || isHovered)
+        closeButton.alphaValue = isActiveTab ? 0.72 : 0.9
+        closeButton.contentTintColor = isActiveTab ? .secondaryLabelColor : .labelColor
     }
 
     private func setupSubviews(title: String, symbol: String, symbolTint: NSColor) {
-        activeIndicator.wantsLayer = true
-        activeIndicator.layer?.cornerRadius = 1.5
-        activeIndicator.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
-        activeIndicator.isHidden = !isActiveTab
-        activeIndicator.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(activeIndicator)
-
         iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
         iconView.contentTintColor = symbolTint
-        iconView.symbolConfiguration = .init(pointSize: 14.5, weight: .medium)
+        iconView.symbolConfiguration = .init(pointSize: 13.5, weight: .medium)
         iconView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(iconView)
 
@@ -475,20 +476,15 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
 
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 32),
-            widthAnchor.constraint(greaterThanOrEqualToConstant: isClosable ? 156 : 196),
-            widthAnchor.constraint(lessThanOrEqualToConstant: isClosable ? 270 : 216),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: isClosable ? 104 : 150),
+            widthAnchor.constraint(lessThanOrEqualToConstant: isClosable ? 250 : 190),
 
-            activeIndicator.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
-            activeIndicator.centerXAnchor.constraint(equalTo: centerXAnchor),
-            activeIndicator.widthAnchor.constraint(equalToConstant: 18),
-            activeIndicator.heightAnchor.constraint(equalToConstant: 2.5),
-
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 18),
-            iconView.heightAnchor.constraint(equalToConstant: 18),
+            iconView.widthAnchor.constraint(equalToConstant: 16),
+            iconView.heightAnchor.constraint(equalToConstant: 16),
 
-            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 7),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 5),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
 
@@ -498,6 +494,7 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
             closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "关闭标签页")
             closeButton.symbolConfiguration = .init(pointSize: 10, weight: .bold)
             closeButton.toolTip = "关闭标签页 (⌘W / 中键点击)"
+            closeButton.focusRingType = .none
             closeButton.target = self
             closeButton.action = #selector(closeBtnClicked)
             closeButton.translatesAutoresizingMaskIntoConstraints = false
@@ -505,18 +502,22 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
             updateCloseButtonAppearance()
 
             NSLayoutConstraint.activate([
-                titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -4),
-                closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+                titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -2),
+                closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -3),
                 closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-                closeButton.widthAnchor.constraint(equalToConstant: 22),
-                closeButton.heightAnchor.constraint(equalToConstant: 22)
+                closeButton.widthAnchor.constraint(equalToConstant: 20),
+                closeButton.heightAnchor.constraint(equalToConstant: 20)
             ])
         } else {
             closeButton.isHidden = true
             NSLayoutConstraint.activate([
-                titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14)
+                titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10)
             ])
         }
+
+        setContentHuggingPriority(.defaultLow, for: .horizontal)
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        updateTabBackground()
     }
 
     private func buildTabContextMenu() -> NSMenu {
@@ -536,27 +537,67 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
         return m
     }
 
+    override func layout() {
+        super.layout()
+        updateTabBackground()
+    }
+
     override func updateLayer() {
-        guard let layer = self.layer else { return }
-        layer.cornerRadius = 7
+        updateTabBackground()
+    }
+
+    private func updateTabBackground() {
+        guard let layer, bounds.width > 0, bounds.height > 0 else { return }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        layer.backgroundColor = NSColor.clear.cgColor
+        tabBackgroundLayer.frame = bounds
+
+        let rect = bounds.insetBy(dx: 0.35, dy: 1)
+        let radius: CGFloat = 7
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
+        path.addCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.maxY),
+            control1: CGPoint(x: rect.minX, y: rect.maxY - radius * 0.45),
+            control2: CGPoint(x: rect.minX + radius * 0.45, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.maxY))
+        path.addCurve(
+            to: CGPoint(x: rect.maxX, y: rect.maxY - radius),
+            control1: CGPoint(x: rect.maxX - radius * 0.45, y: rect.maxY),
+            control2: CGPoint(x: rect.maxX, y: rect.maxY - radius * 0.45)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.closeSubpath()
+
+        tabBackgroundLayer.path = path
+        tabBackgroundLayer.lineWidth = 0
         if isActiveTab {
-            layer.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.94).cgColor
-            layer.borderWidth = 0.7
-            layer.borderColor = NSColor.separatorColor.cgColor
+            tabBackgroundLayer.isHidden = false
+            tabBackgroundLayer.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.98).cgColor
+            tabBackgroundLayer.strokeColor = NSColor.clear.cgColor
         } else if isHovered {
-            layer.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.42).cgColor
-            layer.borderWidth = 0.5
-            layer.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
+            tabBackgroundLayer.isHidden = false
+            tabBackgroundLayer.fillColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.34).cgColor
+            tabBackgroundLayer.strokeColor = NSColor.clear.cgColor
         } else {
-            layer.backgroundColor = NSColor.clear.cgColor
-            layer.borderWidth = 0
-            layer.borderColor = nil
+            tabBackgroundLayer.isHidden = true
         }
+
+        dividerLayer.frame = NSRect(x: bounds.maxX - 0.5, y: 8, width: 1, height: max(0, bounds.height - 16))
+        dividerLayer.isHidden = isActiveTab || isHovered
+        dividerLayer.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+
+        CATransaction.commit()
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        needsDisplay = true
+        updateTabBackground()
     }
 
     override func updateTrackingAreas() {

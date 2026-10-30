@@ -22,6 +22,18 @@ struct LLMTranslationResult {
     let translatedMarkdown: String
     let providerLabel: String
     let isRemoteLLM: Bool
+    /// false 表示只有提示或错误，界面不应启用复制译文、插入笔记等结果动作。
+    let isSuccess: Bool
+
+    init(sourceText: String, mode: LLMTranslationMode, translatedMarkdown: String,
+         providerLabel: String, isRemoteLLM: Bool, isSuccess: Bool = true) {
+        self.sourceText = sourceText
+        self.mode = mode
+        self.translatedMarkdown = translatedMarkdown
+        self.providerLabel = providerLabel
+        self.isRemoteLLM = isRemoteLLM
+        self.isSuccess = isSuccess
+    }
 }
 
 final class LLMTranslationService {
@@ -83,7 +95,7 @@ final class LLMTranslationService {
         return !apiKey.isEmpty || isLocalHost
     }
 
-    /// 划词翻译主入口：优先调用已配置的 OpenAI 兼容 LLM 接口；未配置密钥或离线时自动使用双栏上下文与内置学术引擎翻译
+    /// 已配置时调用 OpenAI 兼容接口；离线仅提供明确标识的原文摘录与词典查询。
     @discardableResult
     func translate(
         text: String,
@@ -93,22 +105,22 @@ final class LLMTranslationService {
     ) -> URLSessionDataTask? {
         let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanText.isEmpty else {
-            let emptyRes = LLMTranslationResult(
-                sourceText: text,
-                mode: mode,
-                translatedMarkdown: "未检测到有效划选文本。",
-                providerLabel: "本地引擎",
-                isRemoteLLM: false
-            )
-            completion(emptyRes)
+            completion(translateLocally(text: text, mode: mode))
             return nil
         }
 
-        guard isRemoteConfigured, let url = URL(string: endpointURLString) else {
+        guard isRemoteConfigured else {
             let localResult = translateLocally(text: cleanText, mode: mode, pairedPageText: pairedPageText)
-            DispatchQueue.main.async {
-                completion(localResult)
-            }
+            DispatchQueue.main.async { completion(localResult) }
+            return nil
+        }
+        guard let url = URL(string: endpointURLString),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host != nil else {
+            let failure = remoteFailureResult(text: cleanText, mode: mode, modelName: modelName,
+                                              reason: "API Endpoint 无效，请使用完整的 HTTP 或 HTTPS 接口地址。")
+            DispatchQueue.main.async { completion(failure) }
             return nil
         }
 
@@ -119,8 +131,9 @@ final class LLMTranslationService {
             userPrompt += "\n\n（参考同页对照文本片段：\n\(snippet)\n）"
         }
 
+        let currentModel = modelName
         let payload: [String: Any] = [
-            "model": modelName,
+            "model": currentModel,
             "temperature": 0.2,
             "messages": [
                 ["role": "system", "content": systemPrompt],
@@ -129,8 +142,9 @@ final class LLMTranslationService {
         ]
 
         guard let bodyData = try? JSONSerialization.data(withJSONObject: payload) else {
-            let fallback = translateLocally(text: cleanText, mode: mode, pairedPageText: pairedPageText)
-            DispatchQueue.main.async { completion(fallback) }
+            let failure = remoteFailureResult(text: cleanText, mode: mode, modelName: currentModel,
+                                              reason: "无法编码远程请求。")
+            DispatchQueue.main.async { completion(failure) }
             return nil
         }
 
@@ -142,41 +156,65 @@ final class LLMTranslationService {
         }
         request.httpBody = bodyData
 
-        let currentModel = modelName
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
-            if let data = data,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let choices = json["choices"] as? [[String: Any]],
-               let first = choices.first,
-               let message = first["message"] as? [String: Any],
-               let content = (message["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !content.isEmpty {
-                let res = LLMTranslationResult(
-                    sourceText: cleanText,
-                    mode: mode,
-                    translatedMarkdown: content,
-                    providerLabel: "LLM (\(currentModel))",
-                    isRemoteLLM: true
-                )
-                DispatchQueue.main.async { completion(res) }
-                return
-            }
-
-            // 若远程请求失败，优雅降级至本地学术翻译引擎并提示原因
-            let localFallback = self.translateLocally(text: cleanText, mode: mode, pairedPageText: pairedPageText)
-            let errHint = error?.localizedDescription ?? "接口响应异常"
-            let combined = LLMTranslationResult(
-                sourceText: cleanText,
-                mode: mode,
-                translatedMarkdown: localFallback.translatedMarkdown + "\n\n*（注：远程 LLM 请求未完成 [\(errHint)]，已自动使用内置学术对照引擎生成）*",
-                providerLabel: "内置学术引擎 (离线回退)",
-                isRemoteLLM: false
-            )
-            DispatchQueue.main.async { completion(combined) }
+            let result = self.resultFromRemoteResponse(text: cleanText, mode: mode, modelName: currentModel,
+                                                       data: data, response: response, error: error)
+            DispatchQueue.main.async { completion(result) }
         }
         task.resume()
         return task
+    }
+
+    /// 纯响应处理入口，便于用合成响应验证成功与失败路径，无需发起网络请求。
+    func resultFromRemoteResponse(
+        text: String,
+        mode: LLMTranslationMode,
+        modelName: String,
+        data: Data?,
+        response: URLResponse?,
+        error: Error?
+    ) -> LLMTranslationResult {
+        if let error = error {
+            return remoteFailureResult(text: text, mode: mode, modelName: modelName,
+                                       reason: error.localizedDescription)
+        }
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return remoteFailureResult(text: text, mode: mode, modelName: modelName,
+                                       reason: "未收到有效的 HTTP 响应。")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            return remoteFailureResult(text: text, mode: mode, modelName: modelName,
+                                       reason: "接口返回 HTTP \(httpResponse.statusCode)。")
+        }
+        guard let data = data,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = (message["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !content.isEmpty else {
+            return remoteFailureResult(text: text, mode: mode, modelName: modelName,
+                                       reason: "接口响应未包含有效的文本内容。")
+        }
+        return LLMTranslationResult(
+            sourceText: text,
+            mode: mode,
+            translatedMarkdown: content,
+            providerLabel: "远程 LLM (\(modelName))",
+            isRemoteLLM: true
+        )
+    }
+
+    private func remoteFailureResult(text: String, mode: LLMTranslationMode, modelName: String,
+                                     reason: String) -> LLMTranslationResult {
+        return LLMTranslationResult(
+            sourceText: text,
+            mode: mode,
+            translatedMarkdown: "### 远程 LLM 请求失败\n\n\(reason)\n\n未生成处理结果。请检查接口地址、模型及 API Key 后重试。离线仅支持原文摘录摘要和内置词典查询。",
+            providerLabel: "远程 LLM 请求失败 (\(modelName))",
+            isRemoteLLM: false,
+            isSuccess: false
+        )
     }
 
     private func buildSystemPrompt(for mode: LLMTranslationMode) -> String {
@@ -192,143 +230,64 @@ final class LLMTranslationService {
         }
     }
 
-    /// 内置离线学术翻译与同页双语对齐引擎（无需网络或未配置 API Key 时亦可即刻工作）
+    /// 离线仅提供原文摘录和内置词典查询，不生成通用译文或公式解析。
+    /// pairedPageText 为兼容现有调用保留；离线不将同页片段冒充已对齐译文。
     func translateLocally(
         text: String,
         mode: LLMTranslationMode,
         pairedPageText: String? = nil
     ) -> LLMTranslationResult {
-        let normalized = text
-            .replacingOccurrences(of: "-\n", with: "")
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let containsChinese = normalized.range(of: "\\p{Han}", options: .regularExpression) != nil
-
-        // 1. 尝试从同页配对译文 PDF 提取对应段落
-        let matchedPairedSnippet = extractAlignedSnippetFromPairedPage(source: normalized, pairedPageText: pairedPageText)
-
-        // 2. 匹配核心学术术语词典
-        let detectedTerms = matchAcademicGlossary(in: normalized)
-
-        // 3. 生成句法级中文学术直译
-        let directTranslated = synthesizeAcademicTranslation(from: normalized, isSourceChinese: containsChinese)
-        let primaryTranslation: String
-        if let paired = matchedPairedSnippet, !containsChinese {
-            // 当存在同页对应位置的中文版译文时，若句法直译仍残留较多未译英文词，优先以同页完整中文译文为主体
-            let remainingEnglishWords = directTranslated
-                .components(separatedBy: CharacterSet.letters.inverted)
-                .filter { $0.count >= 4 && !["MLA", "MoE", "MTP", "BLEU", "WMT", "GPU", "GPUs"].contains($0) }
-            if remainingEnglishWords.count >= 4 {
-                primaryTranslation = paired
-            } else {
-                primaryTranslation = directTranslated
-            }
-        } else {
-            primaryTranslation = directTranslated
+        let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanText.isEmpty else {
+            return LLMTranslationResult(sourceText: text, mode: mode,
+                                        translatedMarkdown: "未检测到有效划选文本。",
+                                        providerLabel: "未处理（空文本）", isRemoteLLM: false, isSuccess: false)
         }
 
-        var output = ""
+        let output: String
+        let provider: String
+        let isSuccess: Bool
         switch mode {
-        case .academicChinese:
-            output += primaryTranslation
-            if let paired = matchedPairedSnippet, !containsChinese, primaryTranslation != paired {
-                output += "\n\n**同页译本对照**\n> \(paired)"
-            }
-            if !detectedTerms.isEmpty {
-                let termsLine = detectedTerms.map { "`\($0.en)` → \($0.zh)" }.joined(separator: " ｜ ")
-                output += "\n\n**核心术语**：\(termsLine)"
-            }
-
-        case .explainAndFormula:
-            output += "### 1. 学术精译\n\(primaryTranslation)\n\n"
-            if let paired = matchedPairedSnippet, primaryTranslation != paired {
-                output += "> **同页译本参考**：\(paired)\n\n"
-            }
-            output += "### 2. 术语与公式解析\n"
-            if !detectedTerms.isEmpty {
-                for term in detectedTerms {
-                    output += "- **\(term.zh)** (`\(term.en)`): \(term.explanation)\n"
-                }
-            } else {
-                output += "- **句法结构**: 该段落阐述了论文中的关键方法假设或实验分析结论。\n"
-            }
-            if let formulaNote = detectFormulaHint(in: normalized) {
-                output += "- **数学符号说明**: \(formulaNote)\n"
-            }
+        case .academicChinese, .englishPolish:
+            output = "### 需要配置远程 LLM\n\n\(mode.displayName)需要可用的远程 LLM 服务。离线模式不提供通用翻译或润色；请在 AI 翻译设置中配置接口、模型及所需的 API Key 后重试。"
+            provider = "未生成译文或译写（需配置远程 LLM）"
+            isSuccess = false
 
         case .conciseSummary:
-            output += "**核心要点提炼**\n"
-            output += "- **核心表述**: \(primaryTranslation)\n"
-            if !detectedTerms.isEmpty {
-                output += "- **涉及关键概念**: \(detectedTerms.map { "\($0.zh) (\($0.en))" }.joined(separator: "、"))\n"
-            }
-            if let paired = matchedPairedSnippet, primaryTranslation != paired {
-                output += "- **对应页上下文**: \(paired)\n"
-            }
+            let sentences = extractSummarySentences(from: cleanText)
+            let excerpts = sentences.map { sentence in
+                sentence.components(separatedBy: .newlines).map { "> \($0)" }.joined(separator: "\n")
+            }.joined(separator: "\n\n")
+            output = sentences.isEmpty
+                ? "### 离线原文摘录\n\n未识别到可摘录的原文句子，请调整选区后重试。"
+                : "### 离线提取式摘要（原文摘录）\n\n按原文顺序摘取前 \(sentences.count) 句，保留原文语言；未翻译、改写或推断。\n\n" + excerpts
+            provider = "离线提取式摘要（原文摘录，非翻译）"
+            isSuccess = !sentences.isEmpty
 
-        case .englishPolish:
-            if containsChinese {
-                output += "**Academic English Rendering:**\n\(directTranslated)"
-            } else {
-                output += "**Polished Academic Expression:**\n\(normalized)"
-            }
+        case .explainAndFormula:
+            let detectedTerms = matchAcademicGlossary(in: cleanText)
+            let entries = detectedTerms.map { "- **\($0.zh)** (`\($0.en)`)：\($0.explanation)" }
+            let glossaryText = entries.isEmpty ? "未命中内置术语词典。离线无法解析此选段。" : entries.joined(separator: "\n")
+            output = "### 离线术语查询（内置词典）\n\n以下仅为命中术语的固定词典释义，不是对当前论文的上下文解析。\n\n\(glossaryText)\n\n通用翻译、符号含义与公式推导需配置远程 LLM 服务后重试。"
+            provider = "离线词典查询（公式解析需远程 LLM）"
+            isSuccess = !detectedTerms.isEmpty
         }
 
-        return LLMTranslationResult(
-            sourceText: normalized,
-            mode: mode,
-            translatedMarkdown: output.trimmingCharacters(in: .whitespacesAndNewlines),
-            providerLabel: matchedPairedSnippet != nil ? "内置双语对齐 + 学术引擎" : "内置学术翻译引擎 (可配置远程 LLM)",
-            isRemoteLLM: false
-        )
+        return LLMTranslationResult(sourceText: cleanText, mode: mode, translatedMarkdown: output,
+                                    providerLabel: provider, isRemoteLLM: false, isSuccess: isSuccess)
     }
 
-    private func extractAlignedSnippetFromPairedPage(source: String, pairedPageText: String?) -> String? {
-        guard let rawPage = pairedPageText?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !rawPage.isEmpty else { return nil }
-        let lines = rawPage
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { line in
-                guard line.count >= 2 else { return false }
-                let low = line.lowercased()
-                if low.contains("deepseek-v3 technical report") { return false }
-                if PDFMetadataExtractor.isBoilerplateHeaderLine(line) { return false }
-                // 过滤纯页码行
-                if Int(line) != nil { return false }
-                return true
-            }
-        guard !lines.isEmpty else { return nil }
-
-        // 若传入的已经是按空间坐标对齐提取的局部段落（而非整页长文本），直接合并其中的有效行返回完整段落
-        if rawPage.count <= 950 {
-            let joined = lines.joined(separator: " ")
-                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if joined.count >= 4 {
-                return String(joined.prefix(560))
-            }
+    /// 提取原文前若干句，保持句内文本不变，不做翻译、替换或语义生成。
+    func extractSummarySentences(from text: String, limit: Int = 3) -> [String] {
+        guard limit > 0 else { return [] }
+        var sentences: [String] = []
+        text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: .bySentences) { sentence, _, _, stop in
+            guard let sentence = sentence?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !sentence.isEmpty else { return }
+            sentences.append(sentence)
+            if sentences.count >= limit { stop = true }
         }
-
-        // 若传入的是整页文本，优先定位含相同数字编号/公式编号的行及其上下文窗口
-        let numbers = source.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { $0.count >= 1 }
-        if let firstNum = numbers.first,
-           let matchIdx = lines.firstIndex(where: { $0.contains(firstNum) && $0.range(of: "\\p{Han}", options: .regularExpression) != nil }) {
-            let start = max(0, matchIdx - 1)
-            let end = min(lines.count - 1, matchIdx + 3)
-            let windowText = lines[start...end].joined(separator: " ")
-            return String(windowText.prefix(420))
-        }
-
-        // 否则选取同页中中文密度较高的核心段落作为对照参考
-        let chineseLines = lines.filter { $0.range(of: "\\p{Han}", options: .regularExpression) != nil }
-        if !chineseLines.isEmpty {
-            let joined = chineseLines.prefix(5).joined(separator: " ")
-            return String(joined.prefix(420))
-        }
-        return nil
+        return sentences
     }
 
     private struct GlossaryEntry {
@@ -364,116 +323,18 @@ final class LLMTranslationService {
     ]
 
     private func matchAcademicGlossary(in text: String) -> [GlossaryEntry] {
-        let lower = text.lowercased()
-        var matched: [GlossaryEntry] = []
-        for item in Self.glossary {
-            if lower.contains(item.en.lowercased()) {
-                matched.append(item)
-            }
+        let normalized = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return Self.glossary.filter { item in
+            let pattern = "(?<![\\p{L}\\p{N}_])" + NSRegularExpression.escapedPattern(for: item.en) + "(?![\\p{L}\\p{N}_])"
+            return normalized.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
         }
-        return matched
-    }
-
-    private func detectFormulaHint(in text: String) -> String? {
-        if text.contains("softmax") || text.contains("sqrt") || text.contains("Q") && text.contains("K") {
-            return "包含注意力缩放点积形式 $\\text{Attention}(Q,K,V) = \\text{softmax}\\left(\\frac{QK^\\top}{\\sqrt{d_k}}\\right)V$。"
-        }
-        if text.contains("sum") || text.contains("∑") || text.contains("_i") {
-            return "包含对索引项 $i$ 的加权求和聚合表达式 $\\sum_{i} g_i \\cdot f_i(x)$。"
-        }
-        return nil
-    }
-
-    private func synthesizeAcademicTranslation(from text: String, isSourceChinese: Bool) -> String {
-        if isSourceChinese {
-            var en = text
-            let zhToEn: [(String, String)] = [
-                ("多头潜在注意力", "Multi-head Latent Attention (MLA)"),
-                ("混合专家", "Mixture-of-Experts (MoE)"),
-                ("无辅助损失", "auxiliary-loss-free"),
-                ("负载均衡", "load balancing"),
-                ("多词元预测", "Multi-Token Prediction (MTP)"),
-                ("键值缓存", "KV cache"),
-                ("推理", "inference"),
-                ("预训练", "pre-training"),
-                ("注意力机制", "attention mechanism"),
-                ("表现", "performance"),
-                ("架构", "architecture")
-            ]
-            for (zh, rep) in zhToEn {
-                en = en.replacingOccurrences(of: zh, with: " \(rep) ")
-            }
-            return en.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
-        }
-
-        // 英文转流畅中文学术表述
-        var result = text
-        let phraseReplacements: [(String, String)] = [
-            ("We present", "本文提出"),
-            ("we present", "本文提出"),
-            ("We propose", "我们提出了"),
-            ("we propose", "我们提出了"),
-            ("We introduce", "我们引入了"),
-            ("we introduce", "我们引入了"),
-            ("In addition,", "此外，"),
-            ("Furthermore,", "进一步地，"),
-            ("Moreover,", "此外，"),
-            ("Specifically,", "具体而言，"),
-            ("To address this issue,", "为解决这一问题，"),
-            ("Compared with", "与……相比，"),
-            ("experimental results", "实验结果"),
-            ("demonstrate that", "表明"),
-            ("significantly reduces", "显著降低了"),
-            ("while maintaining", "同时保持了"),
-            ("strong performance", "优异的性能表现"),
-            ("Multi-head Latent Attention (MLA)", "多头潜在注意力机制 (MLA)"),
-            ("Multi-head Latent Attention", "多头潜在注意力机制 (MLA)"),
-            ("Mixture-of-Experts (MoE)", "混合专家架构 (MoE)"),
-            ("Mixture-of-Experts", "混合专家架构 (MoE)"),
-            ("auxiliary-loss-free strategy", "无辅助损失策略"),
-            ("auxiliary-loss-free", "无辅助损失"),
-            ("load balancing", "负载均衡"),
-            ("Multi-Token Prediction (MTP)", "多词元预测 (MTP)"),
-            ("Multi-Token Prediction", "多词元预测 (MTP)"),
-            ("efficient inference", "高效推理"),
-            ("cost-effective training", "高性价比训练"),
-            ("low-rank joint compression", "低秩联合压缩"),
-            ("key-value (KV) cache", "键值 (KV) 缓存"),
-            ("KV cache", "KV 键值缓存"),
-            ("activatedFor each token", "针对每个词元激活"),
-            ("for each token", "针对每个词元"),
-            ("training objective", "训练目标"),
-            ("pre-training", "预训练"),
-            ("post-training", "后训练"),
-            ("reinforcement learning", "强化学习")
-        ]
-
-        for (en, zh) in phraseReplacements {
-            result = result.replacingOccurrences(of: en, with: zh, options: [.caseInsensitive])
-        }
-
-        let wordCount = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
-        if wordCount <= 5 {
-            let shortTermReplacements: [(String, String)] = [
-                ("architecture", "模型架构"),
-                ("parameters", "参数"),
-                ("performance", "性能"),
-                ("inference", "推理"),
-                ("training", "训练"),
-                ("attention", "注意力")
-            ]
-            for (en, zh) in shortTermReplacements {
-                result = result.replacingOccurrences(of: en, with: zh, options: [.caseInsensitive])
-            }
-        }
-        return result
     }
 
     // MARK: - Native LLM API Configuration Dialog
     func presentSettingsModal(from window: NSWindow?, onSaved: (() -> Void)? = nil) {
         let alert = NSAlert()
         alert.messageText = "配置划词 AI 翻译 (OpenAI / DeepSeek / Ollama 兼容接口)"
-        alert.informativeText = "支持任意 OpenAI `/v1/chat/completions` 兼容接口（如 DeepSeek、OpenAI、Qwen、Kimi 或本地 Ollama）。留空 API Key 时将自动使用内置双语对齐与学术翻译引擎。"
+        alert.informativeText = "支持 OpenAI Chat Completions 兼容接口（DeepSeek、OpenAI、Qwen、Kimi 或本地 Ollama）。API Key 留空时读取环境变量；localhost/127.0.0.1 接口可免密钥。未配置服务时仅提供原文摘录摘要和内置词典查询，通用翻译、译写与公式解析需配置可用服务；请求失败会显示错误。"
         alert.addButton(withTitle: "保存设置")
         alert.addButton(withTitle: "填充 DeepSeek 预设")
         alert.addButton(withTitle: "取消")
@@ -491,7 +352,7 @@ final class LLMTranslationService {
         keyLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         keyLabel.frame = NSRect(x: 0, y: 56, width: 95, height: 20)
         let keyField = NSSecureTextField(frame: NSRect(x: 98, y: 54, width: 342, height: 24))
-        keyField.placeholderString = "sk-... (留空则使用环境变量或离线学术引擎)"
+        keyField.placeholderString = "sk-...（留空读取环境变量；本地接口可免密钥）"
         keyField.stringValue = UserDefaults.standard.string(forKey: apiKeyKey) ?? ""
 
         let modelLabel = NSTextField(labelWithString: "模型名称:")

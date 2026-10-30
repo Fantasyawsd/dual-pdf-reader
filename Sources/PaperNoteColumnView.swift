@@ -1,9 +1,8 @@
 import Cocoa
 import WebKit
 
-/// 嵌入在阅读器单栏（如左栏论文、右栏笔记）中的交互式 Markdown + LaTeX 论文笔记视图
+/// 阅读器右侧边栏中的 Markdown + LaTeX 论文笔记编辑器。
 final class PaperNoteColumnView: NSView, NSTextViewDelegate, WKScriptMessageHandler, WKNavigationDelegate {
-    var onSelectNoteId: ((String) -> Void)?
     var onCreateNewNoteRequested: (() -> Void)?
     var onDeleteCurrentNoteRequested: ((String) -> Void)?
     var onNoteContentChanged: ((PaperNoteDocument) -> Void)?
@@ -17,7 +16,7 @@ final class PaperNoteColumnView: NSView, NSTextViewDelegate, WKScriptMessageHand
     private let insertJumpLinkBtn = NSButton()
     private let newNoteBtn = NSButton()
     private let deleteNoteBtn = NSButton()
-    private let layoutSeg = NSSegmentedControl(labels: ["分栏", "预览", "编辑"], trackingMode: .selectOne, target: nil, action: nil)
+    private let layoutSeg = NSSegmentedControl(labels: ["上下", "预览", "编辑"], trackingMode: .selectOne, target: nil, action: nil)
 
     private let splitView = NSSplitView()
     private let editorContainer = NSView()
@@ -51,7 +50,7 @@ final class PaperNoteColumnView: NSView, NSTextViewDelegate, WKScriptMessageHand
     }
 
     private func setupUI() {
-        // 1. 单层极简笔记工具栏（左侧预留空间给栏角标 cornerBadge，消除双层工具栏与重复下拉框）
+        // 两行工具栏适配右侧边栏宽度。
         headerBar.material = .headerView
         headerBar.blendingMode = .withinWindow
         headerBar.translatesAutoresizingMaskIntoConstraints = false
@@ -63,11 +62,12 @@ final class PaperNoteColumnView: NSView, NSTextViewDelegate, WKScriptMessageHand
         insertJumpLinkBtn.imagePosition = .imageLeading
         insertJumpLinkBtn.title = " 引用选中"
         insertJumpLinkBtn.contentTintColor = .controlAccentColor
-        insertJumpLinkBtn.toolTip = "将另一栏 PDF 中当前选中的文字（或当前页码）作为可点击跳转链接插入笔记"
+        insertJumpLinkBtn.toolTip = "将当前 PDF 中选中的文字（或当前页码）作为可点击跳转链接插入笔记"
         insertJumpLinkBtn.target = self
         insertJumpLinkBtn.action = #selector(insertJumpLinkBtnClicked)
 
         var barViews: [NSView] = [insertJumpLinkBtn]
+        var formattingViews: [NSView] = []
         let snippets: [(title: String, snippet: String)] = [
             ("H2", "\n## 章节笔记\n"),
             ("B", "**重点**"),
@@ -80,7 +80,7 @@ final class PaperNoteColumnView: NSView, NSTextViewDelegate, WKScriptMessageHand
             b.controlSize = .small
             b.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
             b.identifier = NSUserInterfaceItemIdentifier(item.snippet)
-            barViews.append(b)
+            formattingViews.append(b)
         }
 
         let headerSpacer = NSView()
@@ -110,13 +110,17 @@ final class PaperNoteColumnView: NSView, NSTextViewDelegate, WKScriptMessageHand
         layoutSeg.action = #selector(layoutSegChanged)
         layoutSeg.translatesAutoresizingMaskIntoConstraints = false
         layoutSeg.widthAnchor.constraint(equalToConstant: 114).isActive = true
-        barViews.append(layoutSeg)
+        formattingViews.append(layoutSeg)
 
-        let headerStack = NSStackView(views: barViews)
-        headerStack.orientation = .horizontal
-        headerStack.alignment = .centerY
+        let actionsRow = NSStackView(views: barViews)
+        actionsRow.spacing = 5
+        let formattingRow = NSStackView(views: formattingViews)
+        formattingRow.spacing = 5
+        let headerStack = NSStackView(views: [actionsRow, formattingRow])
+        headerStack.orientation = .vertical
+        headerStack.alignment = .leading
         headerStack.spacing = 5
-        headerStack.edgeInsets = NSEdgeInsets(top: 5, left: 118, bottom: 5, right: 10)
+        headerStack.edgeInsets = NSEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
         headerStack.translatesAutoresizingMaskIntoConstraints = false
         headerBar.addSubview(headerStack)
 
@@ -245,12 +249,10 @@ final class PaperNoteColumnView: NSView, NSTextViewDelegate, WKScriptMessageHand
         task.cancel()
         saveDebounceTask = nil
         guard var note = currentNote else { return }
-        if note.markdownContent != editorTextView.string {
-            note.markdownContent = editorTextView.string
-            note.updatedAt = Date()
-            currentNote = note
-            onNoteContentChanged?(note)
-        }
+        note.markdownContent = editorTextView.string
+        note.updatedAt = Date()
+        currentNote = note
+        onNoteContentChanged?(note)
     }
 
     func textDidChange(_ notification: Notification) {

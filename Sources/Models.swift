@@ -199,27 +199,13 @@ struct PaperNoteDocument: Codable, Identifiable, Equatable {
     var updatedAt: Date = Date()
 }
 
+/// PDF 栏仅支持当前论文的 PDF；笔记由右侧边栏管理。
 enum ColumnContentSource: Equatable {
-    case pdf(id: String)   // "original", "translated", or PaperPDFDocument.id
-    case note(id: String)  // "main" or PaperNoteDocument.id
+    case pdf(id: String)
 
-    var isPDF: Bool {
-        if case .pdf = self { return true }
-        return false
-    }
-
-    var isNote: Bool {
-        if case .note = self { return true }
-        return false
-    }
-
+    var isPDF: Bool { true }
     var pdfId: String? {
         if case .pdf(let id) = self { return id }
-        return nil
-    }
-
-    var noteId: String? {
-        if case .note(let id) = self { return id }
         return nil
     }
 }

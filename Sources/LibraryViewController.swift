@@ -82,7 +82,7 @@ final class LibraryWorkspaceWebView: WKWebView {
 // MARK: - Modern Koodo Reader + Zotero 7 Library View Controller
 final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKNavigationDelegate {
     var onOpenPaperInTab: ((String, PaperAnnotation?) -> Void)?
-    var onOpenPaperInLeftPDFRightNoteMode: ((String) -> Void)?
+    var onOpenPaperNotesSidebar: ((String) -> Void)?
     var onOpenPaperAndJumpURL: ((String, String) -> Void)?
     var onEditAnnotationInTab: ((String, PaperAnnotation) -> Void)?
 
@@ -446,6 +446,45 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         }
     }
 
+    static func metadataTags(from value: Any?) -> [String]? {
+        let values: [String]
+        if let tags = value as? [String] { values = tags }
+        else if let tags = value as? String { values = [tags] }
+        else { return nil }
+        return values.flatMap { $0.components(separatedBy: CharacterSet(charactersIn: ",，")) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "^#", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func presentCreateCategoryDialog(moving paperId: String?) {
+        let store = LibraryStore.shared
+        if let paperId = paperId, store.paper(withId: paperId) == nil { return }
+        let alert = NSAlert()
+        alert.messageText = "新建分类"
+        alert.informativeText = paperId == nil ? "输入分类名称；空分类也会保存在当前文献库中。" : "输入分类名称，并将当前论文移动到该分类。"
+        alert.addButton(withTitle: "创建")
+        alert.addButton(withTitle: "取消")
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        input.placeholderString = "分类名称"
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let category = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard store.createCategory(category) else { return }
+        if let paperId = paperId, var paper = store.paper(withId: paperId) {
+            paper.category = category
+            guard store.savePaper(paper, notify: true) else {
+                refreshAllUI()
+                return
+            }
+        }
+        refreshAllUI()
+        if paperId == nil, let data = try? JSONEncoder().encode(category),
+           let json = String(data: data, encoding: .utf8) {
+            webView.evaluateJavaScript("window.onCategoryCreated && window.onCategoryCreated(\(json));", completionHandler: nil)
+        }
+    }
+
     // MARK: - JavaScript Bridge Message Handler
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "libraryBridge",
@@ -466,10 +505,10 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
                 onOpenPaperInTab?(pid, nil)
             }
 
-        case "openPaperLeftPDFRightNote":
+        case "openPaperNotesSidebar":
             if let pid = body["paperId"] as? String {
                 selectedPaperId = pid
-                if let handler = onOpenPaperInLeftPDFRightNoteMode {
+                if let handler = onOpenPaperNotesSidebar {
                     handler(pid)
                 } else {
                     onOpenPaperInTab?(pid, nil)
@@ -541,12 +580,7 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
                 let c = category.trimmingCharacters(in: .whitespacesAndNewlines)
                 paper.category = c.isEmpty ? "默认分类" : c
             }
-            if let tagsStr = body["tags"] as? String {
-                paper.tags = tagsStr
-                    .components(separatedBy: ",")
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "^#", with: "", options: .regularExpression) }
-                    .filter { !$0.isEmpty }
-            }
+            if let tags = Self.metadataTags(from: body["tags"]) { paper.tags = tags }
             if let aid = body["arxivId"] as? String {
                 let cleanAid = aid.trimmingCharacters(in: .whitespacesAndNewlines)
                 paper.arxivId = cleanAid.isEmpty ? nil : cleanAid
@@ -607,7 +641,8 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
                     "transName": pendingModalTransURL?.lastPathComponent ?? "",
                     "title": meta?.title ?? "",
                     "authors": meta?.authors ?? "",
-                    "year": meta?.year ?? String(Calendar.current.component(.year, from: Date()))
+                    "year": meta?.year ?? String(Calendar.current.component(.year, from: Date())),
+                    "arxivId": meta?.arxivId ?? ""
                 ]
                 if let data = try? JSONEncoder().encode(resp), let json = String(data: data, encoding: .utf8) {
                     webView.evaluateJavaScript("window.onModalPDFsPicked && window.onModalPDFsPicked(\(json));", completionHandler: nil)
@@ -639,12 +674,16 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
                 venue: rawVenue.isEmpty ? "arXiv" : rawVenue,
                 category: rawCategory.isEmpty ? "默认分类" : rawCategory,
                 tags: tags,
+                arxivId: (body["arxivId"] as? String).flatMap { ArxivMetadataService.normalizeArxivId($0) } ?? extracted?.arxivId,
                 originalSourceURL: pendingModalOrigURL,
                 translatedSourceURL: pendingModalTransURL
             ) else { return }
             pendingModalOrigURL = nil
             pendingModalTransURL = nil
             selectedPaperId = created.id
+            if let arxivId = created.cleanArxivId {
+                store.refreshPaperArxivMetadata(paperId: created.id, arxivId: arxivId, completion: nil)
+            }
             onOpenPaperInTab?(created.id, nil)
 
         case "revealFolder":
@@ -820,6 +859,9 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         case "openInNewWindow":
             guard let pid = body["paperId"] as? String else { return }
             StandaloneReaderWindowManager.shared.openWindow(for: pid)
+
+        case "createCategory":
+            presentCreateCategoryDialog(moving: body["paperId"] as? String)
 
         case "setPaperCategory":
             guard let pid = body["paperId"] as? String,

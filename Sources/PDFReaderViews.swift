@@ -223,7 +223,7 @@ final class InteractivePDFView: PDFView {
     }
 }
 
-// MARK: - Single Column Wrapper (Supports Any PDF or Note Document in the Current Paper Collection)
+// MARK: - Single Column Wrapper (Supports Any PDF in the Current Paper Collection)
 final class CleanPDFColumnView: NSView {
     let side: PDFSide
     var contentSource: ColumnContentSource
@@ -232,7 +232,6 @@ final class CleanPDFColumnView: NSView {
     }
 
     let pdfView = InteractivePDFView()
-    let noteColumnView = PaperNoteColumnView()
     private let emptyPlaceholder = NSView()
     private let dropCard = ModernSurfaceCardView()
     private let cornerBadge = NSVisualEffectView()
@@ -250,7 +249,6 @@ final class CleanPDFColumnView: NSView {
     var onSelectColumnSource: ((ColumnContentSource) -> Void)?
     var onAddAdditionalPDFRequested: (() -> Void)?
     var onRemoveAdditionalPDFRequested: ((String) -> Void)?
-    var onCreateNoteRequested: (() -> Void)?
 
     var onBindPDFRequested: ((PDFSide) -> Void)?
     var onRevealPDFInFinder: ((PDFSide) -> Void)?
@@ -282,7 +280,7 @@ final class CleanPDFColumnView: NSView {
         pdfView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(pdfView)
 
-        // 左上角极简半透明栏标识胶囊（点击可切换此栏显示的论文集 PDF 或笔记）
+        // 左上角极简半透明栏标识胶囊（点击可切换此栏显示的论文集 PDF）
         cornerBadge.material = .menu
         cornerBadge.blendingMode = .withinWindow
         cornerBadge.wantsLayer = true
@@ -298,7 +296,7 @@ final class CleanPDFColumnView: NSView {
         cornerButton.font = .systemFont(ofSize: 12.5, weight: .semibold)
         cornerButton.contentTintColor = .labelColor
         cornerButton.title = side == .original ? "原文 EN ▾" : "译文 ZH ▾"
-        cornerButton.toolTip = "点击切换此栏 PDF 或论文笔记"
+        cornerButton.toolTip = "点击切换此栏 PDF"
         cornerButton.target = self
         cornerButton.action = #selector(cornerBadgeClicked(_:))
         cornerButton.translatesAutoresizingMaskIntoConstraints = false
@@ -353,11 +351,7 @@ final class CleanPDFColumnView: NSView {
         emptyBindButton.bezelStyle = .rounded
         emptyBindButton.controlSize = .regular
 
-        let switchToNoteBtn = NSButton(title: "📝 在此栏打开论文笔记", target: self, action: #selector(quickSwitchToNoteClicked))
-        switchToNoteBtn.bezelStyle = .rounded
-        switchToNoteBtn.controlSize = .small
-
-        let stack = NSStackView(views: [iconView, emptyTitleLabel, subLbl, emptyBindButton, switchToNoteBtn])
+        let stack = NSStackView(views: [iconView, emptyTitleLabel, subLbl, emptyBindButton])
         stack.orientation = .vertical
         stack.spacing = 9
         stack.alignment = .centerX
@@ -366,11 +360,6 @@ final class CleanPDFColumnView: NSView {
         emptyPlaceholder.addSubview(dropCard)
 
         addSubview(emptyPlaceholder)
-
-        // 嵌入式论文精读笔记视图（当此栏切换为笔记模式时显示）
-        noteColumnView.isHidden = true
-        noteColumnView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(noteColumnView)
 
         // 确保左上角切换胶囊与返回胶囊始终位于最上层
         addSubview(cornerBadge)
@@ -381,11 +370,6 @@ final class CleanPDFColumnView: NSView {
             pdfView.leadingAnchor.constraint(equalTo: leadingAnchor),
             pdfView.trailingAnchor.constraint(equalTo: trailingAnchor),
             pdfView.bottomAnchor.constraint(equalTo: bottomAnchor),
-
-            noteColumnView.topAnchor.constraint(equalTo: topAnchor),
-            noteColumnView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            noteColumnView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            noteColumnView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
             cornerBadge.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             cornerBadge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
@@ -477,39 +461,19 @@ final class CleanPDFColumnView: NSView {
         switch source {
         case .pdf(let pdfId):
             pdfView.activePDFDocumentId = pdfId
-            noteColumnView.isHidden = true
             pdfView.isHidden = !hasPDFDocument
             emptyPlaceholder.isHidden = hasPDFDocument
             let title = paper?.pdfTitle(for: pdfId) ?? (side == .original ? "原文 EN" : "译文 ZH")
             cornerButton.title = "\(title) ▾"
-            cornerButton.toolTip = "点击切换此栏显示的论文集 PDF 或论文笔记"
+            cornerButton.toolTip = "点击切换此栏显示的论文集 PDF"
             emptyTitleLabel.stringValue = "尚未绑定 \(title)"
             emptyBindButton.title = "选择 \(title) 文件…"
 
-        case .note(let noteId):
-            pdfView.isHidden = true
-            emptyPlaceholder.isHidden = true
-            backJumpBanner.isHidden = true
-            noteColumnView.isHidden = false
-            let notes = paper?.effectiveNoteDocuments ?? []
-            let activeNote = notes.first(where: { $0.id == noteId }) ?? notes.first
-            if let activeNote = activeNote {
-                noteColumnView.loadNote(activeNote, allNotes: notes)
-                cornerButton.title = "📝 \(activeNote.title) ▾"
-            } else {
-                cornerButton.title = "📝 精读笔记 ▾"
-            }
-            cornerButton.toolTip = "点击切换此栏显示的论文笔记或本论文集 PDF"
         }
     }
 
     @objc private func bindBtnClicked() {
         onBindPDFRequested?(side)
-    }
-
-    @objc private func quickSwitchToNoteClicked() {
-        let firstNoteId = currentPaperProvider?()?.effectiveNoteDocuments.first?.id ?? "main"
-        onSelectColumnSource?(.note(id: firstNoteId))
     }
 
     @objc private func cornerBadgeClicked(_ sender: NSButton) {
@@ -542,26 +506,6 @@ final class CleanPDFColumnView: NSView {
 
         menu.addItem(.separator())
 
-        // 2. 本论文的精读笔记列表
-        let noteHeader = NSMenuItem(title: "本论文精读笔记 (支持可跳转引用)", action: nil, keyEquivalent: "")
-        noteHeader.isEnabled = false
-        menu.addItem(noteHeader)
-
-        let notes = paper?.effectiveNoteDocuments ?? []
-        for noteDoc in notes {
-            let item = NSMenuItem(title: "📝 \(noteDoc.title)", action: #selector(selectNoteMenuItem(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = noteDoc.id
-            if case .note(let curNoteId) = contentSource, curNoteId == noteDoc.id {
-                item.state = .on
-            }
-            menu.addItem(item)
-        }
-
-        let addNoteItem = NSMenuItem(title: "＋ 新建本论文笔记…", action: #selector(createNoteMenuItemClicked), keyEquivalent: "")
-        addNoteItem.target = self
-        menu.addItem(addNoteItem)
-
         // 3. 当前 PDF 文件管理操作
         if case .pdf(let curPDFId) = contentSource {
             menu.addItem(.separator())
@@ -589,17 +533,8 @@ final class CleanPDFColumnView: NSView {
         onSelectColumnSource?(.pdf(id: pdfId))
     }
 
-    @objc private func selectNoteMenuItem(_ sender: NSMenuItem) {
-        guard let noteId = sender.representedObject as? String else { return }
-        onSelectColumnSource?(.note(id: noteId))
-    }
-
     @objc private func addExtraPDFMenuItemClicked() {
         onAddAdditionalPDFRequested?()
-    }
-
-    @objc private func createNoteMenuItemClicked() {
-        onCreateNoteRequested?()
     }
 
     @objc private func removeExtraPDFMenuItemClicked(_ sender: NSMenuItem) {

@@ -7,6 +7,7 @@ final class MultiTabMainWindowController: NSWindowController {
     let tabBarDocumentView = DraggableTabDocumentView()
     let tabBarStack = NonDraggableStackView()
     private let contentHostView = NSView()
+    private let newTabButton = NSButton()
 
     let libraryVC = LibraryViewController()
     private var openReaderTabs: [String: ReaderTabViewController] = [:]
@@ -77,35 +78,31 @@ final class MultiTabMainWindowController: NSWindowController {
         tabBarScrollView.documentView = tabBarDocumentView
 
         tabBarStack.orientation = .horizontal
-        tabBarStack.spacing = 6
+        tabBarStack.spacing = 2
+        tabBarStack.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 0, right: 6)
         tabBarStack.alignment = .centerY
         tabBarStack.translatesAutoresizingMaskIntoConstraints = false
         tabBarDocumentView.addSubview(tabBarStack)
         titleTabBar.addSubview(tabBarScrollView)
 
-        // 标签栏右侧下拉菜单按钮 (⌄) 与右侧栏同步刷新按钮 (↻)
-        let tabMenuBtn = NSButton()
-        tabMenuBtn.bezelStyle = .inline
-        tabMenuBtn.isBordered = false
-        tabMenuBtn.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "标签页与快捷操作菜单")
-        tabMenuBtn.symbolConfiguration = .init(pointSize: 13.5, weight: .regular)
-        tabMenuBtn.contentTintColor = .secondaryLabelColor
-        tabMenuBtn.toolTip = "快速打开 PDF / 切换标签页"
-        tabMenuBtn.target = self
-        tabMenuBtn.action = #selector(showTitlebarQuickMenu(_:))
-        tabMenuBtn.translatesAutoresizingMaskIntoConstraints = false
-        titleTabBar.addSubview(tabMenuBtn)
+        // Obsidian 的“新建标签”固定在标签组尾部，不随标签横向滚动。
+        newTabButton.bezelStyle = .inline
+        newTabButton.isBordered = false
+        newTabButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "新建或导入论文")
+        newTabButton.symbolConfiguration = .init(pointSize: 13.0, weight: .semibold)
+        newTabButton.contentTintColor = .secondaryLabelColor
+        newTabButton.toolTip = "新建或导入论文 (⌘N)"
+        newTabButton.target = self
+        newTabButton.action = #selector(openCreatePaperAction)
+        newTabButton.translatesAutoresizingMaskIntoConstraints = false
+        titleTabBar.addSubview(newTabButton)
 
-        let rightRailSep = NSBox()
-        rightRailSep.boxType = .separator
-        rightRailSep.translatesAutoresizingMaskIntoConstraints = false
-        titleTabBar.addSubview(rightRailSep)
-
+        // 标签栏右侧同步刷新按钮 (↻) 匹配 Zotero 7 原生排版
         let syncRefreshBtn = NSButton()
         syncRefreshBtn.bezelStyle = .inline
         syncRefreshBtn.isBordered = false
         syncRefreshBtn.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "刷新文库")
-        syncRefreshBtn.symbolConfiguration = .init(pointSize: 14.5, weight: .regular)
+        syncRefreshBtn.symbolConfiguration = .init(pointSize: 14.5, weight: .medium)
         syncRefreshBtn.contentTintColor = .secondaryLabelColor
         syncRefreshBtn.toolTip = "刷新文库与同步状态"
         syncRefreshBtn.target = self
@@ -135,7 +132,7 @@ final class MultiTabMainWindowController: NSWindowController {
             tabBarScrollView.leadingAnchor.constraint(equalTo: titleTabBar.leadingAnchor, constant: 80),
             tabBarScrollView.centerYAnchor.constraint(equalTo: titleTabBar.centerYAnchor),
             tabBarScrollView.heightAnchor.constraint(equalToConstant: 34),
-            tabBarScrollView.trailingAnchor.constraint(lessThanOrEqualTo: tabMenuBtn.leadingAnchor, constant: -8),
+            tabBarScrollView.trailingAnchor.constraint(lessThanOrEqualTo: newTabButton.leadingAnchor, constant: -3),
             matchScrollWidth,
 
             tabBarDocumentView.topAnchor.constraint(equalTo: tabBarScrollView.contentView.topAnchor),
@@ -147,19 +144,15 @@ final class MultiTabMainWindowController: NSWindowController {
             tabBarStack.trailingAnchor.constraint(equalTo: tabBarDocumentView.trailingAnchor),
             tabBarStack.centerYAnchor.constraint(equalTo: tabBarDocumentView.centerYAnchor),
 
-            tabMenuBtn.trailingAnchor.constraint(equalTo: rightRailSep.leadingAnchor, constant: -8),
-            tabMenuBtn.centerYAnchor.constraint(equalTo: titleTabBar.centerYAnchor),
-            tabMenuBtn.widthAnchor.constraint(equalToConstant: 28),
-            tabMenuBtn.heightAnchor.constraint(equalToConstant: 28),
+            newTabButton.trailingAnchor.constraint(equalTo: syncRefreshBtn.leadingAnchor, constant: -6),
+            newTabButton.centerYAnchor.constraint(equalTo: titleTabBar.centerYAnchor),
+            newTabButton.widthAnchor.constraint(equalToConstant: 24),
+            newTabButton.heightAnchor.constraint(equalToConstant: 24),
 
-            rightRailSep.topAnchor.constraint(equalTo: titleTabBar.topAnchor),
-            rightRailSep.bottomAnchor.constraint(equalTo: titleTabBar.bottomAnchor),
-            rightRailSep.trailingAnchor.constraint(equalTo: titleTabBar.trailingAnchor, constant: -44),
-
-            syncRefreshBtn.centerXAnchor.constraint(equalTo: titleTabBar.trailingAnchor, constant: -22),
+            syncRefreshBtn.trailingAnchor.constraint(equalTo: titleTabBar.trailingAnchor, constant: -12),
             syncRefreshBtn.centerYAnchor.constraint(equalTo: titleTabBar.centerYAnchor),
-            syncRefreshBtn.widthAnchor.constraint(equalToConstant: 28),
-            syncRefreshBtn.heightAnchor.constraint(equalToConstant: 28),
+            syncRefreshBtn.widthAnchor.constraint(equalToConstant: 26),
+            syncRefreshBtn.heightAnchor.constraint(equalToConstant: 26),
 
             bottomSep.bottomAnchor.constraint(equalTo: titleTabBar.bottomAnchor),
             bottomSep.leadingAnchor.constraint(equalTo: titleTabBar.leadingAnchor),
@@ -178,17 +171,17 @@ final class MultiTabMainWindowController: NSWindowController {
         libraryVC.onOpenPaperInTab = { [weak self] paperId, jumpAnnot in
             self?.openOrSwitchToPaperTab(paperId: paperId, jumpToAnnot: jumpAnnot, switchImmediately: true)
         }
-        libraryVC.onOpenPaperInLeftPDFRightNoteMode = { [weak self] paperId in
+        libraryVC.onOpenPaperNotesSidebar = { [weak self] paperId in
             guard let self = self else { return }
             self.openOrSwitchToPaperTab(paperId: paperId, jumpToAnnot: nil, switchImmediately: true)
-            self.openReaderTabs[paperId]?.setDisplayMode(3)
+            self.openReaderTabs[paperId]?.openNotesSidebar()
         }
         libraryVC.onOpenPaperAndJumpURL = { [weak self] paperId, jumpURL in
             guard let self = self else { return }
             self.openOrSwitchToPaperTab(paperId: paperId, jumpToAnnot: nil, switchImmediately: true)
             if let readerVC = self.openReaderTabs[paperId] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    readerVC.handleNoteJumpURL(jumpURL, fromNoteCol: nil)
+                    readerVC.handleNoteJumpURL(jumpURL)
                 }
             }
         }
@@ -312,7 +305,7 @@ final class MultiTabMainWindowController: NSWindowController {
         rebuildTabBarUI(animatedFrom: nil)
     }
 
-    private func rebuildTabBarUI(animatedFrom previousFrames: [String: NSRect]?) {
+    private func rebuildTabBarUI(animatedFrom previousFrames: [String: NSRect]?, movedTabId: String? = nil) {
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
         var activeTabView: ZoteroTabItemView?
@@ -356,23 +349,6 @@ final class MultiTabMainWindowController: NSWindowController {
             if isTabActive { activeTabView = tabView }
         }
 
-        // Obsidian 风格快捷创建/导入新标签按钮 (+)，不参与排序。
-        let newTabBtn = NSButton()
-        newTabBtn.bezelStyle = .inline
-        newTabBtn.isBordered = false
-        newTabBtn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "新建或导入论文")
-        newTabBtn.symbolConfiguration = .init(pointSize: 11.5, weight: .semibold)
-        newTabBtn.contentTintColor = .secondaryLabelColor
-        newTabBtn.toolTip = "新建或导入论文 (⌘N)"
-        newTabBtn.target = self
-        newTabBtn.action = #selector(openCreatePaperAction)
-        newTabBtn.translatesAutoresizingMaskIntoConstraints = false
-        tabBarStack.addArrangedSubview(newTabBtn)
-        NSLayoutConstraint.activate([
-            newTabBtn.widthAnchor.constraint(equalToConstant: 24),
-            newTabBtn.heightAnchor.constraint(equalToConstant: 24)
-        ])
-
         if let root = window?.contentView {
             root.layoutSubtreeIfNeeded()
         } else {
@@ -382,7 +358,7 @@ final class MultiTabMainWindowController: NSWindowController {
             scrollTabHorizontallyIntoView(activeTabView)
         }
         if let previousFrames {
-            animateTabReorder(from: previousFrames)
+            animateTabReorder(from: previousFrames, movedTabId: movedTabId)
         }
         window?.viewsNeedDisplay = true
     }
@@ -397,10 +373,13 @@ final class MultiTabMainWindowController: NSWindowController {
         let reordered = TabOrder.moving(id, toInsertionIndex: insertionIndex, in: orderedTabIds)
         guard reordered != orderedTabIds else { return }
         orderedTabIds = reordered
-        rebuildTabBarUI(animatedFrom: previousFrames)
+        // 等拖拽会话先结束并恢复源标签不透明度，再开始重排动画，避免半透明重影。
+        DispatchQueue.main.async { [weak self] in
+            self?.rebuildTabBarUI(animatedFrom: previousFrames, movedTabId: id)
+        }
     }
 
-    private func animateTabReorder(from previousFrames: [String: NSRect]) {
+    private func animateTabReorder(from previousFrames: [String: NSRect], movedTabId: String?) {
         guard let root = window?.contentView else { return }
         root.layoutSubtreeIfNeeded()
         tabBarStack.layoutSubtreeIfNeeded()
@@ -410,18 +389,31 @@ final class MultiTabMainWindowController: NSWindowController {
                   let oldFrame = previousFrames[tab.tabId],
                   oldFrame.origin != tab.frame.origin else { continue }
 
+            let isMovedTab = tab.tabId == movedTabId
+            tab.layer?.zPosition = isMovedTab ? 10 : 0
+
             let motion = CABasicAnimation(keyPath: "position")
             motion.fromValue = NSValue(point: NSPoint(x: oldFrame.midX, y: oldFrame.midY))
             motion.toValue = NSValue(point: NSPoint(x: tab.frame.midX, y: tab.frame.midY))
-            motion.duration = 0.18
-            motion.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
+            motion.duration = isMovedTab ? 0.22 : 0.16
+            motion.timingFunction = CAMediaTimingFunction(name: .easeOut)
             tab.layer?.add(motion, forKey: "tabReorder")
 
-            let fade = CABasicAnimation(keyPath: "opacity")
-            fade.fromValue = 0.82
-            fade.toValue = 1
-            fade.duration = 0.14
-            tab.layer?.add(fade, forKey: "tabReorderFade")
+            if isMovedTab {
+                let lift = CASpringAnimation(keyPath: "transform.scale")
+                lift.fromValue = 1.018
+                lift.toValue = 1
+                lift.mass = 0.7
+                lift.stiffness = 340
+                lift.damping = 28
+                lift.initialVelocity = 0
+                lift.duration = min(lift.settlingDuration, 0.24)
+                tab.layer?.add(lift, forKey: "tabReorderLift")
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) { [weak tab] in
+                    tab?.layer?.zPosition = 0
+                }
+            }
         }
     }
 
@@ -560,7 +552,6 @@ final class MultiTabMainWindowController: NSWindowController {
     @objc func readerModeDualShortcut() { activeReaderVC?.setDisplayMode(2) }
     @objc func readerModeOrigShortcut() { activeReaderVC?.setDisplayMode(0) }
     @objc func readerModeTransShortcut() { activeReaderVC?.setDisplayMode(1) }
-    @objc func readerModeLeftPDFRightNoteShortcut() { activeReaderVC?.setDisplayMode(3) }
     @objc func configureLLMTranslationShortcut() { LLMTranslationService.shared.presentSettingsModal(from: window) }
     @objc func readerSwapColumnsShortcut() { activeReaderVC?.swapColumnsAction() }
     @objc func readerResetAlignmentShortcut() { activeReaderVC?.resetSyncAlignmentAction() }

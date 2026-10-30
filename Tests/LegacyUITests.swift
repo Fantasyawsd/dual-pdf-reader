@@ -27,7 +27,7 @@ func runBuiltInSelfTests() -> Int32 {
     // 1. Models & Enums
     check(HighlightColor.allCases.count == 4, "HighlightColor has 4 cases with hex & display names")
     check(!HighlightColor.yellow.displayName.isEmpty && HighlightColor.yellow.hexString == "#F59E0B", "HighlightColor metadata")
-    check(LibrarySortOrder.allCases.count == 5, "LibrarySortOrder has 5 sorting modes")
+    check(LibrarySortOrder.allCases.count == 8, "LibrarySortOrder includes all 8 supported sorting modes")
     check(ReadingStatus.completed.symbolName == "checkmark.seal.fill", "ReadingStatus SF Symbol names")
 
     // 2. MarkdownMathRenderer & LaTeX Engine via JavaScriptCore (including matrices, 3-level nested \frac, \[...\], lists)
@@ -102,49 +102,40 @@ func runBuiltInSelfTests() -> Int32 {
 
         wc.openOrSwitchToPaperTab(paperId: firstPaper.id, jumpToAnnot: nil, switchImmediately: true)
         wc.window?.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         check(wc.activeReaderVC != nil, "Switched to ReaderTabViewController for paper \(firstPaper.id)")
 
         if let reader = wc.activeReaderVC {
             reader.resetSyncAlignmentAction()
 
-            // Test continuous page position smoothness across page boundary (no 20pt jump)
-            if let svLeft = reader.leftCol.internalScrollView(),
-               let svRight = reader.rightCol.internalScrollView() {
-                var maxSyncDiff: CGFloat = 0
-                var prevContinuous: Double = -1
-                var isMonotonic = true
-                for y in stride(from: CGFloat(400), through: CGFloat(900), by: 25) {
-                    svLeft.contentView.scroll(to: NSPoint(x: 0, y: y))
-                    svLeft.reflectScrolledClipView(svLeft.contentView)
-                    let cont = reader.computeContinuousPagePosition(in: reader.leftCol) ?? 0
-                    if cont < prevContinuous { isMonotonic = false }
-                    prevContinuous = cont
-                    let diff = abs(svLeft.contentView.bounds.origin.y - svRight.contentView.bounds.origin.y)
-                    if diff > maxSyncDiff { maxSyncDiff = diff }
-                }
-                check(isMonotonic && maxSyncDiff < 0.1,
-                      String(format: "Smooth 1:1 scroll sync across page break (monotonic=%@, maxDiff=%.4fpt)", "\(isMonotonic)", maxSyncDiff))
-
-                // Test Option-scroll calibration recording & application
-                svLeft.contentView.scroll(to: NSPoint(x: 0, y: 300))
-                svLeft.reflectScrolledClipView(svLeft.contentView)
-                // Simulate holding Option while scrolling rightCol independently (sync suppressed during Option scroll)
-                reader.syncScrollBtn.state = .off
-                reader.toggleSyncScrollAction()
-                svRight.contentView.scroll(to: NSPoint(x: 0, y: 450))
-                svRight.reflectScrolledClipView(svRight.contentView)
-                reader.recordOptionScrollCalibrationOffset()
-                check(abs(reader.pageRatioOffset) > 0.05,
-                      String(format: "recordOptionScrollCalibrationOffset records non-zero pageRatioOffset (%.4f)", reader.pageRatioOffset))
-                reader.syncScrollBtn.state = .on
-                reader.toggleSyncScrollAction()
-                svLeft.contentView.scroll(to: NSPoint(x: 0, y: 350))
-                svLeft.reflectScrolledClipView(svLeft.contentView)
-                let calibratedDeltaY = svRight.contentView.bounds.origin.y - svLeft.contentView.bounds.origin.y
-                check(abs(calibratedDeltaY - 150) < 2.0,
-                      String(format: "Sync scroll preserves Option-calibrated offset (deltaY=%.2fpt, expected ~150pt)", calibratedDeltaY))
-                reader.resetSyncAlignmentAction()
+            // 等待文档恢复完成；按连续页位置检验不同尺寸 PDF 的同步。
+            var maxPositionError = 0.0
+            var previous = -Double.infinity
+            var monotonic = true
+            for position in stride(from: 0.75, through: 1.25, by: 0.05) {
+                _ = PDFScrollSynchronizer.scroll(to: position, in: reader.leftCol)
+                reader.syncScroll(from: reader.leftCol, to: reader.rightCol)
+                let left = reader.computeContinuousPagePosition(in: reader.leftCol) ?? -1
+                let right = reader.computeContinuousPagePosition(in: reader.rightCol) ?? -2
+                monotonic = monotonic && left >= previous
+                previous = left
+                maxPositionError = max(maxPositionError, abs(left - right))
             }
+            check(monotonic && maxPositionError < 0.02, "Scroll sync remains monotonic across page boundary using continuous page positions")
+            reader.syncScrollBtn.state = .off
+            reader.toggleSyncScrollAction()
+            _ = PDFScrollSynchronizer.scroll(to: 0.85, in: reader.leftCol)
+            _ = PDFScrollSynchronizer.scroll(to: 1.10, in: reader.rightCol)
+            reader.recordOptionScrollCalibrationOffset()
+            let calibratedOffset = reader.pageRatioOffset
+            check(abs(calibratedOffset - 0.25) < 0.02, "Option calibration records difference in continuous page positions")
+            reader.syncScrollBtn.state = .on
+            reader.toggleSyncScrollAction()
+            _ = PDFScrollSynchronizer.scroll(to: 1.0, in: reader.leftCol)
+            reader.syncScroll(from: reader.leftCol, to: reader.rightCol)
+            let calibratedDelta = (reader.computeContinuousPagePosition(in: reader.rightCol) ?? -2) - (reader.computeContinuousPagePosition(in: reader.leftCol) ?? -1)
+            check(abs(calibratedDelta - calibratedOffset) < 0.02, "Scroll sync preserves Option-calibrated continuous page offset")
+            reader.resetSyncAlignmentAction()
 
             reader.setDisplayMode(0)
             reader.view.layoutSubtreeIfNeeded()
@@ -162,6 +153,28 @@ func runBuiltInSelfTests() -> Int32 {
             reader.view.layoutSubtreeIfNeeded()
             reader.resetSyncAlignmentAction()
             check(true, "Reader view mode switching, column swapping, drawer toggling, and alignment reset verified")
+            check(reader.leftCol.cornerButton.frame.width > 20 && reader.leftCol.cornerButton.frame.height > 10,
+                  "PDF switch menu remains visible after removing note columns")
+
+            let preservedSources = [reader.leftCol.contentSource, reader.rightCol.contentSource]
+            reader.openNotesSidebar()
+            reader.view.layoutSubtreeIfNeeded()
+            check(!reader.sidebarNoteView.isHiddenOrHasHiddenAncestor && reader.sidebarNoteView.frame.width > 200,
+                  "Right notes sidebar mounts a visible editor with usable width")
+            check(!reader.sidebarNoteView.isDescendant(of: reader.leftCol) && !reader.sidebarNoteView.isDescendant(of: reader.rightCol),
+                  "Notes editor belongs to sidebar, outside PDF columns")
+            reader.setDisplayMode(0)
+            if let doc = reader.leftCol.pdfView.document, let page = doc.page(at: 0), let selection = page.selection(for: page.bounds(for: .mediaBox)) {
+                let quote = reader.quoteSelectionToPaperNote(from: reader.leftCol.pdfView, selection: selection)
+                reader.view.layoutSubtreeIfNeeded()
+                check(quote != nil && reader.rightCol.isHidden && [reader.leftCol.contentSource, reader.rightCol.contentSource] == preservedSources,
+                      "Quote action opens sidebar while preserving single PDF layout and both sources")
+            } else { check(false, "Fixture PDF provides text for sidebar quote interaction") }
+            reader.setDisplayMode(3)
+            check([reader.leftCol.contentSource, reader.rightCol.contentSource] == preservedSources,
+                  "Legacy note mode never replaces a PDF column")
+            reader.toggleRightDrawerAction()
+            reader.setDisplayMode(2)
 
             // Test dual-column tight margin (gap reduced to hairline)
             check(reader.leftCol.pdfView.pageBreakMargins.left <= 2 && reader.leftCol.pdfView.pageBreakMargins.right <= 2,
@@ -216,39 +229,18 @@ func runBuiltInSelfTests() -> Int32 {
             win.makeKeyAndOrderFront(nil)
             rootView.layoutSubtreeIfNeeded()
 
-            // Verify AppKit's private CGSRegion titlebar drag-exclusion calculation includes our tabs when forUnderTitlebar == true
-            typealias OpaqueRegionFn = @convention(c) (AnyObject, Selector, NSRect, Bool, Bool) -> AnyObject?
-            let regionSel = NSSelectorFromString("_regionForOpaqueDescendants:forMove:forUnderTitlebar:")
-            if rootView.responds(to: regionSel),
-               let imp = rootView.method(for: regionSel) {
-                let fn = unsafeBitCast(imp, to: OpaqueRegionFn.self)
-                let regionObj = fn(rootView, regionSel, rootView.bounds, true, true)
-                let regionDesc = String(describing: regionObj)
-                check(!regionDesc.contains("empty") && regionDesc.contains("[82 "),
-                      "AppKit _regionForOpaqueDescendants(forMove:true, forUnderTitlebar:true) excludes titlebar tab bar [82..453] from window drag region")
-            }
+            // 标签点击、关闭和实际 hitTest 在下方验证；空白拖动遵循当前标题栏约定。
 
-            // Verify all tab bar container & item views have mouseDownCanMoveWindow == false
-            let allNonDraggable = !wc.tabBarScrollView.mouseDownCanMoveWindow
-                && !wc.tabBarScrollView.contentView.mouseDownCanMoveWindow
-                && !wc.tabBarDocumentView.mouseDownCanMoveWindow
-                && !wc.tabBarStack.mouseDownCanMoveWindow
-                && wc.tabBarStack.arrangedSubviews.allSatisfy { v in
-                    !v.mouseDownCanMoveWindow && v.subviews.allSatisfy { !$0.mouseDownCanMoveWindow }
-                }
-            check(allNonDraggable, "All tabBarScrollView, NonDraggableClipView, tabBarStack, ZoteroTabItemView & subviews have mouseDownCanMoveWindow == false")
-
-            // Even while inactive (currently on __LIBRARY__), the paper tab's closeButton is visible & hit-testable with zero dead-zone
+            // Obsidian-style inactive tabs hide the close control until hover; clicks in that area still reach the tab itself.
             if let inactivePaperTab = wc.tabBarStack.arrangedSubviews[1] as? ZoteroTabItemView {
                 let closeCenterInWin = inactivePaperTab.closeButton.convert(
                     NSPoint(x: inactivePaperTab.closeButton.bounds.midX, y: inactivePaperTab.closeButton.bounds.midY),
                     to: nil
                 )
                 let hitInactiveClose = rootView.superview?.hitTest(closeCenterInWin)
-                check(hitInactiveClose === inactivePaperTab.closeButton && !inactivePaperTab.closeButton.isHidden,
-                      "Inactive paper tab closeButton is visible and directly hit-testable without requiring prior hover")
+                check(inactivePaperTab.closeButton.isHidden && hitInactiveClose === inactivePaperTab,
+                      "Inactive paper tab hides closeButton and keeps the full tab header hit-testable")
 
-                // Point 2pt to the left of closeButton.frame.minX must hit ZoteroTabItemView (no 4pt dead-zone ring)
                 let justOutsideCloseInTab = NSPoint(x: inactivePaperTab.closeButton.frame.minX - 2, y: inactivePaperTab.bounds.midY)
                 let justOutsideCloseInWin = inactivePaperTab.convert(justOutsideCloseInTab, to: nil)
                 let hitJustOutside = rootView.superview?.hitTest(justOutsideCloseInWin)
@@ -343,16 +335,16 @@ func runBuiltInSelfTests() -> Int32 {
                 // 1) Verify selectPaper preserves DOM node identity so double-click (ondblclick) works on cards & table rows
                 let domPreserved = evalJS("""
                 (function() {
-                    const cards = document.querySelectorAll('.paper-card');
+                    const cards = document.querySelectorAll('[data-paper-id]');
                     if (cards.length < 1) return false;
-                    const targetCard = cards[cards.length - 1];
+                    const targetCard = cards[0];
                     const pid = targetCard.getAttribute('data-paper-id');
                     selectPaper(pid);
-                    const cardAfter = document.querySelector('.paper-card[data-paper-id="' + pid + '"]');
+                    const cardAfter = document.querySelector('[data-paper-id="' + pid + '"]');
                     return targetCard === cardAfter && cardAfter.classList.contains('selected');
                 })()
                 """) as? Bool ?? false
-                check(domPreserved, "selectPaper(id) updates selection in-place without destroying .paper-card DOM node (preserving ondblclick)")
+                check(domPreserved, "selectPaper(id) updates current library row in-place and preserves double-click DOM identity")
 
                 // 2) Verify escapeJSAttr escapes single quotes and backslashes safely
                 let escapedOK = evalJS("""
@@ -363,44 +355,81 @@ func runBuiltInSelfTests() -> Int32 {
                 """) as? Bool ?? false
                 check(escapedOK, "escapeJSAttr safely escapes single quotes and backslashes for inline onclick handlers")
 
-                // 3) Verify live DOM drop slot rect synchronization & detectDropTargetZone accuracy
-                _ = evalJS("setInspectorTab(0); syncDropSlotRects();")
-                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
-                if let origRect = evalJS("""
-                (function() {
-                    const el = document.getElementById('slotOriginal');
-                    if (!el) return null;
-                    const r = el.getBoundingClientRect();
-                    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-                })()
-                """) as? [String: Any],
-                   let transRect = evalJS("""
-                (function() {
-                    const el = document.getElementById('slotTranslated');
-                    if (!el) return null;
-                    const r = el.getBoundingClientRect();
-                    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-                })()
-                """) as? [String: Any],
-                   let ox = origRect["x"] as? CGFloat, let oy = origRect["y"] as? CGFloat,
-                   let tx = transRect["x"] as? CGFloat, let ty = transRect["y"] as? CGFloat {
-                    let origZone = wc.libraryVC.webView.detectDropTargetZone(atTopLeftPoint: NSPoint(x: ox, y: oy))
-                    let transZone = wc.libraryVC.webView.detectDropTargetZone(atTopLeftPoint: NSPoint(x: tx, y: ty))
-                    check(origZone == "original" && transZone == "translated",
-                          "detectDropTargetZone accurately resolves side-by-side 2-column #slotOriginal ('\(origZone)') and #slotTranslated ('\(transZone)')")
+                // 3) Verify clean workspace drop resolution and tag/dummy panel elimination
+                let dropZone = wc.libraryVC.webView.detectDropTargetZone(atTopLeftPoint: NSPoint(x: 300, y: 300))
+                check(dropZone == "library", "detectDropTargetZone resolves dropped PDF cleanly to 'library' workspace")
 
-                    // Switch inspector to Tab 1 (Notes) -> drop at same coordinate must resolve to 'library', not 'original'
-                    _ = evalJS("setInspectorTab(1);")
-                    RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
-                    let zoneOnNotesTab = wc.libraryVC.webView.detectDropTargetZone(atTopLeftPoint: NSPoint(x: ox, y: oy))
-                    check(zoneOnNotesTab == "library",
-                          "detectDropTargetZone returns 'library' (not 'original') when Inspector is on Notes tab ('\(zoneOnNotesTab)')")
-                    _ = evalJS("setInspectorTab(0);")
-                    RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+                let tagPanelExists = evalJS("document.getElementById('tagPanel') !== null") as? Bool ?? true
+                check(!tagPanelExists, "Tag filter panel is eliminated from library workspace")
+
+                let railExists = evalJS("document.getElementById('rightRail') !== null") as? Bool ?? true
+                check(!railExists, "Right icon rail is eliminated from library workspace")
+
+                let categoryName = "UI空分类"
+                let categoryDeadline = Date().addingTimeInterval(3)
+                var filledCategoryDialog = false
+                func completeCategoryDialog() {
+                    if let content = NSApp.modalWindow?.contentView {
+                        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants($0) } }
+                        if let input = descendants(content).compactMap({ $0 as? NSTextField }).first(where: { $0.isEditable }) {
+                            input.stringValue = categoryName
+                            filledCategoryDialog = true
+                            NSApp.stopModal(withCode: .alertFirstButtonReturn)
+                            return
+                        }
+                    }
+                    if Date() < categoryDeadline {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { completeCategoryDialog() }
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { completeCategoryDialog() }
+                _ = evalJS("window.webkit.messageHandlers.libraryBridge.postMessage({action:'createCategory'});")
+                while !store.allCategories().contains(categoryName) && Date() < categoryDeadline {
+                    RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02))
+                }
+                check(filledCategoryDialog && LibraryStore(rootDirectory: testRoot).allCategories().contains(categoryName),
+                      "WebView createCategory bridge opens native dialog and persists an empty category")
+                if let pid = store.papers.first?.id,
+                   let data = try? JSONEncoder().encode(pid), let pidJSON = String(data: data, encoding: .utf8) {
+                    _ = evalJS("window.webkit.messageHandlers.libraryBridge.postMessage({action:'saveMetadata',paperId:" + pidJSON + ",tags:'bridgeTag， #第二标签'});")
+                    let tagsDeadline = Date().addingTimeInterval(2)
+                    while store.paper(withId: pid)?.tags != ["bridgeTag", "第二标签"] && Date() < tagsDeadline {
+                        RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02))
+                    }
+                    check(LibraryStore(rootDirectory: testRoot).paper(withId: pid)?.tags == ["bridgeTag", "第二标签"],
+                          "WebView saveMetadata bridge persists edited tags to paper metadata")
+                    _ = evalJS("window.webkit.messageHandlers.libraryBridge.postMessage({action:'openPaperNotesSidebar',paperId:" + pidJSON + "});")
+                    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+                    check(wc.activeReaderVC?.paperId == pid && wc.activeReaderVC?.sidebarNoteView.isHiddenOrHasHiddenAncestor == false,
+                          "Library notes entry opens real reader sidebar through native bridge")
                 }
             }
         }
     }
+
+    if store.papers.count >= 2 {
+        let sourceId = store.papers[0].id
+        let targetId = store.papers[1].id
+        store.linkRelatedPapers(paperAId: sourceId, paperBId: targetId, note: "窗口导航回归")
+        let standalone = StandaloneReaderWindowController(paperId: sourceId)
+        standalone.showWindow(nil)
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants($0) } }
+        let initialViews = standalone.window?.contentView.map { descendants($0) } ?? []
+        let linksRail = initialViews.compactMap { $0 as? NSButton }.first { $0.tag == 5 && $0.action == NSSelectorFromString("workbenchRailButtonClicked:") }
+        (linksRail?.target as? ReaderTabViewController)?.openNotesSidebar()
+        linksRail?.performClick(nil)
+        standalone.window?.contentView?.layoutSubtreeIfNeeded()
+        let allViews = standalone.window?.contentView.map { descendants($0) } ?? []
+        let relatedButton = allViews.compactMap { $0 as? NSButton }.first { $0.action == NSSelectorFromString("openRelatedPaperFromDrawer:") && $0.identifier?.rawValue == targetId }
+        relatedButton?.performClick(nil)
+        let opened = NSApp.windows.compactMap { $0.windowController as? StandaloneReaderWindowController }.filter { $0.paperId == targetId }
+        check(relatedButton != nil && opened.count == 1, "Standalone related-paper button opens target reader window")
+        relatedButton?.performClick(nil)
+        let reopened = NSApp.windows.compactMap { $0.windowController as? StandaloneReaderWindowController }.filter { $0.paperId == targetId }
+        check(reopened.count == 1 && reopened.first === opened.first, "Standalone navigation reuses the existing target window")
+        opened.forEach { $0.close() }
+        standalone.close()
+    } else { check(false, "Fixture includes related papers for standalone navigation") }
 
     print("=== SELF-TEST SUMMARY: \(passed) passed, \(failed) failed ===")
     return failed == 0 ? 0 : 1
