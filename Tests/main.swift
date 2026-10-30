@@ -631,5 +631,60 @@ let standaloneCtrl = StandaloneReaderWindowController(paperId: createdItem.id, s
 check(standaloneCtrl.window != nil && standaloneCtrl.window?.title == createdItem.title, "Standalone reader window initializes with paper title")
 standaloneCtrl.windowWillClose(Notification(name: NSWindow.willCloseNotification))
 
+// (G) Workbench Functional Upgrades: Tags, External Links, Attachments & Translation
+// 1. Tag management
+check(store.addTag("Deep Learning", for: createdItem.id), "Add tag succeeds")
+check(store.addTag("Transformer", for: createdItem.id), "Add second tag succeeds")
+check(!store.addTag("Transformer", for: createdItem.id), "Duplicate tag is ignored")
+let taggedPaper = store.paper(withId: createdItem.id)!
+check(taggedPaper.tags.contains("Deep Learning") && taggedPaper.tags.contains("Transformer"), "Tags persisted in paper metadata")
+check(store.allUniqueTags.contains("Deep Learning"), "allUniqueTags aggregates tags across library")
+check(store.removeTag("Transformer", for: createdItem.id), "Remove tag succeeds")
+let updatedTagPaper = store.paper(withId: createdItem.id)!
+check(!updatedTagPaper.tags.contains("Transformer") && updatedTagPaper.tags.contains("Deep Learning"), "Tag successfully removed from paper")
+
+// 2. Custom external links & resource deletion
+let extLink = store.addExternalLink(for: createdItem.id, title: "Official Repo", url: "https://github.com/tensorflow/tensor2tensor")
+check(extLink != nil && extLink?.isLocalFile == false, "Add external link succeeds")
+let linkedPaper = store.paper(withId: createdItem.id)!
+check(linkedPaper.resources.contains(where: { $0.urlOrPath == "https://github.com/tensorflow/tensor2tensor" }), "External link persisted in resources")
+
+// Test local attachment deletion
+if let attachRes = res {
+    check(store.deleteExternalResource(for: createdItem.id, resourceId: attachRes.id), "Delete local attachment succeeds")
+    let afterDelPaper = store.paper(withId: createdItem.id)!
+    check(!afterDelPaper.resources.contains(where: { $0.id == attachRes.id }), "Attachment removed from resources")
+    check(!FileManager.default.fileExists(atPath: expectedAttachPath.path), "Attachment file deleted from disk")
+}
+
+// 3. Translated PDF removal
+check(store.removeTranslatedPDF(for: createdItem.id), "Remove translated PDF succeeds")
+let afterTransDelPaper = store.paper(withId: createdItem.id)!
+check(afterTransDelPaper.translatedFilename == nil, "Translated filename cleared in metadata")
+let expectedTransPath = store.folderURL(for: createdItem.id).appendingPathComponent("Attention_Is_All_You_Need_zh.pdf")
+check(!FileManager.default.fileExists(atPath: expectedTransPath.path), "Translated PDF file removed from disk")
+
+// 4. Workbench tab switching & rendering integrity
+testReader.toggleRightDrawerAction() // open drawer
+testReader.switchWorkbenchTab(to: 2) // Translation
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.currentWorkbenchTab == 2, "Switched to Translation tab")
+check(!testReader.tabTranslationContainer.isHidden, "Translation container is visible")
+
+testReader.switchWorkbenchTab(to: 3) // Attachments
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.currentWorkbenchTab == 3, "Switched to Attachments tab")
+check(!testReader.tabAttachmentsContainer.isHidden, "Attachments container is visible")
+
+testReader.switchWorkbenchTab(to: 4) // Tags
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.currentWorkbenchTab == 4, "Switched to Tags tab")
+check(!testReader.tabTagsContainer.isHidden, "Tags container is visible")
+
+testReader.switchWorkbenchTab(to: 5) // Links
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.currentWorkbenchTab == 5, "Switched to Links tab")
+check(!testReader.tabLinksContainer.isHidden, "Links container is visible")
+
 print("\nRegression tests: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)
