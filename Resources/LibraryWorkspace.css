@@ -1,0 +1,1258 @@
+:root {
+    color-scheme: light dark;
+    --bg-app: #f3f3f3;
+    --bg-sidebar: #f3f3f3;
+    --bg-center: #ffffff;
+    --bg-inspector: #f2f2f2;
+    --bg-rail: #f5f5f5;
+    --bg-surface: #ffffff;
+    --bg-surface-hover: #fafafa;
+    --bg-subtle: rgba(0, 0, 0, 0.04);
+    --bg-subtle-hover: rgba(0, 0, 0, 0.07);
+    --border-hairline: #dcdcdc;
+    --border-strong: #c8c8c8;
+    --text-primary: #1d1d1f;
+    --text-secondary: #4a4a4f;
+    --text-tertiary: #86868b;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --accent-soft: rgba(37, 99, 235, 0.10);
+    --accent-border: rgba(37, 99, 235, 0.35);
+    --zotero-row-focus: #5b9bf8;
+    --zotero-tree-active: #dcdcdc;
+    --emerald: #059669;
+    --emerald-soft: rgba(5, 150, 105, 0.11);
+    --amber: #d97706;
+    --amber-soft: rgba(217, 119, 6, 0.12);
+    --purple: #7c3aed;
+    --purple-soft: rgba(124, 58, 237, 0.11);
+    --danger: #dc2626;
+    --danger-soft: rgba(220, 38, 38, 0.10);
+    --shadow-card: 0 1px 3px rgba(15, 23, 42, 0.05);
+    --shadow-card-hover: 0 6px 18px rgba(15, 23, 42, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg-app: #1e1f22;
+        --bg-sidebar: #222327;
+        --bg-center: #191a1d;
+        --bg-inspector: #222327;
+        --bg-rail: #25262a;
+        --bg-surface: #26282e;
+        --bg-surface-hover: #2d3037;
+        --bg-subtle: rgba(255, 255, 255, 0.06);
+        --bg-subtle-hover: rgba(255, 255, 255, 0.10);
+        --border-hairline: #34363c;
+        --border-strong: #454850;
+        --text-primary: #f1f5f9;
+        --text-secondary: #a1a8b3;
+        --text-tertiary: #6c737f;
+        --accent: #3b82f6;
+        --accent-hover: #60a5fa;
+        --accent-soft: rgba(59, 130, 246, 0.16);
+        --accent-border: rgba(59, 130, 246, 0.42);
+        --zotero-row-focus: #60a5fa;
+        --zotero-tree-active: rgba(255, 255, 255, 0.12);
+        --emerald: #34d399;
+        --emerald-soft: rgba(52, 211, 153, 0.15);
+        --amber: #fbbf24;
+        --amber-soft: rgba(251, 191, 36, 0.15);
+        --purple: #a78bfa;
+        --purple-soft: rgba(167, 139, 250, 0.15);
+        --danger: #f87171;
+        --danger-soft: rgba(248, 113, 113, 0.15);
+    }
+}
+
+* {
+    box-sizing: border-box;
+    user-select: none;
+    -webkit-user-select: none;
+}
+input, textarea, .selectable {
+    user-select: text;
+    -webkit-user-select: text;
+}
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font: -apple-system-body;
+    font-family: -apple-system, BlinkMacSystemFont, "AppleSystemUIFont", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    font-size: 14px;
+    color: var(--text-primary);
+    background: var(--bg-app);
+    -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea {
+    font-family: inherit;
+}
+
+/* 4-Column Zotero 7 Workspace Layout */
+.workspace {
+    display: grid;
+    grid-template-columns: 240px 1fr 380px 44px;
+    width: 100vw;
+    height: 100vh;
+}
+.workspace.inspector-collapsed {
+    grid-template-columns: 240px 1fr 0px 44px;
+}
+
+/* 1. Left Sidebar (Zotero 7 Collection Tree & Bottom Tag Selector) */
+.sidebar {
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border-hairline);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+.sidebar-toolbar {
+    height: 42px;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+}
+.zotero-icon-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+.zotero-icon-btn:hover {
+    background: var(--bg-subtle-hover);
+    color: var(--text-primary);
+}
+.sidebar-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 8px 10px 8px;
+}
+
+/* Zotero 7 Tree Nodes */
+.tree-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.tree-row.child {
+    padding-left: 30px;
+}
+.tree-row:hover {
+    background: var(--bg-subtle);
+}
+.tree-row.active {
+    background: var(--zotero-tree-active);
+    font-weight: 500;
+}
+.tree-twisty {
+    width: 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.tree-icon {
+    width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.tree-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+
+/* Bottom Tag Selector Box (Zotero 7 Style) */
+.tag-panel {
+    border-top: 1px solid var(--border-hairline);
+    height: 230px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    background: var(--bg-sidebar);
+    flex-shrink: 0;
+}
+.tag-list-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 12px;
+}
+.tag-line-item {
+    font-size: 13.5px;
+    line-height: 28px;
+    padding: 0 8px;
+    border-radius: 5px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+.tag-line-item:hover {
+    background: var(--bg-subtle);
+}
+.tag-line-item.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+}
+.tag-filter-bar {
+    height: 42px;
+    padding: 6px 10px 8px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+.tag-filter-input {
+    flex: 1;
+    min-width: 0;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-hairline);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-size: 13.5px;
+    outline: none;
+}
+.tag-filter-input:focus {
+    border-color: var(--zotero-row-focus);
+}
+.tag-funnel-btn {
+    height: 28px;
+    padding: 0 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    border-radius: 5px;
+    flex-shrink: 0;
+}
+.tag-funnel-btn:hover {
+    background: var(--bg-subtle-hover);
+    color: var(--text-primary);
+}
+.tag-clear-btn {
+    font-size: 12.5px;
+    color: var(--accent);
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+/* 2. Center Main Pane (Zotero 7 Toolbar + Data Table) */
+.center-pane {
+    background: var(--bg-center);
+    border-right: 1px solid var(--border-hairline);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    position: relative;
+}
+.center-header {
+    height: 42px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border-hairline);
+    background: #f8f8f8;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+}
+@media (prefers-color-scheme: dark) {
+    .center-header {
+        background: #222327;
+    }
+}
+.zotero-toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+.zotero-tool-btn {
+    height: 32px;
+    padding: 0 8px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+}
+.zotero-tool-btn:hover {
+    background: var(--bg-subtle-hover);
+    color: var(--text-primary);
+}
+.tool-caret {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-left: 1px;
+}
+
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    min-width: 0;
+}
+.zotero-search-box {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 240px;
+    height: 30px;
+    border: 1px solid var(--border-hairline);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    padding: 0 6px 0 9px;
+    gap: 4px;
+}
+.zotero-search-box:focus-within {
+    border-color: var(--zotero-row-focus);
+    box-shadow: 0 0 0 2px rgba(91, 155, 248, 0.2);
+}
+.zotero-search-box > svg {
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+.search-caret {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    margin-right: 2px;
+    flex-shrink: 0;
+}
+.search-input {
+    flex: 1;
+    min-width: 0;
+    height: 26px;
+    padding: 0 3px;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 13.5px;
+    outline: none;
+}
+.search-funnel-btn {
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 0;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+.search-funnel-btn:hover {
+    background: var(--bg-subtle-hover);
+    color: var(--text-primary);
+}
+
+/* Center Content Area */
+.center-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0;
+    background: var(--bg-center);
+}
+
+/* Zotero 7 Native-Style Multi-Column Table */
+.zotero-table-wrap {
+    width: 100%;
+    min-height: 100%;
+    background: var(--bg-center);
+}
+table.zotero-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    text-align: left;
+}
+.zotero-table thead th {
+    height: 32px;
+    padding: 0 10px;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: var(--bg-center);
+    border-bottom: 1px solid var(--border-hairline);
+    border-right: 1px solid var(--border-hairline);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: none;
+}
+.zotero-table thead th:first-child {
+    padding-left: 28px;
+}
+.zotero-table thead th:last-child {
+    border-right: none;
+    text-align: center;
+    padding: 0;
+}
+.zotero-table thead th:hover {
+    background: var(--bg-surface-hover);
+}
+.zotero-table tbody tr.zotero-row {
+    height: 34px;
+    cursor: default;
+}
+.zotero-table tbody tr.zotero-row td {
+    height: 34px;
+    padding: 0 10px;
+    font-size: 14px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    border-bottom: 1px solid transparent;
+}
+.zotero-table tbody tr.zotero-row:hover td {
+    background: rgba(91, 155, 248, 0.06);
+}
+/* Zotero 7 Signature Dashed Rounded Selection Ring */
+.zotero-table tbody tr.zotero-row.selected td {
+    background: rgba(91, 155, 248, 0.08);
+    border-top: 1px dashed var(--zotero-row-focus);
+    border-bottom: 1px dashed var(--zotero-row-focus);
+}
+.zotero-table tbody tr.zotero-row.selected td:first-child {
+    border-left: 1px dashed var(--zotero-row-focus);
+    border-top-left-radius: 6px;
+    border-bottom-left-radius: 6px;
+}
+.zotero-table tbody tr.zotero-row.selected td:last-child {
+    border-right: 1px dashed var(--zotero-row-focus);
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+}
+
+.tbl-title-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.row-twisty {
+    width: 18px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+    border-radius: 4px;
+}
+.row-twisty:hover {
+    color: var(--text-primary);
+    background: var(--bg-subtle);
+}
+.row-doc-icon {
+    width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.row-title-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+}
+.row-attach-cell {
+    text-align: center;
+    padding: 0 !important;
+}
+.row-pdf-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+.row-pdf-badge:hover {
+    background: var(--bg-subtle-hover);
+}
+
+/* Expandable Child Attachment / Note Rows */
+.zotero-table tbody tr.zotero-subrow {
+    height: 30px;
+    cursor: pointer;
+}
+.zotero-table tbody tr.zotero-subrow td {
+    height: 30px;
+    padding: 0 10px;
+    font-size: 13.5px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+}
+.zotero-table tbody tr.zotero-subrow:hover td {
+    background: var(--bg-subtle);
+    color: var(--text-primary);
+}
+.subrow-indent {
+    padding-left: 34px !important;
+}
+
+/* 3. Right Inspector Pane (Zotero 7 Style) */
+.inspector {
+    background: var(--bg-inspector);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+.inspector-header {
+    height: 42px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border-hairline);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    background: var(--bg-inspector);
+}
+.inspector-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    width: 100%;
+    background: var(--bg-subtle);
+    padding: 3px;
+    border-radius: 7px;
+    border: 1px solid var(--border-hairline);
+}
+.insp-tab {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 4px 6px;
+    border-radius: 5px;
+    cursor: pointer;
+    text-align: center;
+}
+.insp-tab.active {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+.inspector-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+}
+.inspector-summary-placeholder {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    font-size: 14.5px;
+    font-weight: 400;
+    text-align: center;
+    user-select: none;
+}
+
+/* 4. Far-Right Zotero 7 Vertical Icon Rail */
+.zotero-right-rail {
+    width: 44px;
+    height: 100%;
+    background: var(--bg-rail);
+    border-left: 1px solid var(--border-hairline);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 0;
+    flex-shrink: 0;
+    z-index: 10;
+}
+.rail-top-btn {
+    margin-bottom: 12px;
+}
+.rail-group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+.rail-btn {
+    width: 34px;
+    height: 34px;
+    border: none;
+    background: transparent;
+    border-radius: 7px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: background 0.12s ease;
+}
+.rail-btn:hover {
+    background: var(--bg-subtle-hover);
+}
+.rail-btn.active {
+    background: var(--bg-subtle-hover);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+/* Shared Buttons, Badges & Inspector Form Components */
+.seg-group {
+    display: inline-flex;
+    background: var(--bg-subtle);
+    padding: 3px;
+    border-radius: 7px;
+    border: 1px solid var(--border-hairline);
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+.seg-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 4px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.seg-btn.active {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+.btn-primary {
+    height: 32px;
+    padding: 0 13px;
+    border-radius: 6px;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.btn-primary:hover {
+    background: var(--accent-hover);
+}
+.btn-secondary {
+    height: 32px;
+    padding: 0 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-hairline);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-size: 13.5px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.btn-secondary:hover {
+    background: var(--bg-surface-hover);
+    border-color: var(--border-strong);
+}
+.btn-icon {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    justify-content: center;
+}
+.chip {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 5px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+/* Inspector Detail Elements */
+.insp-paper-title {
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.4;
+    margin: 0 0 12px 0;
+    color: var(--text-primary);
+}
+.insp-hero-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.btn-hero-read {
+    flex: 1;
+    height: 34px;
+    border-radius: 7px;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+.btn-hero-read:hover {
+    background: var(--accent-hover);
+}
+.insp-section-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 16px 0 8px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+/* Dual PDF Attachment Slots in Inspector */
+.pdf-slots-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.pdf-slot-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-hairline);
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 8px;
+}
+.pdf-slot-card.drag-target {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+.pdf-slot-top {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+.pdf-slot-thumb {
+    width: 38px;
+    height: 52px;
+    border-radius: 4px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-hairline);
+    overflow: hidden;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-tertiary);
+}
+.pdf-slot-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.pdf-slot-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.pdf-slot-meta {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+.pdf-slot-meta.missing {
+    color: var(--amber);
+}
+
+/* Zotero 7 Inline Metadata Editor */
+.meta-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-hairline);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.meta-row {
+    display: grid;
+    grid-template-columns: 76px 1fr;
+    align-items: center;
+    border-bottom: 1px solid var(--border-hairline);
+    padding: 3.5px 10px;
+}
+.meta-row:last-child {
+    border-bottom: none;
+}
+.meta-key {
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-align: right;
+    padding-right: 10px;
+}
+.meta-input {
+    width: 100%;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 13.5px;
+    font-family: inherit;
+    padding: 4px 6px;
+    border-radius: 5px;
+    outline: none;
+}
+.meta-input:hover {
+    background: var(--bg-subtle);
+}
+.meta-input:focus {
+    background: var(--bg-surface);
+    border-color: var(--zotero-row-focus);
+}
+
+/* Notes & LaTeX Feed Cards */
+.note-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-hairline);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+}
+.note-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+.note-badge-group {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+}
+.color-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.note-page-pill {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 5px;
+}
+.note-excerpt {
+    font-size: 13.5px;
+    color: var(--text-secondary);
+    background: var(--bg-subtle);
+    border-left: 3px solid var(--accent);
+    padding: 6px 10px;
+    border-radius: 0 6px 6px 0;
+    margin-bottom: 8px;
+    cursor: pointer;
+}
+.md-body {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    word-wrap: break-word;
+}
+.md-body p { margin: 5px 0; }
+.md-body code {
+    font-family: -apple-system-monospaced, "SF Mono", Menlo, monospace;
+    font-size: 12.5px;
+    background: var(--bg-subtle);
+    padding: 1.5px 5px;
+    border-radius: 4px;
+}
+.math-block {
+    margin: 8px 0;
+    padding: 9px 12px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-hairline);
+    border-radius: 7px;
+    text-align: center;
+    font-family: "STIX Two Math", "Times New Roman", "STIXGeneral", Cambria, serif;
+    font-size: 16px;
+    line-height: 1.5;
+    overflow-x: auto;
+}
+.math-inline {
+    font-family: "STIX Two Math", "Times New Roman", "STIXGeneral", Cambria, serif;
+    font-style: italic;
+    font-size: 15px;
+    padding: 0 1px;
+}
+.math-op { font-style: normal; font-family: "STIX Two Math", "Times New Roman", serif; padding: 0 1px; }
+.math-cal { font-family: "Snell Roundhand", "Apple Chancery", cursive, serif; font-style: italic; }
+.frac {
+    display: inline-flex;
+    flex-direction: column;
+    vertical-align: middle;
+    text-align: center;
+    padding: 0 3px;
+    font-style: normal;
+}
+.frac > span:first-child { border-bottom: 1px solid currentColor; padding: 0 3px 1px 3px; font-size: 0.88em; line-height: 1.1; }
+.frac > span:last-child { padding: 1px 3px 0 3px; font-size: 0.88em; line-height: 1.1; }
+.sum-op { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; font-style: normal; line-height: 1; margin: 0 2px; }
+.sum-op .sup, .sum-op .sub { font-size: 0.65em; }
+.sum-op .sym { font-size: 1.32em; }
+.math-matrix { display: inline-flex; align-items: center; vertical-align: middle; font-style: normal; margin: 0 2px; }
+.math-matrix .m-delim { font-size: 1.35em; font-weight: 300; line-height: 1; padding: 0 1px; }
+.math-matrix .m-table { display: inline-table; border-collapse: collapse; vertical-align: middle; }
+.math-matrix .m-row { display: table-row; }
+.math-matrix .m-cell { display: table-cell; padding: 1px 5px; text-align: center; font-size: 0.9em; }
+
+/* Related & Resource Rows */
+.rel-item-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-hairline);
+    border-radius: 7px;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 7px;
+}
+.rel-item-main {
+    min-width: 0;
+    flex: 1;
+    cursor: pointer;
+}
+.rel-item-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.rel-item-sub {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+}
+
+/* Empty State */
+.empty-box {
+    text-align: center;
+    padding: 56px 24px;
+    max-width: 440px;
+    margin: 40px auto;
+}
+.empty-box h3 {
+    margin: 8px 0 6px 0;
+    font-size: 15.5px;
+    font-weight: 600;
+}
+.empty-box p {
+    margin: 0 0 16px 0;
+    font-size: 13.5px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+/* Modal Overlay */
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.modal-backdrop.open {
+    display: flex;
+}
+.modal-dialog {
+    width: 520px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    padding: 22px;
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.25);
+}
+.modal-title {
+    font-size: 17px;
+    font-weight: 700;
+    margin: 0 0 6px 0;
+}
+.modal-sub {
+    font-size: 13.5px;
+    color: var(--text-secondary);
+    margin: 0 0 16px 0;
+}
+.form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.form-full {
+    grid-column: 1 / -1;
+}
+.form-label {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 5px;
+}
+.form-control {
+    width: 100%;
+    height: 34px;
+    padding: 0 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-hairline);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-size: 13.5px;
+    outline: none;
+}
+.form-control:focus {
+    border-color: var(--zotero-row-focus);
+}
+
+/* Drag Overlay */
+.drag-overlay {
+    position: fixed;
+    inset: 10px;
+    border-radius: 12px;
+    border: 2px dashed var(--accent);
+    background: rgba(37, 99, 235, 0.08);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    pointer-events: none;
+}
+.drag-overlay.visible {
+    display: flex;
+}
+.drag-overlay-card {
+    background: var(--bg-surface);
+    padding: 18px 28px;
+    border-radius: 10px;
+    box-shadow: var(--shadow-card-hover);
+    text-align: center;
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--accent);
+}
+
+/* Custom Context Menu */
+.ctx-menu {
+    position: fixed;
+    min-width: 220px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 5px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.20);
+    z-index: 3000;
+    display: none;
+}
+.ctx-menu.open {
+    display: block;
+}
+.ctx-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 13.5px;
+    color: var(--text-primary);
+    cursor: pointer;
+    position: relative;
+    user-select: none;
+}
+.ctx-item:hover {
+    background: var(--accent);
+    color: #fff;
+}
+.ctx-item.disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+    pointer-events: none;
+    color: var(--text-tertiary);
+}
+.ctx-item.has-submenu {
+    position: relative;
+}
+.ctx-arrow {
+    font-size: 10px;
+    opacity: 0.65;
+    margin-left: 12px;
+}
+.ctx-submenu {
+    position: absolute;
+    left: calc(100% - 4px);
+    top: -5px;
+    min-width: 190px;
+    max-height: 280px;
+    overflow-y: auto;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 5px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+    z-index: 3001;
+    display: none;
+}
+.ctx-item.has-submenu:hover > .ctx-submenu {
+    display: block;
+}
+.ctx-item.danger {
+    color: var(--danger);
+}
+.ctx-item.danger:hover {
+    background: var(--danger);
+    color: #fff;
+}
+.ctx-sep {
+    height: 1px;
+    background: var(--border-hairline);
+    margin: 4px 6px;
+}
+
+/* Citation & arXiv Badge Styles */
+.citation-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: rgba(59, 130, 246, 0.12);
+    color: #2563eb;
+    font-size: 12px;
+    font-weight: 600;
+}
+.arxiv-badge-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: rgba(16, 185, 129, 0.12);
+    color: #059669;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+}
+.arxiv-badge-link:hover {
+    text-decoration: underline;
+    background: rgba(16, 185, 129, 0.22);
+}
+
+/* Modal Ingestion Switcher */
+.modal-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--border-subtle);
+    padding-bottom: 8px;
+}
+.modal-tab-btn {
+    background: none;
+    border: none;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.modal-tab-btn.active {
+    background: var(--accent);
+    color: #fff;
+}
+.modal-tab-btn:hover:not(.active) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}

@@ -1,0 +1,10 @@
+version = 1
+name = "dual-pdf-reader"
+
+[setup]
+script = ""
+
+[[actions]]
+name = "Run"
+icon = "run"
+command = "./build_and_run.sh --run"

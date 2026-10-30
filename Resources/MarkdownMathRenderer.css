@@ -1,0 +1,315 @@
+
+        :root {
+        color-scheme: light dark;
+        --bg: transparent;
+        --card-bg: rgba(255, 255, 255, 0.88);
+        --card-border: rgba(0, 0, 0, 0.08);
+        --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        --text-main: #1d1d1f;
+        --text-sub: #6e6e73;
+        --quote-bg: rgba(0, 0, 0, 0.032);
+        --code-bg: rgba(0, 0, 0, 0.055);
+        --accent: #0066cc;
+        --accent-bg: rgba(0, 102, 204, 0.08);
+        --danger-hover: #dc2626;
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --card-bg: rgba(42, 42, 46, 0.88);
+            --card-border: rgba(255, 255, 255, 0.10);
+            --card-shadow: 0 2px 6px rgba(0, 0, 0, 0.22);
+            --text-main: #f5f5f7;
+            --text-sub: #98989d;
+            --quote-bg: rgba(255, 255, 255, 0.055);
+            --code-bg: rgba(255, 255, 255, 0.09);
+            --accent: #4da3ff;
+            --accent-bg: rgba(77, 163, 255, 0.14);
+            --danger-hover: #f87171;
+        }
+    }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        padding: 12px 14px;
+        font: -apple-system-body;
+        font-family: -apple-system, BlinkMacSystemFont, "AppleSystemUIFont", "PingFang SC", "Hiragino Sans GB", sans-serif;
+        font-size: 14px;
+        line-height: 1.6;
+        color: var(--text-main);
+        background: var(--bg);
+        -webkit-font-smoothing: antialiased;
+    }
+    .empty-state {
+        text-align: center;
+        padding: 42px 18px;
+        color: var(--text-sub);
+        font-size: 13.5px;
+        line-height: 1.65;
+    }
+    .note-card {
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        box-shadow: var(--card-shadow);
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .note-card:hover {
+        border-color: var(--accent);
+    }
+    .paper-source-badge {
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--text-sub);
+        margin-bottom: 6px;
+        padding-bottom: 5px;
+        border-bottom: 1px dashed var(--card-border);
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .paper-source-badge:hover {
+        color: var(--accent);
+    }
+    .card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+        font-size: 12.5px;
+    }
+    .badge-group {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+    }
+    .color-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12);
+    }
+    .page-pill {
+        font-weight: 600;
+        font-size: 12px;
+        color: var(--accent);
+        background: var(--accent-bg);
+        padding: 2px 8px;
+        border-radius: 5px;
+    }
+    .actions {
+        display: flex;
+        gap: 5px;
+        opacity: 0.72;
+        transition: opacity 0.12s ease;
+    }
+    .note-card:hover .actions {
+        opacity: 1.0;
+    }
+    .btn-mini {
+        border: none;
+        background: var(--quote-bg);
+        color: var(--text-sub);
+        padding: 3px 9px;
+        border-radius: 5px;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+    }
+    .btn-mini:hover {
+        color: var(--text-main);
+        background: var(--code-bg);
+    }
+    .btn-mini.btn-danger:hover {
+        color: var(--danger-hover);
+    }
+    .excerpt {
+        font-size: 13px;
+        color: var(--text-sub);
+        background: var(--quote-bg);
+        border-left: 3px solid #9ca3af;
+        padding: 6px 10px;
+        border-radius: 0 6px 6px 0;
+        margin-bottom: 8px;
+        cursor: pointer;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+    .md-body {
+        font-size: 14px;
+        color: var(--text-main);
+        word-wrap: break-word;
+    }
+    .md-body p { margin: 5px 0; }
+    .md-body h1, .md-body h2, .md-body h3 {
+        margin: 8px 0 4px 0;
+        font-size: 15px;
+        font-weight: 600;
+    }
+    .md-body ul {
+        margin: 4px 0;
+        padding-left: 18px;
+    }
+    .md-body li {
+        margin: 2px 0;
+    }
+    .md-body code {
+        font-family: -apple-system-monospaced, "SF Mono", Menlo, monospace;
+        font-size: 12.5px;
+        background: var(--code-bg);
+        padding: 1.5px 5px;
+        border-radius: 4px;
+    }
+    .md-body pre {
+        background: var(--code-bg);
+        padding: 9px 11px;
+        border-radius: 6px;
+        overflow-x: auto;
+        margin: 6px 0;
+    }
+    .math-block {
+        margin: 8px 0;
+        padding: 10px 12px;
+        background: var(--quote-bg);
+        border: 1px solid var(--card-border);
+        border-radius: 7px;
+        text-align: center;
+        font-family: "STIX Two Math", "Times New Roman", "STIXGeneral", Cambria, serif;
+        font-size: 16px;
+        line-height: 1.5;
+        overflow-x: auto;
+    }
+    .math-inline {
+        font-family: "STIX Two Math", "Times New Roman", "STIXGeneral", Cambria, serif;
+        font-style: italic;
+        font-size: 15px;
+        padding: 0 1.5px;
+    }
+    .math-op {
+        font-style: normal;
+        font-family: "STIX Two Math", "Times New Roman", serif;
+        padding: 0 1px;
+    }
+    .math-cal {
+        font-family: "Snell Roundhand", "Apple Chancery", "STIXGeneral", cursive, serif;
+        font-style: italic;
+        font-weight: 500;
+    }
+    .frac {
+        display: inline-flex;
+        flex-direction: column;
+        vertical-align: middle;
+        text-align: center;
+        padding: 0 3px;
+        font-style: normal;
+    }
+    .frac > span:first-child {
+        border-bottom: 1px solid currentColor;
+        padding: 0 3px 1px 3px;
+        font-size: 0.88em;
+        line-height: 1.1;
+    }
+    .frac > span:last-child {
+        padding: 1px 3px 0 3px;
+        font-size: 0.88em;
+        line-height: 1.1;
+    }
+    .sum-op {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        vertical-align: middle;
+        font-style: normal;
+        line-height: 1;
+        margin: 0 2px;
+    }
+    .sum-op .sup { font-size: 0.65em; }
+    .sum-op .sym { font-size: 1.32em; }
+    .sum-op .sub { font-size: 0.65em; }
+    .math-matrix {
+        display: inline-flex;
+        align-items: center;
+        vertical-align: middle;
+        font-style: normal;
+        margin: 0 2px;
+    }
+    .math-matrix .m-delim {
+        font-size: 1.35em;
+        font-weight: 300;
+        line-height: 1;
+        padding: 0 1px;
+    }
+    .math-matrix .m-table {
+        display: inline-table;
+        border-collapse: collapse;
+        vertical-align: middle;
+    }
+    .math-matrix .m-row {
+        display: table-row;
+    }
+    .math-matrix .m-cell {
+        display: table-cell;
+        padding: 1px 5px;
+        text-align: center;
+        font-size: 0.9em;
+        line-height: 1.2;
+    }
+    .link-row {
+        margin-top: 7px;
+    }
+    .link-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 12.5px;
+        font-weight: 500;
+        color: var(--accent);
+        background: var(--accent-bg);
+        padding: 3px 9px;
+        border-radius: 6px;
+        cursor: pointer;
+        text-decoration: none;
+    }
+    .link-pill:hover {
+        filter: brightness(0.95);
+    }
+    .pdf-jump-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--accent);
+        background: var(--accent-bg);
+        border: 1px solid rgba(0, 102, 204, 0.22);
+        padding: 2.5px 9px;
+        border-radius: 6px;
+        text-decoration: none;
+        cursor: pointer;
+        margin: 2px 0;
+        transition: transform 0.1s ease, filter 0.12s ease;
+    }
+    .pdf-jump-link:hover {
+        filter: brightness(0.94);
+    }
+    .md-ext-link {
+        color: var(--accent);
+        text-decoration: underline;
+        cursor: pointer;
+    }
+    .md-quote {
+        margin: 4px 0;
+        padding: 5px 11px;
+        border-left: 3px solid var(--accent);
+        background: var(--quote-bg);
+        color: var(--text-sub);
+        border-radius: 0 5px 5px 0;
+        font-size: 13px;
+    }
+
