@@ -481,6 +481,78 @@ final class LibraryStore {
         }
     }
 
+    /// 删除指定条目的附加资源或文件
+    @discardableResult
+    func deleteExternalResource(for paperId: String, resourceId: String) -> Bool {
+        guard var item = paper(withId: paperId) else { return false }
+        guard let idx = item.resources.firstIndex(where: { $0.id == resourceId }) else { return false }
+        let res = item.resources[idx]
+        if res.isLocalFile {
+            try? FileManager.default.removeItem(atPath: res.urlOrPath)
+        }
+        item.resources.remove(at: idx)
+        return savePaper(item, notify: true)
+    }
+
+    /// 向条目添加自定义外部链接
+    @discardableResult
+    func addExternalLink(for paperId: String, title: String, url: String) -> ExternalResource? {
+        guard var item = paper(withId: paperId) else { return nil }
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanUrl.isEmpty else { return nil }
+        let res = ExternalResource(title: cleanTitle.isEmpty ? cleanUrl : cleanTitle, urlOrPath: cleanUrl, isLocalFile: false)
+        item.resources.append(res)
+        if savePaper(item, notify: true) {
+            return res
+        }
+        return nil
+    }
+
+    /// 移除条目的中文翻译版 PDF
+    @discardableResult
+    func removeTranslatedPDF(for paperId: String) -> Bool {
+        guard var item = paper(withId: paperId) else { return false }
+        if let fn = item.translatedFilename {
+            let path = folderURL(for: paperId).appendingPathComponent(fn)
+            try? FileManager.default.removeItem(at: path)
+            summaryCache.invalidate(path)
+        }
+        item.translatedFilename = nil
+        return savePaper(item, notify: true)
+    }
+
+    /// 为条目添加标签
+    @discardableResult
+    func addTag(_ tag: String, for paperId: String) -> Bool {
+        guard var item = paper(withId: paperId) else { return false }
+        let clean = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, !item.tags.contains(clean) else { return false }
+        item.tags.append(clean)
+        return savePaper(item, notify: true)
+    }
+
+    /// 从条目中移除标签
+    @discardableResult
+    func removeTag(_ tag: String, for paperId: String) -> Bool {
+        guard var item = paper(withId: paperId) else { return false }
+        guard let idx = item.tags.firstIndex(of: tag) else { return false }
+        item.tags.remove(at: idx)
+        return savePaper(item, notify: true)
+    }
+
+    /// 获取整个文库中所有已使用过的独立标签集合
+    var allUniqueTags: [String] {
+        var set = Set<String>()
+        for p in papers {
+            for t in p.tags {
+                let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { set.insert(trimmed) }
+            }
+        }
+        return set.sorted()
+    }
+
     @discardableResult
     func importPDF(for paperId: String, side: PDFSide, from sourceURL: URL) -> Bool {
         guard var item = paper(withId: paperId) else { return false }

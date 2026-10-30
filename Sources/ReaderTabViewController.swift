@@ -28,6 +28,24 @@ enum ZoteroTheme {
             ? NSColor(calibratedRed: 0.25, green: 0.32, blue: 0.45, alpha: 0.45)
             : NSColor(calibratedRed: 0.85, green: 0.89, blue: 0.96, alpha: 1.0)
     }
+
+    static let cardBg = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.18, green: 0.19, blue: 0.22, alpha: 1.0)
+            : NSColor(calibratedRed: 0.99, green: 0.99, blue: 0.99, alpha: 1.0)
+    }
+
+    static let cardBorder = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.24, green: 0.25, blue: 0.28, alpha: 1.0)
+            : NSColor(calibratedRed: 0.88, green: 0.88, blue: 0.90, alpha: 1.0)
+    }
+
+    static let tagBg = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.22, green: 0.28, blue: 0.38, alpha: 0.5)
+            : NSColor(calibratedRed: 0.90, green: 0.93, blue: 0.98, alpha: 1.0)
+    }
 }
 
 final class FlippedView: NSView {
@@ -103,7 +121,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     // 右侧工作台分栏 (Zotero 7 原生排版：顶部论文标题、左侧信息/笔记/翻译面板、右侧垂直图标栏)
     private let rightDrawer = ZoteroRightDrawerView()
     private var isDrawerOpen = false
-    private var currentWorkbenchTab: Int = 0 // 0: Info, 1: Notes, 2: Translation, 3: Attachments, 4: Tags, 5: Links
+    private(set) var currentWorkbenchTab: Int = 0 // 0: Info, 1: Notes, 2: Translation, 3: Attachments, 4: Tags, 5: Links
     private var notesNeedRefresh = true
     private var linksNeedRefresh = true
 
@@ -114,16 +132,37 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private var workbenchRailButtons: [NSButton] = []
 
     private let workbenchContentScrollView = NSScrollView()
-    private let tabInfoContainer = FlippedStackView()
-    private let tabNotesContainer = FlippedStackView()
-    private let tabTranslationContainer = FlippedStackView()
-    private let tabAttachmentsContainer = FlippedStackView()
-    private let tabTagsContainer = FlippedStackView()
-    private let tabLinksContainer = FlippedStackView()
+    let tabInfoContainer = FlippedStackView()
+    let tabNotesContainer = FlippedStackView()
+    let tabTranslationContainer = FlippedStackView()
+    let tabAttachmentsContainer = FlippedStackView()
+    let tabTagsContainer = FlippedStackView()
+    let tabLinksContainer = FlippedStackView()
 
     private let metadataFieldsStack = FlippedStackView()
     private let searchToggleBtn = NSButton()
     private let linksStackView = FlippedStackView()
+
+    // 侧边栏划词翻译与学术解析 (Tab 2)
+    private let sidebarTransSourceTextView = NSTextView()
+    private let sidebarTransResultWebView = WKWebView()
+    private let sidebarTransStatusLabel = NSTextField(labelWithString: "")
+    private let sidebarTransProgress = NSProgressIndicator()
+    private let sidebarTransModeSeg = NSSegmentedControl(labels: ["学术精读", "术语解析", "要点提炼", "英文润色"], trackingMode: .selectOne, target: nil, action: nil)
+    private var sidebarTransActiveTask: URLSessionDataTask?
+    private var sidebarTransResultMarkdown: String = ""
+
+    // 侧边栏附件管理 (Tab 3)
+    private let attachmentsListStack = FlippedStackView()
+
+    // 侧边栏外部链接 (Tab 5)
+    private let linksCardsStack = FlippedStackView()
+
+    // 侧边栏标签管理 (Tab 4)
+    private let tagsChipsStack = FlippedStackView()
+    private let tagsInputField = NSTextField()
+    private let tagsCountBadge = NSTextField(labelWithString: "")
+    private let suggestedTagsStack = FlippedStackView()
 
     private let outlineContainer = NSView()
     private let outlineTableView = NSTableView()
@@ -777,7 +816,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         switchWorkbenchTab(to: sender.tag)
     }
 
-    private func switchWorkbenchTab(to index: Int) {
+    func switchWorkbenchTab(to index: Int) {
         currentWorkbenchTab = index
         for btn in workbenchRailButtons {
             let isActive = (btn.tag == index)
@@ -799,6 +838,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         } else if index == 1 {
             notesNeedRefresh = true
             refreshNotesDrawerWebView()
+        } else if index == 2 {
+            if sidebarTransSourceTextView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let sel = (leftCol.pdfView.currentSelection ?? rightCol.pdfView.currentSelection)?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !sel.isEmpty {
+                    sidebarTransSourceTextView.string = sel
+                }
+            }
+            refreshTranslationTabUI()
+        } else if index == 3 {
+            refreshAttachmentsTabUI()
+        } else if index == 4 {
+            refreshTagsTabUI()
         } else if index == 5 {
             refreshLinksDrawerView()
         }
@@ -958,10 +1008,53 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         ])
     }
 
+    // MARK: - Sidebar Helper Components
+    private func makeSidebarCardView(padding: NSEdgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)) -> NSBox {
+        let box = NSBox()
+        box.boxType = .custom
+        box.borderWidth = 1.0
+        box.borderColor = ZoteroTheme.cardBorder
+        box.fillColor = ZoteroTheme.cardBg
+        box.cornerRadius = 7
+        box.contentViewMargins = NSSize(width: padding.left, height: padding.top)
+        box.translatesAutoresizingMaskIntoConstraints = false
+        return box
+    }
+
+    private func makeCompactActionButton(title: String, symbol: String? = nil, action: Selector, tint: NSColor = .controlAccentColor) -> NSButton {
+        let btn = NSButton()
+        btn.bezelStyle = .inline
+        btn.isBordered = false
+        btn.title = title
+        if let symbol = symbol {
+            btn.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
+                .withSymbolConfiguration(.init(pointSize: 11.0, weight: .medium))
+            btn.imagePosition = .imageLeading
+        }
+        btn.contentTintColor = tint
+        btn.font = .systemFont(ofSize: 11.5, weight: .medium)
+        btn.target = self
+        btn.action = action
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        return btn
+    }
+
+    private func formattedFileSize(at path: String) -> String {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attrs[.size] as? Int64 else {
+            return "未知大小"
+        }
+        let bcf = ByteCountFormatter()
+        bcf.allowedUnits = [.useAll]
+        bcf.countStyle = .file
+        return bcf.string(fromByteCount: size)
+    }
+
+    // MARK: - Tab 2: 划词翻译与学术解析 (Translation)
     private func setupTranslationTab(in parentStack: NSStackView) {
         tabTranslationContainer.orientation = .vertical
         tabTranslationContainer.alignment = .leading
-        tabTranslationContainer.spacing = 12
+        tabTranslationContainer.spacing = 10
         tabTranslationContainer.translatesAutoresizingMaskIntoConstraints = false
         parentStack.addArrangedSubview(tabTranslationContainer)
 
@@ -975,43 +1068,188 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         transIcon.image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
         transIcon.contentTintColor = .secondaryLabelColor
-        transIcon.translatesAutoresizingMaskIntoConstraints = false
-        transIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
-        transIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
         let secTitle = NSTextField(labelWithString: "划词翻译与学术解析")
         secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
         secTitle.textColor = .labelColor
-        secHeader.setViews([transIcon, secTitle], in: .leading)
 
-        let modeSegControl = NSSegmentedControl(labels: ["学术精读", "术语解析", "要点提炼"], trackingMode: .selectOne, target: self, action: #selector(sidebarTranslationModeChanged(_:)))
-        modeSegControl.selectedSegment = 0
-        modeSegControl.controlSize = .small
-        modeSegControl.segmentDistribution = .fillEqually
+        let headerSpacer = NSView()
+        headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let statusLabel = NSTextField(labelWithString: "● LLM 翻译引擎: SiliconFlow / DeepSeek-V3 (已就绪)")
-        statusLabel.font = .systemFont(ofSize: 11.5)
-        statusLabel.textColor = NSColor(calibratedRed: 0.1, green: 0.6, blue: 0.2, alpha: 1.0)
+        let settingsBtn = NSButton()
+        settingsBtn.bezelStyle = .inline
+        settingsBtn.isBordered = false
+        settingsBtn.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "翻译模型与密钥设置")
+        settingsBtn.toolTip = "配置 LLM 模型与 API Key (DeepSeek / SiliconFlow / OpenAI)"
+        settingsBtn.target = self
+        settingsBtn.action = #selector(openTranslationSettingsModal)
 
-        let tipLabel = NSTextField(labelWithString: "在 PDF 任意页面中选中文本，即可浮动呼出 AI 术语精读翻译与段落解析。")
-        tipLabel.font = .systemFont(ofSize: 12)
-        tipLabel.textColor = .secondaryLabelColor
-        tipLabel.maximumNumberOfLines = 3
+        secHeader.addArrangedSubview(transIcon)
+        secHeader.addArrangedSubview(secTitle)
+        secHeader.addArrangedSubview(headerSpacer)
+        secHeader.addArrangedSubview(settingsBtn)
+
+        sidebarTransModeSeg.segmentCount = 4
+        sidebarTransModeSeg.setLabel("学术精读", forSegment: 0)
+        sidebarTransModeSeg.setLabel("术语解析", forSegment: 1)
+        sidebarTransModeSeg.setLabel("要点提炼", forSegment: 2)
+        sidebarTransModeSeg.setLabel("英文润色", forSegment: 3)
+        sidebarTransModeSeg.selectedSegment = 0
+        sidebarTransModeSeg.controlSize = .small
+        sidebarTransModeSeg.segmentDistribution = .fillEqually
+        sidebarTransModeSeg.target = self
+        sidebarTransModeSeg.action = #selector(sidebarTransModeChanged(_:))
+        sidebarTransModeSeg.translatesAutoresizingMaskIntoConstraints = false
+
+        let statusRow = NSStackView()
+        statusRow.orientation = .horizontal
+        statusRow.alignment = .centerY
+        statusRow.spacing = 6
+        statusRow.translatesAutoresizingMaskIntoConstraints = false
+
+        sidebarTransStatusLabel.font = .systemFont(ofSize: 11.5)
+        sidebarTransStatusLabel.textColor = .secondaryLabelColor
+
+        sidebarTransProgress.style = .spinning
+        sidebarTransProgress.controlSize = .small
+        sidebarTransProgress.isDisplayedWhenStopped = false
+        sidebarTransProgress.translatesAutoresizingMaskIntoConstraints = false
+
+        statusRow.addArrangedSubview(sidebarTransStatusLabel)
+        statusRow.addArrangedSubview(sidebarTransProgress)
+
+        let sourceCard = makeSidebarCardView()
+        let sourceCardStack = FlippedStackView()
+        sourceCardStack.orientation = .vertical
+        sourceCardStack.alignment = .leading
+        sourceCardStack.spacing = 6
+        sourceCardStack.translatesAutoresizingMaskIntoConstraints = false
+        sourceCard.contentView = sourceCardStack
+
+        let sourceHeaderRow = NSStackView()
+        sourceHeaderRow.orientation = .horizontal
+        sourceHeaderRow.alignment = .centerY
+        sourceHeaderRow.spacing = 6
+        sourceHeaderRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let sourceLabel = NSTextField(labelWithString: "待翻译原文 (支持PDF选词或直接输入)")
+        sourceLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        sourceLabel.textColor = .secondaryLabelColor
+
+        let sourceSpacer = NSView()
+        sourceSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let clearBtn = makeCompactActionButton(title: "清空", symbol: "xmark.circle", action: #selector(sidebarClearTransSourceAction), tint: .secondaryLabelColor)
+
+        sourceHeaderRow.addArrangedSubview(sourceLabel)
+        sourceHeaderRow.addArrangedSubview(sourceSpacer)
+        sourceHeaderRow.addArrangedSubview(clearBtn)
+
+        let sourceScroll = NSScrollView()
+        sourceScroll.drawsBackground = true
+        sourceScroll.backgroundColor = .textBackgroundColor
+        sourceScroll.hasVerticalScroller = true
+        sourceScroll.hasHorizontalScroller = false
+        sourceScroll.autohidesScrollers = true
+        sourceScroll.borderType = .bezelBorder
+        sourceScroll.translatesAutoresizingMaskIntoConstraints = false
+        sourceScroll.heightAnchor.constraint(equalToConstant: 76).isActive = true
+
+        sidebarTransSourceTextView.isRichText = false
+        sidebarTransSourceTextView.isEditable = true
+        sidebarTransSourceTextView.font = .systemFont(ofSize: 12.0)
+        sidebarTransSourceTextView.textColor = .textColor
+        sidebarTransSourceTextView.drawsBackground = false
+        sidebarTransSourceTextView.isVerticallyResizable = true
+        sidebarTransSourceTextView.isHorizontallyResizable = false
+        sidebarTransSourceTextView.autoresizingMask = [.width]
+        sidebarTransSourceTextView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        sidebarTransSourceTextView.textContainer?.widthTracksTextView = true
+        sourceScroll.documentView = sidebarTransSourceTextView
+
+        let actionBtnRow = NSStackView()
+        actionBtnRow.orientation = .horizontal
+        actionBtnRow.spacing = 8
+        actionBtnRow.alignment = .centerY
+        actionBtnRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let translateBtn = NSButton(title: "▶ 立即翻译", target: self, action: #selector(sidebarTranslateAction))
+        translateBtn.bezelStyle = .rounded
+        translateBtn.controlSize = .small
+        translateBtn.keyEquivalent = "\r"
+
+        let transPageBtn = NSButton(title: "📄 翻译当前整页", target: self, action: #selector(sidebarTranslateCurrentPageAction))
+        transPageBtn.bezelStyle = .rounded
+        transPageBtn.controlSize = .small
+
+        actionBtnRow.addArrangedSubview(translateBtn)
+        actionBtnRow.addArrangedSubview(transPageBtn)
+
+        sourceCardStack.addArrangedSubview(sourceHeaderRow)
+        sourceCardStack.addArrangedSubview(sourceScroll)
+        sourceCardStack.addArrangedSubview(actionBtnRow)
+
+        let resultCard = makeSidebarCardView()
+        let resultCardStack = FlippedStackView()
+        resultCardStack.orientation = .vertical
+        resultCardStack.alignment = .leading
+        resultCardStack.spacing = 6
+        resultCardStack.translatesAutoresizingMaskIntoConstraints = false
+        resultCard.contentView = resultCardStack
+
+        let resultHeaderRow = NSStackView()
+        resultHeaderRow.orientation = .horizontal
+        resultHeaderRow.alignment = .centerY
+        resultHeaderRow.spacing = 6
+        resultHeaderRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let resultTitle = NSTextField(labelWithString: "译文与学术解析结果")
+        resultTitle.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        resultTitle.textColor = .secondaryLabelColor
+
+        let resultSpacer = NSView()
+        resultSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let copyBtn = makeCompactActionButton(title: "复制", symbol: "doc.on.doc", action: #selector(sidebarCopyTranslationAction))
+        let insertNoteBtn = makeCompactActionButton(title: "存入笔记", symbol: "plus.square", action: #selector(sidebarInsertTranslationToNoteAction))
+
+        resultHeaderRow.addArrangedSubview(resultTitle)
+        resultHeaderRow.addArrangedSubview(resultSpacer)
+        resultHeaderRow.addArrangedSubview(copyBtn)
+        resultHeaderRow.addArrangedSubview(insertNoteBtn)
+
+        sidebarTransResultWebView.setValue(false, forKey: "drawsBackground")
+        sidebarTransResultWebView.translatesAutoresizingMaskIntoConstraints = false
+        sidebarTransResultWebView.heightAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+
+        resultCardStack.addArrangedSubview(resultHeaderRow)
+        resultCardStack.addArrangedSubview(sidebarTransResultWebView)
 
         tabTranslationContainer.addArrangedSubview(secHeader)
-        tabTranslationContainer.addArrangedSubview(modeSegControl)
-        tabTranslationContainer.addArrangedSubview(statusLabel)
-        tabTranslationContainer.addArrangedSubview(tipLabel)
+        tabTranslationContainer.addArrangedSubview(sidebarTransModeSeg)
+        tabTranslationContainer.addArrangedSubview(statusRow)
+        tabTranslationContainer.addArrangedSubview(sourceCard)
+        tabTranslationContainer.addArrangedSubview(resultCard)
 
         NSLayoutConstraint.activate([
             tabTranslationContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
             secHeader.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
-            modeSegControl.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
-            statusLabel.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
-            tipLabel.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor)
+            sidebarTransModeSeg.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
+            statusRow.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
+            sourceCard.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
+            resultCard.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
+            sourceCardStack.widthAnchor.constraint(equalTo: sourceCard.widthAnchor, constant: -20),
+            sourceHeaderRow.widthAnchor.constraint(equalTo: sourceCardStack.widthAnchor),
+            sourceScroll.widthAnchor.constraint(equalTo: sourceCardStack.widthAnchor),
+            resultCardStack.widthAnchor.constraint(equalTo: resultCard.widthAnchor, constant: -20),
+            resultHeaderRow.widthAnchor.constraint(equalTo: resultCardStack.widthAnchor),
+            sidebarTransResultWebView.widthAnchor.constraint(equalTo: resultCardStack.widthAnchor)
         ])
+
+        refreshTranslationTabUI()
     }
 
+    // MARK: - Tab 3: PDF 附件与文档 (Attachments)
     private func setupAttachmentsTab(in parentStack: NSStackView) {
         tabAttachmentsContainer.orientation = .vertical
         tabAttachmentsContainer.alignment = .leading
@@ -1029,41 +1267,43 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         attachIcon.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
         attachIcon.contentTintColor = .secondaryLabelColor
-        attachIcon.translatesAutoresizingMaskIntoConstraints = false
-        attachIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
-        attachIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
         let secTitle = NSTextField(labelWithString: "PDF 附件与文档")
         secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
         secTitle.textColor = .labelColor
-        secHeader.setViews([attachIcon, secTitle], in: .leading)
 
-        let origBtn = NSButton(title: "📄 原版 PDF (Original EN)…", target: self, action: #selector(importOrigPDFFromSidebar))
-        origBtn.bezelStyle = .texturedRounded
-        origBtn.controlSize = .small
+        let headerSpacer = NSView()
+        headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let transBtn = NSButton(title: "📄 中文译版 (Translated ZH)…", target: self, action: #selector(importTransPDFFromSidebar))
-        transBtn.bezelStyle = .texturedRounded
-        transBtn.controlSize = .small
+        let addAttachBtn = NSButton(title: "＋ 导入附件…", target: self, action: #selector(importAttachmentFromSidebar))
+        addAttachBtn.bezelStyle = .inline
+        addAttachBtn.isBordered = false
+        addAttachBtn.contentTintColor = .controlAccentColor
+        addAttachBtn.font = .systemFont(ofSize: 12.0, weight: .medium)
 
-        let extraBtn = NSButton(title: "＋ 导入其它附加文件…", target: self, action: #selector(importAttachmentFromSidebar))
-        extraBtn.bezelStyle = .texturedRounded
-        extraBtn.controlSize = .small
+        secHeader.addArrangedSubview(attachIcon)
+        secHeader.addArrangedSubview(secTitle)
+        secHeader.addArrangedSubview(headerSpacer)
+        secHeader.addArrangedSubview(addAttachBtn)
+
+        attachmentsListStack.orientation = .vertical
+        attachmentsListStack.alignment = .leading
+        attachmentsListStack.spacing = 8
+        attachmentsListStack.translatesAutoresizingMaskIntoConstraints = false
 
         tabAttachmentsContainer.addArrangedSubview(secHeader)
-        tabAttachmentsContainer.addArrangedSubview(origBtn)
-        tabAttachmentsContainer.addArrangedSubview(transBtn)
-        tabAttachmentsContainer.addArrangedSubview(extraBtn)
+        tabAttachmentsContainer.addArrangedSubview(attachmentsListStack)
 
         NSLayoutConstraint.activate([
             tabAttachmentsContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
             secHeader.widthAnchor.constraint(equalTo: tabAttachmentsContainer.widthAnchor),
-            origBtn.widthAnchor.constraint(equalTo: tabAttachmentsContainer.widthAnchor),
-            transBtn.widthAnchor.constraint(equalTo: tabAttachmentsContainer.widthAnchor),
-            extraBtn.widthAnchor.constraint(equalTo: tabAttachmentsContainer.widthAnchor)
+            attachmentsListStack.widthAnchor.constraint(equalTo: tabAttachmentsContainer.widthAnchor)
         ])
+
+        refreshAttachmentsTabUI()
     }
 
+    // MARK: - Tab 4: 论文标签 (Tags)
     private func setupTagsTab(in parentStack: NSStackView) {
         tabTagsContainer.orientation = .vertical
         tabTagsContainer.alignment = .leading
@@ -1081,30 +1321,117 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         tagIcon.image = NSImage(systemSymbolName: "tag", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
         tagIcon.contentTintColor = .secondaryLabelColor
-        tagIcon.translatesAutoresizingMaskIntoConstraints = false
-        tagIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
-        tagIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
         let secTitle = NSTextField(labelWithString: "论文标签")
         secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
         secTitle.textColor = .labelColor
-        secHeader.setViews([tagIcon, secTitle], in: .leading)
 
-        let tagDesc = NSTextField(labelWithString: "用于分类检索与文献库聚合，可在文库中按标签进行多维过滤。")
-        tagDesc.font = .systemFont(ofSize: 12)
-        tagDesc.textColor = .secondaryLabelColor
-        tagDesc.maximumNumberOfLines = 2
+        tagsCountBadge.font = .systemFont(ofSize: 12.0)
+        tagsCountBadge.textColor = .secondaryLabelColor
+
+        secHeader.addArrangedSubview(tagIcon)
+        secHeader.addArrangedSubview(secTitle)
+        secHeader.addArrangedSubview(tagsCountBadge)
+
+        let tagsCard = makeSidebarCardView()
+        let tagsCardStack = FlippedStackView()
+        tagsCardStack.orientation = .vertical
+        tagsCardStack.alignment = .leading
+        tagsCardStack.spacing = 8
+        tagsCardStack.translatesAutoresizingMaskIntoConstraints = false
+        tagsCard.contentView = tagsCardStack
+
+        let currentTagsTitle = NSTextField(labelWithString: "当前标签")
+        currentTagsTitle.font = .systemFont(ofSize: 11.5, weight: .bold)
+        currentTagsTitle.textColor = .secondaryLabelColor
+
+        tagsChipsStack.orientation = .vertical
+        tagsChipsStack.alignment = .leading
+        tagsChipsStack.spacing = 6
+        tagsChipsStack.translatesAutoresizingMaskIntoConstraints = false
+
+        tagsCardStack.addArrangedSubview(currentTagsTitle)
+        tagsCardStack.addArrangedSubview(tagsChipsStack)
+
+        let addTagCard = makeSidebarCardView()
+        let addTagStack = FlippedStackView()
+        addTagStack.orientation = .vertical
+        addTagStack.alignment = .leading
+        addTagStack.spacing = 8
+        addTagStack.translatesAutoresizingMaskIntoConstraints = false
+        addTagCard.contentView = addTagStack
+
+        let addTagTitle = NSTextField(labelWithString: "＋ 添加新标签")
+        addTagTitle.font = .systemFont(ofSize: 11.5, weight: .bold)
+        addTagTitle.textColor = .secondaryLabelColor
+
+        let inputRow = NSStackView()
+        inputRow.orientation = .horizontal
+        inputRow.spacing = 6
+        inputRow.alignment = .centerY
+        inputRow.translatesAutoresizingMaskIntoConstraints = false
+
+        tagsInputField.placeholderString = "输入新标签名称，按回车添加…"
+        tagsInputField.controlSize = .small
+        tagsInputField.target = self
+        tagsInputField.action = #selector(addTagFromInput)
+        tagsInputField.translatesAutoresizingMaskIntoConstraints = false
+
+        let addBtn = NSButton(title: "添加", target: self, action: #selector(addTagFromInput))
+        addBtn.bezelStyle = .rounded
+        addBtn.controlSize = .small
+
+        inputRow.addArrangedSubview(tagsInputField)
+        inputRow.addArrangedSubview(addBtn)
+
+        addTagStack.addArrangedSubview(addTagTitle)
+        addTagStack.addArrangedSubview(inputRow)
+
+        let suggestCard = makeSidebarCardView()
+        let suggestStack = FlippedStackView()
+        suggestStack.orientation = .vertical
+        suggestStack.alignment = .leading
+        suggestStack.spacing = 8
+        suggestStack.translatesAutoresizingMaskIntoConstraints = false
+        suggestCard.contentView = suggestStack
+
+        let suggestTitle = NSTextField(labelWithString: "文库常用标签 (点击快速添加)")
+        suggestTitle.font = .systemFont(ofSize: 11.5, weight: .bold)
+        suggestTitle.textColor = .secondaryLabelColor
+
+        suggestedTagsStack.orientation = .vertical
+        suggestedTagsStack.alignment = .leading
+        suggestedTagsStack.spacing = 6
+        suggestedTagsStack.translatesAutoresizingMaskIntoConstraints = false
+
+        suggestStack.addArrangedSubview(suggestTitle)
+        suggestStack.addArrangedSubview(suggestedTagsStack)
 
         tabTagsContainer.addArrangedSubview(secHeader)
-        tabTagsContainer.addArrangedSubview(tagDesc)
+        tabTagsContainer.addArrangedSubview(tagsCard)
+        tabTagsContainer.addArrangedSubview(addTagCard)
+        tabTagsContainer.addArrangedSubview(suggestCard)
 
         NSLayoutConstraint.activate([
             tabTagsContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
             secHeader.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
-            tagDesc.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor)
+            tagsCard.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
+            tagsCardStack.widthAnchor.constraint(equalTo: tagsCard.widthAnchor, constant: -20),
+            tagsChipsStack.widthAnchor.constraint(equalTo: tagsCardStack.widthAnchor),
+
+            addTagCard.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
+            addTagStack.widthAnchor.constraint(equalTo: addTagCard.widthAnchor, constant: -20),
+            inputRow.widthAnchor.constraint(equalTo: addTagStack.widthAnchor),
+
+            suggestCard.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
+            suggestStack.widthAnchor.constraint(equalTo: suggestCard.widthAnchor, constant: -20),
+            suggestedTagsStack.widthAnchor.constraint(equalTo: suggestStack.widthAnchor)
         ])
+
+        refreshTagsTabUI()
     }
 
+    // MARK: - Tab 5: 外部链接与文献引用 (External Links)
     private func setupLinksTab(in parentStack: NSStackView) {
         tabLinksContainer.orientation = .vertical
         tabLinksContainer.alignment = .leading
@@ -1122,40 +1449,40 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         linkIcon.image = NSImage(systemSymbolName: "link", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
         linkIcon.contentTintColor = .secondaryLabelColor
-        linkIcon.translatesAutoresizingMaskIntoConstraints = false
-        linkIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
-        linkIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
         let secTitle = NSTextField(labelWithString: "外部链接与文献引用")
         secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
         secTitle.textColor = .labelColor
-        secHeader.setViews([linkIcon, secTitle], in: .leading)
 
-        let arxivBtn = NSButton(title: "🌐 前往 arXiv 官方主页 ↗", target: self, action: #selector(openArxivLinkFromSidebar))
-        arxivBtn.bezelStyle = .texturedRounded
-        arxivBtn.controlSize = .small
+        let headerSpacer = NSView()
+        headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let hjfyBtn = NSButton(title: "🌐 前往幻觉翻译页面 ↗", target: self, action: #selector(openHjfyLinkFromSidebar))
-        hjfyBtn.bezelStyle = .texturedRounded
-        hjfyBtn.controlSize = .small
+        let addLinkBtn = NSButton(title: "＋ 添加外部链接…", target: self, action: #selector(promptAddCustomExternalLink))
+        addLinkBtn.bezelStyle = .inline
+        addLinkBtn.isBordered = false
+        addLinkBtn.contentTintColor = .controlAccentColor
+        addLinkBtn.font = .systemFont(ofSize: 12.0, weight: .medium)
 
-        linksStackView.orientation = .vertical
-        linksStackView.alignment = .leading
-        linksStackView.spacing = 6
-        linksStackView.translatesAutoresizingMaskIntoConstraints = false
+        secHeader.addArrangedSubview(linkIcon)
+        secHeader.addArrangedSubview(secTitle)
+        secHeader.addArrangedSubview(headerSpacer)
+        secHeader.addArrangedSubview(addLinkBtn)
+
+        linksCardsStack.orientation = .vertical
+        linksCardsStack.alignment = .leading
+        linksCardsStack.spacing = 8
+        linksCardsStack.translatesAutoresizingMaskIntoConstraints = false
 
         tabLinksContainer.addArrangedSubview(secHeader)
-        tabLinksContainer.addArrangedSubview(arxivBtn)
-        tabLinksContainer.addArrangedSubview(hjfyBtn)
-        tabLinksContainer.addArrangedSubview(linksStackView)
+        tabLinksContainer.addArrangedSubview(linksCardsStack)
 
         NSLayoutConstraint.activate([
             tabLinksContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
             secHeader.widthAnchor.constraint(equalTo: tabLinksContainer.widthAnchor),
-            arxivBtn.widthAnchor.constraint(equalTo: tabLinksContainer.widthAnchor),
-            hjfyBtn.widthAnchor.constraint(equalTo: tabLinksContainer.widthAnchor),
-            linksStackView.widthAnchor.constraint(equalTo: tabLinksContainer.widthAnchor)
+            linksCardsStack.widthAnchor.constraint(equalTo: tabLinksContainer.widthAnchor)
         ])
+
+        refreshLinksDrawerView()
     }
 
     func updateRightSidebarMetadataUI() {
@@ -1254,6 +1581,347 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         addRow(key: "添加日期", value: dateStr)
     }
 
+    // MARK: - Tab 2: 翻译与学术解析 (Actions & UI Refresh)
+    private func refreshTranslationTabUI() {
+        let model = LLMTranslationService.shared.modelName
+        let isConfigured = LLMTranslationService.shared.isRemoteConfigured
+        if isConfigured {
+            sidebarTransStatusLabel.stringValue = "● 引擎: \(model) (已连接)"
+            sidebarTransStatusLabel.textColor = NSColor(calibratedRed: 0.1, green: 0.65, blue: 0.25, alpha: 1.0)
+        } else {
+            sidebarTransStatusLabel.stringValue = "● 本地引擎: 双栏对照内置解析 (未配置 API Key)"
+            sidebarTransStatusLabel.textColor = .secondaryLabelColor
+        }
+
+        if sidebarTransResultMarkdown.isEmpty {
+            let placeholderHTML = MarkdownMathRenderer.buildSinglePreviewHTML(markdown: "*在 PDF 页面中划选任意文字，或在上方输入框键入文本后点击「立即翻译」即可在此生成学术译文与术语解析。*")
+            sidebarTransResultWebView.loadHTMLString(placeholderHTML, baseURL: nil)
+        }
+    }
+
+    @objc private func openTranslationSettingsModal() {
+        LLMTranslationService.shared.presentSettingsModal(from: view.window) { [weak self] in
+            self?.refreshTranslationTabUI()
+        }
+    }
+
+    @objc private func sidebarTransModeChanged(_ sender: NSSegmentedControl) {
+        switch sender.selectedSegment {
+        case 0: currentTranslationMode = .academicChinese
+        case 1: currentTranslationMode = .explainAndFormula
+        case 2: currentTranslationMode = .conciseSummary
+        default: currentTranslationMode = .englishPolish
+        }
+        if !sidebarTransSourceTextView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sidebarTranslateAction()
+        }
+    }
+
+    @objc private func sidebarTranslateAction() {
+        let rawText = sidebarTransSourceTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawText.isEmpty else { return }
+
+        sidebarTransProgress.startAnimation(nil)
+        let loadingHTML = MarkdownMathRenderer.buildSinglePreviewHTML(markdown: "*正在调用学术大模型进行翻译与术语解析…*")
+        sidebarTransResultWebView.loadHTMLString(loadingHTML, baseURL: nil)
+
+        sidebarTransActiveTask?.cancel()
+        sidebarTransActiveTask = LLMTranslationService.shared.translate(
+            text: rawText,
+            mode: currentTranslationMode,
+            pairedPageText: nil
+        ) { [weak self] result in
+            guard let self = self, !self.isClosed else { return }
+            self.sidebarTransProgress.stopAnimation(nil)
+            self.sidebarTransResultMarkdown = result.translatedMarkdown
+            self.sidebarTransStatusLabel.stringValue = "● 引擎：\(result.providerLabel)"
+            let html = MarkdownMathRenderer.buildSinglePreviewHTML(markdown: result.translatedMarkdown)
+            self.sidebarTransResultWebView.loadHTMLString(html, baseURL: nil)
+        }
+    }
+
+    @objc private func sidebarTranslateCurrentPageAction() {
+        let col = primaryActiveColumn()
+        guard let page = col.pdfView.currentPage, let pageText = page.string?.trimmingCharacters(in: .whitespacesAndNewlines), !pageText.isEmpty else {
+            return
+        }
+        sidebarTransSourceTextView.string = String(pageText.prefix(2500))
+        sidebarTranslateAction()
+    }
+
+    @objc private func sidebarClearTransSourceAction() {
+        sidebarTransSourceTextView.string = ""
+        sidebarTransResultMarkdown = ""
+        refreshTranslationTabUI()
+    }
+
+    @objc private func sidebarCopyTranslationAction() {
+        guard !sidebarTransResultMarkdown.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(sidebarTransResultMarkdown, forType: .string)
+    }
+
+    @objc private func sidebarInsertTranslationToNoteAction() {
+        guard !sidebarTransResultMarkdown.isEmpty else { return }
+        let src = sidebarTransSourceTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        let snippet: String
+        if !src.isEmpty {
+            let quoted = src.components(separatedBy: "\n").map { "> \($0)" }.joined(separator: "\n")
+            snippet = "\n\n\(quoted)\n\n\(sidebarTransResultMarkdown)\n"
+        } else {
+            snippet = "\n\n\(sidebarTransResultMarkdown)\n"
+        }
+        let targetNoteCol = rightCol.contentSource.isNote ? rightCol : leftCol
+        targetNoteCol.noteColumnView.appendOrInsertMarkdownLink(snippet)
+        switchWorkbenchTab(to: 1)
+    }
+
+    // MARK: - Tab 3: PDF 附件与文档 (Actions & UI Refresh)
+    private func refreshAttachmentsTabUI() {
+        attachmentsListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard let p = currentPaper else { return }
+
+        // --- Section 1: 核心 PDF 文档 ---
+        let coreHeader = NSTextField(labelWithString: "核心论文 PDF")
+        coreHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
+        coreHeader.textColor = .secondaryLabelColor
+        attachmentsListStack.addArrangedSubview(coreHeader)
+
+        let folder = LibraryStore.shared.folderURL(for: p.id)
+
+        // 1) 原版 PDF 卡片
+        let origCard = makeSidebarCardView()
+        let origStack = FlippedStackView()
+        origStack.orientation = .vertical
+        origStack.alignment = .leading
+        origStack.spacing = 6
+        origStack.translatesAutoresizingMaskIntoConstraints = false
+        origCard.contentView = origStack
+
+        let origTopRow = NSStackView()
+        origTopRow.orientation = .horizontal
+        origTopRow.alignment = .centerY
+        origTopRow.spacing = 6
+        origTopRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let origIcon = NSImageView()
+        origIcon.image = NSImage(systemSymbolName: "doc.text.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 14.0, weight: .medium))
+        origIcon.contentTintColor = .controlAccentColor
+
+        let origTitle = NSTextField(labelWithString: "原版 PDF (Original EN)")
+        origTitle.font = .systemFont(ofSize: 12.5, weight: .semibold)
+
+        let origSpacer = NSView()
+        origSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        origTopRow.addArrangedSubview(origIcon)
+        origTopRow.addArrangedSubview(origTitle)
+        origTopRow.addArrangedSubview(origSpacer)
+
+        let origDetails: NSTextField
+        let origBtnRow = NSStackView()
+        origBtnRow.orientation = .horizontal
+        origBtnRow.spacing = 8
+        origBtnRow.translatesAutoresizingMaskIntoConstraints = false
+
+        if let origFn = p.originalFilename {
+            let origPath = folder.appendingPathComponent(origFn).path
+            let sizeStr = formattedFileSize(at: origPath)
+            origDetails = NSTextField(labelWithString: "\(origFn) · \(sizeStr)")
+            origDetails.font = .systemFont(ofSize: 11.0)
+            origDetails.textColor = .secondaryLabelColor
+            origDetails.lineBreakMode = .byTruncatingMiddle
+
+            let revealBtn = makeCompactActionButton(title: "在Finder中显示", symbol: "folder", action: #selector(revealOriginalInFinder))
+            let replaceBtn = makeCompactActionButton(title: "替换…", symbol: "arrow.triangle.2.circlepath", action: #selector(importOrigPDFFromSidebar))
+            origBtnRow.addArrangedSubview(revealBtn)
+            origBtnRow.addArrangedSubview(replaceBtn)
+        } else {
+            origDetails = NSTextField(labelWithString: "尚未绑定原版英文 PDF")
+            origDetails.font = .systemFont(ofSize: 11.0)
+            origDetails.textColor = .placeholderTextColor
+
+            let addBtn = makeCompactActionButton(title: "＋ 导入 PDF…", symbol: "plus", action: #selector(importOrigPDFFromSidebar))
+            origBtnRow.addArrangedSubview(addBtn)
+        }
+
+        origStack.addArrangedSubview(origTopRow)
+        origStack.addArrangedSubview(origDetails)
+        origStack.addArrangedSubview(origBtnRow)
+        attachmentsListStack.addArrangedSubview(origCard)
+        origCard.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
+        origStack.widthAnchor.constraint(equalTo: origCard.widthAnchor, constant: -20).isActive = true
+
+        // 2) 中文译版 PDF 卡片
+        let transCard = makeSidebarCardView()
+        let transStack = FlippedStackView()
+        transStack.orientation = .vertical
+        transStack.alignment = .leading
+        transStack.spacing = 6
+        transStack.translatesAutoresizingMaskIntoConstraints = false
+        transCard.contentView = transStack
+
+        let transTopRow = NSStackView()
+        transTopRow.orientation = .horizontal
+        transTopRow.alignment = .centerY
+        transTopRow.spacing = 6
+        transTopRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let transIcon = NSImageView()
+        transIcon.image = NSImage(systemSymbolName: "character.book.closed.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 14.0, weight: .medium))
+        transIcon.contentTintColor = NSColor.systemGreen
+
+        let transTitle = NSTextField(labelWithString: "中文译版 (Translated ZH)")
+        transTitle.font = .systemFont(ofSize: 12.5, weight: .semibold)
+
+        let transSpacer = NSView()
+        transSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        transTopRow.addArrangedSubview(transIcon)
+        transTopRow.addArrangedSubview(transTitle)
+        transTopRow.addArrangedSubview(transSpacer)
+
+        let transDetails: NSTextField
+        let transBtnRow = NSStackView()
+        transBtnRow.orientation = .horizontal
+        transBtnRow.spacing = 8
+        transBtnRow.translatesAutoresizingMaskIntoConstraints = false
+
+        if let transFn = p.translatedFilename {
+            let transPath = folder.appendingPathComponent(transFn).path
+            let sizeStr = formattedFileSize(at: transPath)
+            transDetails = NSTextField(labelWithString: "\(transFn) · \(sizeStr)")
+            transDetails.font = .systemFont(ofSize: 11.0)
+            transDetails.textColor = .secondaryLabelColor
+            transDetails.lineBreakMode = .byTruncatingMiddle
+
+            let revealBtn = makeCompactActionButton(title: "在Finder中显示", symbol: "folder", action: #selector(revealTranslatedInFinder))
+            let replaceBtn = makeCompactActionButton(title: "替换…", symbol: "arrow.triangle.2.circlepath", action: #selector(importTransPDFFromSidebar))
+            let removeBtn = makeCompactActionButton(title: "移除", symbol: "trash", action: #selector(removeTranslatedPDFFindFromSidebar), tint: .systemRed)
+
+            transBtnRow.addArrangedSubview(revealBtn)
+            transBtnRow.addArrangedSubview(replaceBtn)
+            transBtnRow.addArrangedSubview(removeBtn)
+        } else {
+            transDetails = NSTextField(labelWithString: "尚未导入中文译本 (支持幻觉翻译 PDF 或自定义译稿)")
+            transDetails.font = .systemFont(ofSize: 11.0)
+            transDetails.textColor = .placeholderTextColor
+
+            let addBtn = makeCompactActionButton(title: "＋ 导入中文 PDF…", symbol: "plus", action: #selector(importTransPDFFromSidebar))
+            transBtnRow.addArrangedSubview(addBtn)
+        }
+
+        transStack.addArrangedSubview(transTopRow)
+        transStack.addArrangedSubview(transDetails)
+        transStack.addArrangedSubview(transBtnRow)
+        attachmentsListStack.addArrangedSubview(transCard)
+        transCard.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
+        transStack.widthAnchor.constraint(equalTo: transCard.widthAnchor, constant: -20).isActive = true
+
+        // --- Section 2: 附加文件列表 (Local files) ---
+        let localResources = p.resources.filter { $0.isLocalFile }
+        let attachHeader = NSTextField(labelWithString: "附加文件列表 (\(localResources.count))")
+        attachHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
+        attachHeader.textColor = .secondaryLabelColor
+        attachmentsListStack.addArrangedSubview(attachHeader)
+
+        if localResources.isEmpty {
+            let emptyCard = makeSidebarCardView()
+            let emptyLbl = NSTextField(wrappingLabelWithString: "暂无附加文件。点击上方「＋ 导入附件…」可导入演示文稿、代码压缩包、补充图表等。")
+            emptyLbl.font = .systemFont(ofSize: 11.5)
+            emptyLbl.textColor = .tertiaryLabelColor
+            emptyCard.contentView = emptyLbl
+            attachmentsListStack.addArrangedSubview(emptyCard)
+            emptyCard.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
+        } else {
+            for res in localResources {
+                let card = makeSidebarCardView()
+                let cStack = FlippedStackView()
+                cStack.orientation = .vertical
+                cStack.alignment = .leading
+                cStack.spacing = 5
+                cStack.translatesAutoresizingMaskIntoConstraints = false
+                card.contentView = cStack
+
+                let topRow = NSStackView()
+                topRow.orientation = .horizontal
+                topRow.alignment = .centerY
+                topRow.spacing = 6
+                topRow.translatesAutoresizingMaskIntoConstraints = false
+
+                let ext = (res.urlOrPath as NSString).pathExtension.lowercased()
+                let iconName: String
+                switch ext {
+                case "pdf": iconName = "doc.fill"
+                case "zip", "tar", "gz", "7z": iconName = "archivebox.fill"
+                case "py", "sh", "swift", "cpp", "c", "js", "ts": iconName = "curlybraces"
+                case "png", "jpg", "jpeg", "svg": iconName = "photo.fill"
+                default: iconName = "paperclip"
+                }
+                let iconView = NSImageView()
+                iconView.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)?
+                    .withSymbolConfiguration(.init(pointSize: 13.0, weight: .medium))
+                iconView.contentTintColor = .secondaryLabelColor
+
+                let nameLbl = NSTextField(labelWithString: res.title)
+                nameLbl.font = .systemFont(ofSize: 12.0, weight: .medium)
+                nameLbl.lineBreakMode = .byTruncatingMiddle
+
+                let spacer = NSView()
+                spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+                topRow.addArrangedSubview(iconView)
+                topRow.addArrangedSubview(nameLbl)
+                topRow.addArrangedSubview(spacer)
+
+                let sizeStr = formattedFileSize(at: res.urlOrPath)
+                let detailLbl = NSTextField(labelWithString: "大小: \(sizeStr)")
+                detailLbl.font = .systemFont(ofSize: 11.0)
+                detailLbl.textColor = .tertiaryLabelColor
+
+                let btnRow = NSStackView()
+                btnRow.orientation = .horizontal
+                btnRow.spacing = 8
+                btnRow.translatesAutoresizingMaskIntoConstraints = false
+
+                let openBtn = NSButton(title: "打开", target: self, action: #selector(openAttachmentFileFromBtn(_:)))
+                openBtn.bezelStyle = .inline
+                openBtn.isBordered = false
+                openBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
+                openBtn.contentTintColor = .controlAccentColor
+                openBtn.identifier = NSUserInterfaceItemIdentifier(res.urlOrPath)
+
+                let finderBtn = NSButton(title: "Finder", target: self, action: #selector(revealAttachmentInFinderFromBtn(_:)))
+                finderBtn.bezelStyle = .inline
+                finderBtn.isBordered = false
+                finderBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
+                finderBtn.contentTintColor = .secondaryLabelColor
+                finderBtn.identifier = NSUserInterfaceItemIdentifier(res.urlOrPath)
+
+                let delBtn = NSButton(title: "删除", target: self, action: #selector(deleteAttachmentFromBtn(_:)))
+                delBtn.bezelStyle = .inline
+                delBtn.isBordered = false
+                delBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
+                delBtn.contentTintColor = .systemRed
+                delBtn.identifier = NSUserInterfaceItemIdentifier(res.id)
+
+                btnRow.addArrangedSubview(openBtn)
+                btnRow.addArrangedSubview(finderBtn)
+                btnRow.addArrangedSubview(delBtn)
+
+                cStack.addArrangedSubview(topRow)
+                cStack.addArrangedSubview(detailLbl)
+                cStack.addArrangedSubview(btnRow)
+
+                attachmentsListStack.addArrangedSubview(card)
+                card.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
+                cStack.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -20).isActive = true
+            }
+        }
+    }
+
     @objc private func importOrigPDFFromSidebar() {
         promptToImportOrReplacePDF(in: leftCol)
     }
@@ -1266,9 +1934,572 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         guard let p = currentPaper else { return }
         let panel = NSOpenPanel()
         panel.title = "选择要导入到该条目的附件文件"
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        _ = LibraryStore.shared.importAttachmentFile(for: p.id, from: url)
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            _ = LibraryStore.shared.importAttachmentFile(for: p.id, from: url)
+        }
+        refreshAttachmentsTabUI()
+    }
+
+    @objc private func revealOriginalInFinder() {
+        guard let p = currentPaper, let fn = p.originalFilename else { return }
+        let path = LibraryStore.shared.folderURL(for: p.id).appendingPathComponent(fn)
+        NSWorkspace.shared.activateFileViewerSelecting([path])
+    }
+
+    @objc private func revealTranslatedInFinder() {
+        guard let p = currentPaper, let fn = p.translatedFilename else { return }
+        let path = LibraryStore.shared.folderURL(for: p.id).appendingPathComponent(fn)
+        NSWorkspace.shared.activateFileViewerSelecting([path])
+    }
+
+    @objc private func removeTranslatedPDFFindFromSidebar() {
+        guard let p = currentPaper else { return }
+        LibraryStore.shared.removeTranslatedPDF(for: p.id)
+        rightCol.pdfView.document = nil
+        refreshAttachmentsTabUI()
+    }
+
+    @objc private func openAttachmentFileFromBtn(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    @objc private func revealAttachmentInFinderFromBtn(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    @objc private func deleteAttachmentFromBtn(_ sender: NSButton) {
+        guard let resId = sender.identifier?.rawValue, let p = currentPaper else { return }
+        LibraryStore.shared.deleteExternalResource(for: p.id, resourceId: resId)
+        refreshAttachmentsTabUI()
+    }
+
+    // MARK: - Tab 4: 论文标签 (Actions & UI Refresh)
+    private func refreshTagsTabUI() {
+        tagsChipsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        suggestedTagsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard let p = currentPaper else { return }
+
+        tagsCountBadge.stringValue = "(\(p.tags.count))"
+
+        if p.tags.isEmpty {
+            let emptyLbl = NSTextField(labelWithString: "当前论文尚未添加标签")
+            emptyLbl.font = .systemFont(ofSize: 11.5)
+            emptyLbl.textColor = .tertiaryLabelColor
+            tagsChipsStack.addArrangedSubview(emptyLbl)
+        } else {
+            var currentRow = NSStackView()
+            currentRow.orientation = .horizontal
+            currentRow.spacing = 6
+            currentRow.alignment = .centerY
+            tagsChipsStack.addArrangedSubview(currentRow)
+
+            var currentWidth: CGFloat = 0
+            let maxWidth: CGFloat = 260
+
+            for tag in p.tags {
+                let chip = makeTagChipView(tag: tag)
+                let chipWidth = (tag as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12.0)]).width + 36
+                if currentWidth + chipWidth > maxWidth && currentWidth > 0 {
+                    currentRow = NSStackView()
+                    currentRow.orientation = .horizontal
+                    currentRow.spacing = 6
+                    currentRow.alignment = .centerY
+                    tagsChipsStack.addArrangedSubview(currentRow)
+                    currentWidth = 0
+                }
+                currentRow.addArrangedSubview(chip)
+                currentWidth += chipWidth + 6
+            }
+        }
+
+        let availableTags = LibraryStore.shared.allUniqueTags.filter { !p.tags.contains($0) }
+        if availableTags.isEmpty {
+            let emptySuggest = NSTextField(labelWithString: "暂无其他文库标签")
+            emptySuggest.font = .systemFont(ofSize: 11.5)
+            emptySuggest.textColor = .tertiaryLabelColor
+            suggestedTagsStack.addArrangedSubview(emptySuggest)
+        } else {
+            var currentRow = NSStackView()
+            currentRow.orientation = .horizontal
+            currentRow.spacing = 6
+            currentRow.alignment = .centerY
+            suggestedTagsStack.addArrangedSubview(currentRow)
+
+            var currentWidth: CGFloat = 0
+            let maxWidth: CGFloat = 260
+
+            for tag in availableTags.prefix(12) {
+                let btn = NSButton(title: "＋ \(tag)", target: self, action: #selector(addSuggestedTagFromBtn(_:)))
+                btn.bezelStyle = .inline
+                btn.isBordered = false
+                btn.contentTintColor = .controlAccentColor
+                btn.font = .systemFont(ofSize: 11.5)
+                btn.identifier = NSUserInterfaceItemIdentifier(tag)
+
+                let btnWidth = (tag as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11.5)]).width + 24
+                if currentWidth + btnWidth > maxWidth && currentWidth > 0 {
+                    currentRow = NSStackView()
+                    currentRow.orientation = .horizontal
+                    currentRow.spacing = 6
+                    currentRow.alignment = .centerY
+                    suggestedTagsStack.addArrangedSubview(currentRow)
+                    currentWidth = 0
+                }
+                currentRow.addArrangedSubview(btn)
+                currentWidth += btnWidth + 6
+            }
+        }
+    }
+
+    private func makeTagChipView(tag: String) -> NSView {
+        let chipBox = NSBox()
+        chipBox.boxType = .custom
+        chipBox.borderWidth = 0.5
+        chipBox.borderColor = ZoteroTheme.cardBorder
+        chipBox.fillColor = ZoteroTheme.tagBg
+        chipBox.cornerRadius = 10
+        chipBox.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.spacing = 4
+        row.alignment = .centerY
+        row.edgeInsets = NSEdgeInsets(top: 2, left: 8, bottom: 2, right: 6)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        chipBox.contentView = row
+
+        let label = NSTextField(labelWithString: tag)
+        label.font = .systemFont(ofSize: 12.0, weight: .medium)
+        label.textColor = .labelColor
+
+        let delBtn = NSButton()
+        delBtn.bezelStyle = .inline
+        delBtn.isBordered = false
+        delBtn.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "删除标签")?
+            .withSymbolConfiguration(.init(pointSize: 10.0, weight: .medium))
+        delBtn.contentTintColor = .secondaryLabelColor
+        delBtn.target = self
+        delBtn.action = #selector(removeTagFromBtn(_:))
+        delBtn.identifier = NSUserInterfaceItemIdentifier(tag)
+        delBtn.translatesAutoresizingMaskIntoConstraints = false
+        delBtn.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        delBtn.heightAnchor.constraint(equalToConstant: 14).isActive = true
+
+        row.addArrangedSubview(label)
+        row.addArrangedSubview(delBtn)
+
+        return chipBox
+    }
+
+    @objc private func addTagFromInput() {
+        guard let p = currentPaper else { return }
+        let raw = tagsInputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
+        let parts = raw.components(separatedBy: CharacterSet(charactersIn: ",，;；")).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        for t in parts {
+            LibraryStore.shared.addTag(t, for: p.id)
+        }
+        tagsInputField.stringValue = ""
+        refreshTagsTabUI()
+    }
+
+    @objc private func removeTagFromBtn(_ sender: NSButton) {
+        guard let tag = sender.identifier?.rawValue, let p = currentPaper else { return }
+        LibraryStore.shared.removeTag(tag, for: p.id)
+        refreshTagsTabUI()
+    }
+
+    @objc private func addSuggestedTagFromBtn(_ sender: NSButton) {
+        guard let tag = sender.identifier?.rawValue, let p = currentPaper else { return }
+        LibraryStore.shared.addTag(tag, for: p.id)
+        refreshTagsTabUI()
+    }
+
+    // MARK: - Tab 5: 外部链接与文献引用 (Actions & UI Refresh)
+    private func refreshLinksDrawerView() {
+        linksCardsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard let p = currentPaper else { return }
+
+        // --- Section 1: 官方学术导航 ---
+        let navHeader = NSTextField(labelWithString: "学术文献导航")
+        navHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
+        navHeader.textColor = .secondaryLabelColor
+        linksCardsStack.addArrangedSubview(navHeader)
+
+        let aid = p.cleanArxivId ?? ""
+
+        // 1) arXiv 官方主页卡片
+        let arxivCard = makeSidebarCardView()
+        let arxivStack = FlippedStackView()
+        arxivStack.orientation = .vertical
+        arxivStack.alignment = .leading
+        arxivStack.spacing = 5
+        arxivStack.translatesAutoresizingMaskIntoConstraints = false
+        arxivCard.contentView = arxivStack
+
+        let arxivTopRow = NSStackView()
+        arxivTopRow.orientation = .horizontal
+        arxivTopRow.alignment = .centerY
+        arxivTopRow.spacing = 6
+        arxivTopRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let arxivIcon = NSImageView()
+        arxivIcon.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13.0, weight: .medium))
+        arxivIcon.contentTintColor = .controlAccentColor
+
+        let arxivTitle = NSTextField(labelWithString: "arXiv 官方文献主页")
+        arxivTitle.font = .systemFont(ofSize: 12.0, weight: .semibold)
+
+        let arxivSpacer = NSView()
+        arxivSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        arxivTopRow.addArrangedSubview(arxivIcon)
+        arxivTopRow.addArrangedSubview(arxivTitle)
+        arxivTopRow.addArrangedSubview(arxivSpacer)
+
+        let arxivUrlLbl: NSTextField
+        let arxivBtnRow = NSStackView()
+        arxivBtnRow.orientation = .horizontal
+        arxivBtnRow.spacing = 8
+        arxivBtnRow.translatesAutoresizingMaskIntoConstraints = false
+
+        if !aid.isEmpty {
+            let urlStr = "https://arxiv.org/abs/\(aid)"
+            arxivUrlLbl = NSTextField(labelWithString: urlStr)
+            arxivUrlLbl.font = .systemFont(ofSize: 11.0)
+            arxivUrlLbl.textColor = .secondaryLabelColor
+            arxivUrlLbl.lineBreakMode = .byTruncatingMiddle
+
+            let openBtn = makeCompactActionButton(title: "打开 ↗", symbol: "safari", action: #selector(openArxivLinkFromSidebar))
+            let copyBtn = makeCompactActionButton(title: "复制 📋", symbol: "doc.on.doc", action: #selector(copyArxivLinkFromSidebar))
+            arxivBtnRow.addArrangedSubview(openBtn)
+            arxivBtnRow.addArrangedSubview(copyBtn)
+        } else {
+            arxivUrlLbl = NSTextField(labelWithString: "未关联 arXiv ID")
+            arxivUrlLbl.font = .systemFont(ofSize: 11.0)
+            arxivUrlLbl.textColor = .placeholderTextColor
+
+            let bindBtn = makeCompactActionButton(title: "＋ 绑定 arXiv ID…", symbol: "plus", action: #selector(promptBindArxivId))
+            arxivBtnRow.addArrangedSubview(bindBtn)
+        }
+
+        arxivStack.addArrangedSubview(arxivTopRow)
+        arxivStack.addArrangedSubview(arxivUrlLbl)
+        arxivStack.addArrangedSubview(arxivBtnRow)
+        linksCardsStack.addArrangedSubview(arxivCard)
+        arxivCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+        arxivStack.widthAnchor.constraint(equalTo: arxivCard.widthAnchor, constant: -20).isActive = true
+
+        // 2) 幻觉翻译卡片
+        let hjfyCard = makeSidebarCardView()
+        let hjfyStack = FlippedStackView()
+        hjfyStack.orientation = .vertical
+        hjfyStack.alignment = .leading
+        hjfyStack.spacing = 5
+        hjfyStack.translatesAutoresizingMaskIntoConstraints = false
+        hjfyCard.contentView = hjfyStack
+
+        let hjfyTopRow = NSStackView()
+        hjfyTopRow.orientation = .horizontal
+        hjfyTopRow.alignment = .centerY
+        hjfyTopRow.spacing = 6
+        hjfyTopRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let hjfyIcon = NSImageView()
+        hjfyIcon.image = NSImage(systemSymbolName: "text.bubble.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13.0, weight: .medium))
+        hjfyIcon.contentTintColor = NSColor.systemIndigo
+
+        let hjfyTitle = NSTextField(labelWithString: "幻觉翻译 (双语快速阅读)")
+        hjfyTitle.font = .systemFont(ofSize: 12.0, weight: .semibold)
+
+        let hjfySpacer = NSView()
+        hjfySpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        hjfyTopRow.addArrangedSubview(hjfyIcon)
+        hjfyTopRow.addArrangedSubview(hjfyTitle)
+        hjfyTopRow.addArrangedSubview(hjfySpacer)
+
+        let hjfyUrlLbl: NSTextField
+        let hjfyBtnRow = NSStackView()
+        hjfyBtnRow.orientation = .horizontal
+        hjfyBtnRow.spacing = 8
+        hjfyBtnRow.translatesAutoresizingMaskIntoConstraints = false
+
+        if !aid.isEmpty {
+            let urlStr = "https://hjfy.top/arxiv/\(aid)"
+            hjfyUrlLbl = NSTextField(labelWithString: urlStr)
+            hjfyUrlLbl.font = .systemFont(ofSize: 11.0)
+            hjfyUrlLbl.textColor = .secondaryLabelColor
+            hjfyUrlLbl.lineBreakMode = .byTruncatingMiddle
+
+            let openBtn = makeCompactActionButton(title: "前往 ↗", symbol: "safari", action: #selector(openHjfyLinkFromSidebar))
+            let copyBtn = makeCompactActionButton(title: "复制 📋", symbol: "doc.on.doc", action: #selector(copyHjfyLinkFromSidebar))
+            hjfyBtnRow.addArrangedSubview(openBtn)
+            hjfyBtnRow.addArrangedSubview(copyBtn)
+        } else {
+            hjfyUrlLbl = NSTextField(labelWithString: "需先关联 arXiv ID 才能跳转幻觉翻译")
+            hjfyUrlLbl.font = .systemFont(ofSize: 11.0)
+            hjfyUrlLbl.textColor = .placeholderTextColor
+
+            let disabledBtn = NSButton(title: "不可用 (无 arXiv ID)", target: nil, action: nil)
+            disabledBtn.bezelStyle = .inline
+            disabledBtn.isBordered = false
+            disabledBtn.isEnabled = false
+            disabledBtn.font = .systemFont(ofSize: 11.0)
+            hjfyBtnRow.addArrangedSubview(disabledBtn)
+        }
+
+        hjfyStack.addArrangedSubview(hjfyTopRow)
+        hjfyStack.addArrangedSubview(hjfyUrlLbl)
+        hjfyStack.addArrangedSubview(hjfyBtnRow)
+        linksCardsStack.addArrangedSubview(hjfyCard)
+        hjfyCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+        hjfyStack.widthAnchor.constraint(equalTo: hjfyCard.widthAnchor, constant: -20).isActive = true
+
+        // 3) DOI 官方出版链接
+        if !aid.isEmpty {
+            let doiCard = makeSidebarCardView()
+            let doiStack = FlippedStackView()
+            doiStack.orientation = .vertical
+            doiStack.alignment = .leading
+            doiStack.spacing = 5
+            doiStack.translatesAutoresizingMaskIntoConstraints = false
+            doiCard.contentView = doiStack
+
+            let doiTitle = NSTextField(labelWithString: "DOI 官方文献引用")
+            doiTitle.font = .systemFont(ofSize: 12.0, weight: .semibold)
+
+            let doiUrl = "https://doi.org/10.48550/arXiv.\(aid)"
+            let doiLbl = NSTextField(labelWithString: doiUrl)
+            doiLbl.font = .systemFont(ofSize: 11.0)
+            doiLbl.textColor = .secondaryLabelColor
+            doiLbl.lineBreakMode = .byTruncatingMiddle
+
+            let doiBtnRow = NSStackView()
+            doiBtnRow.orientation = .horizontal
+            doiBtnRow.spacing = 8
+            doiBtnRow.translatesAutoresizingMaskIntoConstraints = false
+
+            let openBtn = NSButton(title: "打开 ↗", target: self, action: #selector(openDoiLinkFromSidebar))
+            openBtn.bezelStyle = .inline
+            openBtn.isBordered = false
+            openBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
+            openBtn.contentTintColor = .controlAccentColor
+
+            let copyBtn = NSButton(title: "复制 📋", target: self, action: #selector(copyDoiLinkFromSidebar))
+            copyBtn.bezelStyle = .inline
+            copyBtn.isBordered = false
+            copyBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
+            copyBtn.contentTintColor = .controlAccentColor
+
+            doiBtnRow.addArrangedSubview(openBtn)
+            doiBtnRow.addArrangedSubview(copyBtn)
+
+            doiStack.addArrangedSubview(doiTitle)
+            doiStack.addArrangedSubview(doiLbl)
+            doiStack.addArrangedSubview(doiBtnRow)
+
+            linksCardsStack.addArrangedSubview(doiCard)
+            doiCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+            doiStack.widthAnchor.constraint(equalTo: doiCard.widthAnchor, constant: -20).isActive = true
+        }
+
+        // --- Section 2: 自定义外部链接 ---
+        let customLinks = p.resources.filter { !$0.isLocalFile }
+        let customHeader = NSTextField(labelWithString: "自定义关联链接 (\(customLinks.count))")
+        customHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
+        customHeader.textColor = .secondaryLabelColor
+        linksCardsStack.addArrangedSubview(customHeader)
+
+        if customLinks.isEmpty {
+            let emptyCard = makeSidebarCardView()
+            let emptyLbl = NSTextField(wrappingLabelWithString: "暂无自定义外部链接。点击右上角「＋ 添加外部链接…」添加 GitHub 仓库、项目主页等。")
+            emptyLbl.font = .systemFont(ofSize: 11.5)
+            emptyLbl.textColor = .tertiaryLabelColor
+            emptyCard.contentView = emptyLbl
+            linksCardsStack.addArrangedSubview(emptyCard)
+            emptyCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+        } else {
+            for res in customLinks {
+                let card = makeSidebarCardView()
+                let cStack = FlippedStackView()
+                cStack.orientation = .vertical
+                cStack.alignment = .leading
+                cStack.spacing = 5
+                cStack.translatesAutoresizingMaskIntoConstraints = false
+                card.contentView = cStack
+
+                let topRow = NSStackView()
+                topRow.orientation = .horizontal
+                topRow.alignment = .centerY
+                topRow.spacing = 6
+                topRow.translatesAutoresizingMaskIntoConstraints = false
+
+                let iconView = NSImageView()
+                iconView.image = NSImage(systemSymbolName: "link", accessibilityDescription: nil)?
+                    .withSymbolConfiguration(.init(pointSize: 13.0, weight: .medium))
+                iconView.contentTintColor = .controlAccentColor
+
+                let nameLbl = NSTextField(labelWithString: res.title)
+                nameLbl.font = .systemFont(ofSize: 12.0, weight: .semibold)
+                nameLbl.lineBreakMode = .byTruncatingTail
+
+                let spacer = NSView()
+                spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+                topRow.addArrangedSubview(iconView)
+                topRow.addArrangedSubview(nameLbl)
+                topRow.addArrangedSubview(spacer)
+
+                let urlLbl = NSTextField(labelWithString: res.urlOrPath)
+                urlLbl.font = .systemFont(ofSize: 11.0)
+                urlLbl.textColor = .secondaryLabelColor
+                urlLbl.lineBreakMode = .byTruncatingMiddle
+
+                let btnRow = NSStackView()
+                btnRow.orientation = .horizontal
+                btnRow.spacing = 8
+                btnRow.translatesAutoresizingMaskIntoConstraints = false
+
+                let openBtn = NSButton(title: "打开 ↗", target: self, action: #selector(openCustomLinkFromBtn(_:)))
+                openBtn.bezelStyle = .inline
+                openBtn.isBordered = false
+                openBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
+                openBtn.contentTintColor = .controlAccentColor
+                openBtn.identifier = NSUserInterfaceItemIdentifier(res.urlOrPath)
+
+                let copyBtn = NSButton(title: "复制 📋", target: self, action: #selector(copyCustomLinkFromBtn(_:)))
+                copyBtn.bezelStyle = .inline
+                copyBtn.isBordered = false
+                copyBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
+                copyBtn.contentTintColor = .controlAccentColor
+                copyBtn.identifier = NSUserInterfaceItemIdentifier(res.urlOrPath)
+
+                let delBtn = NSButton(title: "删除 ✕", target: self, action: #selector(deleteCustomLinkFromBtn(_:)))
+                delBtn.bezelStyle = .inline
+                delBtn.isBordered = false
+                delBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
+                delBtn.contentTintColor = .systemRed
+                delBtn.identifier = NSUserInterfaceItemIdentifier(res.id)
+
+                btnRow.addArrangedSubview(openBtn)
+                btnRow.addArrangedSubview(copyBtn)
+                btnRow.addArrangedSubview(delBtn)
+
+                cStack.addArrangedSubview(topRow)
+                cStack.addArrangedSubview(urlLbl)
+                cStack.addArrangedSubview(btnRow)
+
+                linksCardsStack.addArrangedSubview(card)
+                card.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+                cStack.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -20).isActive = true
+            }
+        }
+
+        // --- Section 3: 关联论文文献 ---
+        let relHeader = NSTextField(labelWithString: "文库关联文献 (\(p.relatedPapers.count))")
+        relHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
+        relHeader.textColor = .secondaryLabelColor
+        linksCardsStack.addArrangedSubview(relHeader)
+
+        if p.relatedPapers.isEmpty {
+            let emptyCard = makeSidebarCardView()
+            let emptyLbl = NSTextField(wrappingLabelWithString: "暂无关联论文。点击下方按钮可与文库其他论文双向绑定。")
+            emptyLbl.font = .systemFont(ofSize: 11.0)
+            emptyLbl.textColor = .tertiaryLabelColor
+            emptyCard.contentView = emptyLbl
+            linksCardsStack.addArrangedSubview(emptyCard)
+            emptyCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+        } else {
+            for rel in p.relatedPapers {
+                let targetTitle = LibraryStore.shared.paper(withId: rel.targetPaperId)?.title ?? rel.targetPaperId
+                let card = makeDrawerResourceCard(
+                    symbol: "doc.on.doc.fill",
+                    title: targetTitle,
+                    subtitle: rel.relationNote.isEmpty ? "点击在新标签页打开" : rel.relationNote,
+                    openId: rel.targetPaperId,
+                    openAction: #selector(openRelatedPaperFromDrawer(_:)),
+                    removeId: rel.targetPaperId,
+                    removeAction: #selector(unlinkRelatedFromDrawer(_:))
+                )
+                linksCardsStack.addArrangedSubview(card)
+                card.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+            }
+        }
+
+        let addRelBtn = NSButton(title: "＋ 关联库内其他论文…", target: self, action: #selector(addRelatedPaperInDrawer))
+        addRelBtn.bezelStyle = .rounded
+        addRelBtn.controlSize = .small
+        linksCardsStack.addArrangedSubview(addRelBtn)
+    }
+
+    private func makeDrawerResourceCard(
+        symbol: String,
+        title: String,
+        subtitle: String,
+        openId: String,
+        openAction: Selector,
+        removeId: String,
+        removeAction: Selector
+    ) -> NSView {
+        let card = makeSidebarCardView()
+        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
+        icon.contentTintColor = .controlAccentColor
+        icon.symbolConfiguration = .init(pointSize: 13, weight: .medium)
+
+        let titleBtn = NSButton(title: title, target: self, action: openAction)
+        titleBtn.isBordered = false
+        titleBtn.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleBtn.contentTintColor = .labelColor
+        titleBtn.alignment = .left
+        titleBtn.identifier = NSUserInterfaceItemIdentifier(openId)
+
+        let subLbl = NSTextField(labelWithString: subtitle)
+        subLbl.font = .systemFont(ofSize: 10.5)
+        subLbl.textColor = .secondaryLabelColor
+        subLbl.lineBreakMode = .byTruncatingMiddle
+
+        let vStack = NSStackView(views: [titleBtn, subLbl])
+        vStack.orientation = .vertical
+        vStack.alignment = .leading
+        vStack.spacing = 2
+
+        let delBtn = NSButton(title: "✕", target: self, action: removeAction)
+        delBtn.bezelStyle = .inline
+        delBtn.isBordered = false
+        delBtn.font = .systemFont(ofSize: 11)
+        delBtn.contentTintColor = .tertiaryLabelColor
+        delBtn.identifier = NSUserInterfaceItemIdentifier(removeId)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [icon, vStack, spacer, delBtn])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+        card.contentView = row
+
+        NSLayoutConstraint.activate([
+            card.heightAnchor.constraint(equalToConstant: 46),
+            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
+            row.centerYAnchor.constraint(equalTo: card.centerYAnchor)
+        ])
+        return card
+    }
+
+    @objc private func openRelatedPaperFromDrawer(_ sender: NSButton) {
+        if let targetId = sender.identifier?.rawValue {
+            onRequestOpenPaperTab?(targetId)
+        }
     }
 
     @objc private func openArxivLinkFromSidebar() {
@@ -1276,9 +2507,106 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         NSWorkspace.shared.open(url)
     }
 
+    @objc private func copyArxivLinkFromSidebar() {
+        guard let aid = currentPaper?.cleanArxivId else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("https://arxiv.org/abs/\(aid)", forType: .string)
+    }
+
     @objc private func openHjfyLinkFromSidebar() {
         guard let aid = currentPaper?.cleanArxivId, let url = URL(string: "https://hjfy.top/arxiv/\(aid)") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc private func copyHjfyLinkFromSidebar() {
+        guard let aid = currentPaper?.cleanArxivId else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("https://hjfy.top/arxiv/\(aid)", forType: .string)
+    }
+
+    @objc private func openDoiLinkFromSidebar() {
+        guard let aid = currentPaper?.cleanArxivId, let url = URL(string: "https://doi.org/10.48550/arXiv.\(aid)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func copyDoiLinkFromSidebar() {
+        guard let aid = currentPaper?.cleanArxivId else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("https://doi.org/10.48550/arXiv.\(aid)", forType: .string)
+    }
+
+    @objc private func promptBindArxivId() {
+        guard var p = currentPaper else { return }
+        let alert = NSAlert()
+        alert.messageText = "绑定 arXiv ID"
+        alert.informativeText = "输入论文的 arXiv ID (例如: 1706.03762v7 或 1706.03762)："
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        input.placeholderString = "1706.03762"
+        alert.accessoryView = input
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let aid = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !aid.isEmpty {
+                p.arxivId = aid
+                LibraryStore.shared.savePaper(p, notify: true)
+                refreshLinksDrawerView()
+                updateRightSidebarMetadataUI()
+            }
+        }
+    }
+
+    @objc private func promptAddCustomExternalLink() {
+        guard let p = currentPaper else { return }
+        let alert = NSAlert()
+        alert.messageText = "添加外部链接"
+        alert.informativeText = "输入链接标题与完整 URL 地址 (如 GitHub 源码、项目主页等)："
+        alert.addButton(withTitle: "添加")
+        alert.addButton(withTitle: "取消")
+
+        let container = NSStackView()
+        container.orientation = .vertical
+        container.alignment = .leading
+        container.spacing = 8
+        container.frame = NSRect(x: 0, y: 0, width: 300, height: 60)
+
+        let titleInput = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        titleInput.placeholderString = "链接标题 (如: GitHub 官方开源代码)"
+
+        let urlInput = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        urlInput.placeholderString = "https://github.com/..."
+
+        container.addArrangedSubview(titleInput)
+        container.addArrangedSubview(urlInput)
+        alert.accessoryView = container
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let title = titleInput.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let url = urlInput.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !url.isEmpty {
+                LibraryStore.shared.addExternalLink(for: p.id, title: title, url: url)
+                refreshLinksDrawerView()
+            }
+        }
+    }
+
+    @objc private func openCustomLinkFromBtn(_ sender: NSButton) {
+        guard let urlStr = sender.identifier?.rawValue, let url = URL(string: urlStr) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func copyCustomLinkFromBtn(_ sender: NSButton) {
+        guard let urlStr = sender.identifier?.rawValue else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(urlStr, forType: .string)
+    }
+
+    @objc private func deleteCustomLinkFromBtn(_ sender: NSButton) {
+        guard let resId = sender.identifier?.rawValue, let p = currentPaper else { return }
+        LibraryStore.shared.deleteExternalResource(for: p.id, resourceId: resId)
+        refreshLinksDrawerView()
     }
 
     @objc private func refreshMetadataAndCitationsAction() {
@@ -1287,14 +2615,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             DispatchQueue.main.async {
                 self?.updateRightSidebarMetadataUI()
             }
-        }
-    }
-
-    @objc private func sidebarTranslationModeChanged(_ sender: NSSegmentedControl) {
-        switch sender.selectedSegment {
-        case 0: currentTranslationMode = .academicChinese
-        case 1: currentTranslationMode = .explainAndFormula
-        default: currentTranslationMode = .conciseSummary
         }
     }
 
@@ -1843,7 +3163,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 }
             }
         }
-        if fields.contains(.resources) { linksNeedRefresh = true }
+        if fields.contains(.resources) {
+            linksNeedRefresh = true
+            refreshLinksDrawerView()
+            refreshAttachmentsTabUI()
+        }
+        if fields.contains(.metadata) {
+            refreshTagsTabUI()
+        }
         if !fields.intersection([.annotations, .resources]).isEmpty { updateDrawerBadgeTitles() }
     }
 
@@ -2226,6 +3553,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             if pairedPageText == nil {
                 pairedPageText = oppPage.string
             }
+        }
+
+        // 同步划选内容到右侧边栏翻译工作台
+        sidebarTransSourceTextView.string = rawText
+        if isDrawerOpen && currentWorkbenchTab == 2 {
+            sidebarTranslateAction()
         }
 
         translationProviderLabel?.stringValue = "正在生成 \(currentTranslationMode.displayName)…"
@@ -2864,154 +4197,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         notesWebView.loadHTMLString(html, baseURL: nil)
     }
 
-    private func refreshLinksDrawerView() {
-        guard isDrawerOpen, linksNeedRefresh else { return }
-        linksNeedRefresh = false
-        linksStackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        guard let paper = currentPaper else { return }
-
-        // 1) 相关论文区块
-        let relHeader = NSTextField(labelWithString: "相关联的论文 (\(paper.relatedPapers.count))")
-        relHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
-        relHeader.textColor = .secondaryLabelColor
-        linksStackView.addArrangedSubview(relHeader)
-
-        if paper.relatedPapers.isEmpty {
-            let emptyRel = NSTextField(labelWithString: "暂无关联论文，可将基线或后续论文与此篇双向绑定。")
-            emptyRel.font = .systemFont(ofSize: 11.5)
-            emptyRel.textColor = .tertiaryLabelColor
-            linksStackView.addArrangedSubview(emptyRel)
-        } else {
-            for rel in paper.relatedPapers {
-                let targetTitle = LibraryStore.shared.paper(withId: rel.targetPaperId)?.title ?? rel.targetPaperId
-                let card = makeDrawerResourceCard(
-                    symbol: "doc.on.doc.fill",
-                    title: targetTitle,
-                    subtitle: rel.relationNote.isEmpty ? "点击在新标签页打开对照阅读" : rel.relationNote,
-                    openId: rel.targetPaperId,
-                    openAction: #selector(openRelatedPaperFromDrawer(_:)),
-                    removeId: rel.targetPaperId,
-                    removeAction: #selector(unlinkRelatedFromDrawer(_:))
-                )
-                linksStackView.addArrangedSubview(card)
-                card.widthAnchor.constraint(equalTo: linksStackView.widthAnchor, constant: -24).isActive = true
-            }
-        }
-
-        let addRelBtn = NSButton(title: "＋ 关联库内其他论文…", target: self, action: #selector(addRelatedPaperInDrawer))
-        addRelBtn.bezelStyle = .rounded
-        addRelBtn.controlSize = .small
-        linksStackView.addArrangedSubview(addRelBtn)
-
-        let sep = NSBox()
-        sep.boxType = .separator
-        sep.translatesAutoresizingMaskIntoConstraints = false
-        linksStackView.addArrangedSubview(sep)
-        sep.widthAnchor.constraint(equalTo: linksStackView.widthAnchor, constant: -24).isActive = true
-
-        // 2) 相关文件与外部网页链接区块
-        let resHeader = NSTextField(labelWithString: "相关网页与本地附件 (\(paper.resources.count))")
-        resHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
-        resHeader.textColor = .secondaryLabelColor
-        linksStackView.addArrangedSubview(resHeader)
-
-        for res in paper.resources {
-            let card = makeDrawerResourceCard(
-                symbol: res.isLocalFile ? "folder.fill" : "globe",
-                title: res.title,
-                subtitle: res.urlOrPath,
-                openId: res.urlOrPath,
-                openAction: #selector(openResourceFromDrawer(_:)),
-                removeId: res.id,
-                removeAction: #selector(removeResourceFromDrawer(_:))
-            )
-            linksStackView.addArrangedSubview(card)
-            card.widthAnchor.constraint(equalTo: linksStackView.widthAnchor, constant: -24).isActive = true
-        }
-
-        let addWebBtn = NSButton(title: "＋ 网页链接", target: self, action: #selector(addWebResourceInDrawer))
-        addWebBtn.bezelStyle = .rounded
-        addWebBtn.controlSize = .small
-
-        let addFileBtn = NSButton(title: "＋ 本地文件", target: self, action: #selector(addLocalFileInDrawer))
-        addFileBtn.bezelStyle = .rounded
-        addFileBtn.controlSize = .small
-
-        let btnRow = NSStackView(views: [addWebBtn, addFileBtn])
-        btnRow.orientation = .horizontal
-        btnRow.spacing = 8
-        linksStackView.addArrangedSubview(btnRow)
-    }
-
-    private func makeDrawerResourceCard(
-        symbol: String,
-        title: String,
-        subtitle: String,
-        openId: String,
-        openAction: Selector,
-        removeId: String,
-        removeAction: Selector
-    ) -> NSView {
-        let card = ModernSurfaceCardView()
-        card.cornerRadius = 7
-        card.translatesAutoresizingMaskIntoConstraints = false
-
-        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
-        icon.contentTintColor = .controlAccentColor
-        icon.symbolConfiguration = .init(pointSize: 13, weight: .medium)
-
-        let titleBtn = NSButton(title: title, target: self, action: openAction)
-        titleBtn.isBordered = false
-        titleBtn.font = .systemFont(ofSize: 12, weight: .medium)
-        titleBtn.contentTintColor = .labelColor
-        titleBtn.alignment = .left
-        titleBtn.identifier = NSUserInterfaceItemIdentifier(openId)
-
-        let subLbl = NSTextField(labelWithString: subtitle)
-        subLbl.font = .systemFont(ofSize: 10.5)
-        subLbl.textColor = .secondaryLabelColor
-        subLbl.lineBreakMode = .byTruncatingMiddle
-
-        let vStack = NSStackView(views: [titleBtn, subLbl])
-        vStack.orientation = .vertical
-        vStack.alignment = .leading
-        vStack.spacing = 2
-
-        let delBtn = NSButton(title: "✕", target: self, action: removeAction)
-        delBtn.bezelStyle = .inline
-        delBtn.isBordered = false
-        delBtn.font = .systemFont(ofSize: 10.5)
-        delBtn.contentTintColor = .tertiaryLabelColor
-        delBtn.identifier = NSUserInterfaceItemIdentifier(removeId)
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        let row = NSStackView(views: [icon, vStack, spacer, delBtn])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(row)
-
-        NSLayoutConstraint.activate([
-            card.heightAnchor.constraint(equalToConstant: 44),
-            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
-            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
-            row.centerYAnchor.constraint(equalTo: card.centerYAnchor)
-        ])
-        return card
-    }
-
-    @objc private func openRelatedPaperFromDrawer(_ sender: NSButton) {
-        if let targetId = sender.identifier?.rawValue {
-            onRequestOpenPaperTab?(targetId)
-        }
-    }
-
     @objc private func unlinkRelatedFromDrawer(_ sender: NSButton) {
         if let targetId = sender.identifier?.rawValue {
             LibraryStore.shared.unlinkRelatedPapers(paperAId: paperId, paperBId: targetId)
+            refreshLinksDrawerView()
         }
     }
 
@@ -3037,55 +4226,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             let idx = pop.indexOfSelectedItem
             if idx >= 0 && idx < others.count {
                 LibraryStore.shared.linkRelatedPapers(paperAId: paperId, paperBId: others[idx].id, note: noteF.stringValue)
+                refreshLinksDrawerView()
             }
-        }
-    }
-
-    @objc private func openResourceFromDrawer(_ sender: NSButton) {
-        if let pathOrURL = sender.identifier?.rawValue {
-            openUniversalLink(pathOrURL)
-        }
-    }
-
-    @objc private func removeResourceFromDrawer(_ sender: NSButton) {
-        guard let resId = sender.identifier?.rawValue,
-              var paper = currentPaper else { return }
-        paper.resources.removeAll { $0.id == resId }
-        LibraryStore.shared.savePaper(paper, notify: true)
-    }
-
-    @objc private func addWebResourceInDrawer() {
-        let alert = NSAlert()
-        alert.messageText = "添加论文相关网页链接"
-        alert.addButton(withTitle: "添加")
-        alert.addButton(withTitle: "取消")
-
-        let box = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 62))
-        let nameF = NSTextField(frame: NSRect(x: 0, y: 34, width: 340, height: 24))
-        nameF.placeholderString = "链接名称（如：GitHub 代码仓库 / 知乎解读）"
-        let urlF = NSTextField(frame: NSRect(x: 0, y: 2, width: 340, height: 24))
-        urlF.placeholderString = "https://..."
-        box.addSubview(nameF)
-        box.addSubview(urlF)
-        alert.accessoryView = box
-
-        if alert.runModal() == .alertFirstButtonReturn,
-           var paper = currentPaper {
-            let u = urlF.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !u.isEmpty else { return }
-            let t = nameF.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            paper.resources.append(ExternalResource(title: t.isEmpty ? u : t, urlOrPath: u, isLocalFile: false))
-            LibraryStore.shared.savePaper(paper, notify: true)
-        }
-    }
-
-    @objc private func addLocalFileInDrawer() {
-        let panel = NSOpenPanel()
-        panel.title = "选择要挂载到本论文的本地文件"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
-        if panel.runModal() == .OK, let url = panel.url {
-            _ = LibraryStore.shared.addLocalAttachment(to: paperId, fileURL: url)
         }
     }
 
