@@ -399,6 +399,74 @@ autoreleasepool {
         }
     }
 
+    // 连续跳转只保留最近一次起点，返回后不可继续回溯；两栏分别验证。
+    reader.setColumnSource(reader.rightCol, source: .pdf(id: "translated"))
+    reader.syncScrollBtn.state = .off
+    reader.toggleSyncScrollAction()
+    reader.view.layoutSubtreeIfNeeded()
+    for column in [reader.leftCol, reader.rightCol] {
+        guard let scrollView = column.internalScrollView(),
+              let document = column.pdfView.document,
+              let firstPage = document.page(at: 0) else {
+            check(false, "Jump-back regression has a loaded PDF and scroll view")
+            continue
+        }
+        let side = column.side.rawValue
+        let otherColumn = column === reader.leftCol ? reader.rightCol : reader.leftCol
+        column.pdfView.go(to: firstPage)
+        var latestOrigin = scrollView.contentView.bounds.origin.y
+        for pageIndex in [1, 0, 1, 0] {
+            latestOrigin = scrollView.contentView.bounds.origin.y
+            reader.handleNoteJumpURL("dualpdf://jump?pdf=\(column.activePDFDocumentId)&page=\(pageIndex)", fromNoteCol: otherColumn)
+        }
+        check(abs(scrollView.contentView.bounds.origin.y - latestOrigin) > 1,
+              "\(side) consecutive jumps reach a different scroll position")
+        column.backJumpButton.performClick(nil)
+        check(abs(scrollView.contentView.bounds.origin.y - latestOrigin) < 1,
+              "\(side) back returns to the latest jump origin")
+        check(column.backJumpBanner.isHidden && column.backJumpButton.keyEquivalent.isEmpty,
+              "\(side) back consumes the only return point and clears its shortcut")
+        let returnedOrigin = scrollView.contentView.bounds.origin.y
+        reader.popBackJumpAction(for: column)
+        check(abs(scrollView.contentView.bounds.origin.y - returnedOrigin) < 1 && column.backJumpBanner.isHidden,
+              "\(side) repeated back cannot reach an older jump")
+        reader.handleNoteJumpURL("dualpdf://jump?pdf=\(column.activePDFDocumentId)&page=0", fromNoteCol: otherColumn)
+        check(!column.backJumpBanner.isHidden, "\(side) a new jump enables back again")
+        reader.popBackJumpAction()
+        check(abs(scrollView.contentView.bounds.origin.y - returnedOrigin) < 1 && column.backJumpBanner.isHidden,
+              "\(side) keyboard back consumes a newly recorded return point")
+    }
+
+    reader.pushJumpRecord(from: reader.leftCol)
+    reader.pushJumpRecord(from: reader.rightCol)
+    reader.popBackJumpAction()
+    check(reader.rightCol.backJumpBanner.isHidden && !reader.leftCol.backJumpBanner.isHidden &&
+          reader.leftCol.backJumpButton.keyEquivalent == "[",
+          "Returning the latest column preserves the other column return point and shortcut")
+    reader.popBackJumpAction()
+    check(reader.leftCol.backJumpBanner.isHidden && reader.rightCol.backJumpBanner.isHidden &&
+          reader.leftCol.backJumpButton.keyEquivalent.isEmpty && reader.rightCol.backJumpButton.keyEquivalent.isEmpty,
+          "Each column has exactly one independent return point")
+
+    if let extraId = addedExtra?.id, let scrollView = reader.leftCol.internalScrollView() {
+        let originalOrigin = scrollView.contentView.bounds.origin.y
+        reader.handleNoteJumpURL("dualpdf://jump?pdf=\(extraId)&page=1", fromNoteCol: reader.rightCol)
+        check(reader.leftCol.contentSource == .pdf(id: extraId), "Jump can target another PDF in the same paper")
+        reader.popBackJumpAction(for: reader.leftCol)
+        check(reader.leftCol.contentSource == .pdf(id: "original") && reader.leftCol.backJumpBanner.isHidden,
+              "Single-step back restores the original PDF and consumes its return point")
+        check(abs((reader.leftCol.internalScrollView()?.contentView.bounds.origin.y ?? -1) - originalOrigin) < 1,
+              "Single-step back restores the original PDF scroll position")
+    }
+
+    reader.pushJumpRecord(from: reader.leftCol)
+    reader.pushJumpRecord(from: reader.rightCol)
+    reader.loadPaperDocuments()
+    reader.popBackJumpAction()
+    check(reader.leftCol.backJumpBanner.isHidden && reader.rightCol.backJumpBanner.isHidden &&
+          reader.leftCol.backJumpButton.keyEquivalent.isEmpty && reader.rightCol.backJumpButton.keyEquivalent.isEmpty,
+          "Reloading documents clears both single-step return points and shortcuts")
+
     reader.prepareForClose()
 }
 

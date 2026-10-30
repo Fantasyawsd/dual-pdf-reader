@@ -37,9 +37,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let pdfThumbnailView = PDFThumbnailView()
     private var isLeftOverlayOpen = false
 
-    // 浮动“返回”胶囊按钮状态（左栏与右栏独立记录与显示）
-    private var leftJumpStack: [ReadingJumpRecord] = []
-    private var rightJumpStack: [ReadingJumpRecord] = []
+    // 每栏仅保留最近一次跳转前的位置；返回后清空，不累积历史。
+    private var leftJumpRecord: ReadingJumpRecord?
+    private var rightJumpRecord: ReadingJumpRecord?
     private weak var lastJumpCol: CleanPDFColumnView?
 
     // 右侧工作台分栏 (Zotero 7 手风琴纵向卡片：论文信息、划词翻译设置、随手笔记)
@@ -873,13 +873,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         )
         lastJumpCol = col
         if col === leftCol {
-            leftJumpStack.append(record)
+            leftJumpRecord = record
             leftCol.backJumpBanner.isHidden = false
             leftCol.backJumpButton.keyEquivalent = "["
             leftCol.backJumpButton.keyEquivalentModifierMask = [.command]
             rightCol.backJumpButton.keyEquivalent = ""
         } else {
-            rightJumpStack.append(record)
+            rightJumpRecord = record
             rightCol.backJumpBanner.isHidden = false
             rightCol.backJumpButton.keyEquivalent = "["
             rightCol.backJumpButton.keyEquivalentModifierMask = [.command]
@@ -889,16 +889,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     func popBackJumpAction(for col: CleanPDFColumnView) {
         let isLeft = (col === leftCol)
-        var stack = isLeft ? leftJumpStack : rightJumpStack
-        guard let record = stack.popLast() else {
+        guard let record = (isLeft ? leftJumpRecord : rightJumpRecord) else {
             col.backJumpBanner.isHidden = true
             col.backJumpButton.keyEquivalent = ""
             return
         }
         if isLeft {
-            leftJumpStack = stack
+            leftJumpRecord = nil
         } else {
-            rightJumpStack = stack
+            rightJumpRecord = nil
         }
 
         if col.contentSource != .pdf(id: record.pdfDocumentId) {
@@ -915,35 +914,33 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             }
         }
 
-        col.backJumpBanner.isHidden = stack.isEmpty
-        if stack.isEmpty {
-            col.backJumpButton.keyEquivalent = ""
-            let otherCol = (col === leftCol) ? rightCol : leftCol
-            let otherStack = (col === leftCol) ? rightJumpStack : leftJumpStack
-            if !otherStack.isEmpty {
-                otherCol.backJumpButton.keyEquivalent = "["
-                otherCol.backJumpButton.keyEquivalentModifierMask = [.command]
-                lastJumpCol = otherCol
-            } else {
-                lastJumpCol = nil
-            }
+        col.backJumpBanner.isHidden = true
+        col.backJumpButton.keyEquivalent = ""
+        let otherCol = isLeft ? rightCol : leftCol
+        let otherRecord = isLeft ? rightJumpRecord : leftJumpRecord
+        if otherRecord != nil {
+            otherCol.backJumpButton.keyEquivalent = "["
+            otherCol.backJumpButton.keyEquivalentModifierMask = [.command]
+            lastJumpCol = otherCol
+        } else {
+            lastJumpCol = nil
         }
         updatePageIndicatorAndSaveProgress()
     }
 
     @objc func popBackJumpAction() {
         if let last = lastJumpCol {
-            if last === leftCol && !leftJumpStack.isEmpty {
+            if last === leftCol && leftJumpRecord != nil {
                 popBackJumpAction(for: leftCol)
                 return
-            } else if last === rightCol && !rightJumpStack.isEmpty {
+            } else if last === rightCol && rightJumpRecord != nil {
                 popBackJumpAction(for: rightCol)
                 return
             }
         }
-        if !leftJumpStack.isEmpty {
+        if leftJumpRecord != nil {
             popBackJumpAction(for: leftCol)
-        } else if !rightJumpStack.isEmpty {
+        } else if rightJumpRecord != nil {
             popBackJumpAction(for: rightCol)
         }
     }
@@ -1211,8 +1208,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         notesNeedRefresh = true
         linksNeedRefresh = true
 
-        leftJumpStack.removeAll()
-        rightJumpStack.removeAll()
+        leftJumpRecord = nil
+        rightJumpRecord = nil
         leftCol.backJumpBanner.isHidden = true
         rightCol.backJumpBanner.isHidden = true
         leftCol.backJumpButton.keyEquivalent = ""
