@@ -454,6 +454,20 @@ testWin.contentView?.addSubview(titleBarView)
 check(titleBarView.mouseDownCanMoveWindow && tabScroll.mouseDownCanMoveWindow && docView.mouseDownCanMoveWindow,
       "Title bar and tab scroll view permit window movement on drag")
 
+check(TabOrder.moving("B", toInsertionIndex: 0, in: ["A", "B", "C"]) == ["B", "A", "C"],
+      "Tab order moves a tab to the leading edge")
+check(TabOrder.moving("A", toInsertionIndex: 3, in: ["A", "B", "C"]) == ["B", "C", "A"],
+      "Tab order moves a tab to the trailing edge")
+check(TabOrder.moving("C", toInsertionIndex: 2, in: ["A", "B", "C"]) == ["A", "B", "C"],
+      "Dropping a tab before itself preserves order")
+check(TabOrder.insertionIndex(
+    forX: 95,
+    tabFrames: [
+        NSRect(x: 0, y: 0, width: 100, height: 32),
+        NSRect(x: 106, y: 0, width: 100, height: 32)
+    ]
+) == 1, "Tab insertion index follows the nearest tab midpoint")
+
 let initialFrame = testWin.frame
 let dummyEvent = NSEvent.mouseEvent(
     with: .leftMouseDown,

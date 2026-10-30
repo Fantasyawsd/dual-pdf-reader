@@ -1,4 +1,5 @@
 import Cocoa
+import QuartzCore
 import UniformTypeIdentifiers
 
 final class MultiTabMainWindowController: NSWindowController {
@@ -9,9 +10,13 @@ final class MultiTabMainWindowController: NSWindowController {
 
     let libraryVC = LibraryViewController()
     private var openReaderTabs: [String: ReaderTabViewController] = [:]
-    private var orderedTabPaperIds: [String] = []
+    private var orderedTabIds: [String] = ["__LIBRARY__"]
     private(set) var activeTabId: String = "__LIBRARY__"
     private var cachedTabViews: [String: ZoteroTabItemView] = [:]
+
+    private var orderedTabPaperIds: [String] {
+        orderedTabIds.filter { $0 != "__LIBRARY__" }
+    }
 
     var activeReaderVC: ReaderTabViewController? {
         return openReaderTabs[activeTabId]
@@ -34,6 +39,7 @@ final class MultiTabMainWindowController: NSWindowController {
         super.init(window: win)
 
         setupWindowUI()
+        setupTabDragging()
         setupCallbacks()
         switchToTab(id: "__LIBRARY__")
     }
@@ -203,6 +209,12 @@ final class MultiTabMainWindowController: NSWindowController {
         )
     }
 
+    private func setupTabDragging() {
+        tabBarStack.onTabDrop = { [weak self] tabId, insertionIndex in
+            self?.moveTab(id: tabId, toInsertionIndex: insertionIndex)
+        }
+    }
+
     @objc private func handleStoreChanged(_ notification: Notification) {
         let change = notification.userInfo?["change"] as? LibraryChange
         guard change?.resetsLibrary == true || change?.fields.contains(.membership) == true ||
@@ -224,7 +236,7 @@ final class MultiTabMainWindowController: NSWindowController {
                 self?.openOrSwitchToPaperTab(paperId: targetId, jumpToAnnot: nil, switchImmediately: true)
             }
             openReaderTabs[paperId] = readerVC
-            orderedTabPaperIds.append(paperId)
+            orderedTabIds.append(paperId)
         }
 
         if switchImmediately {
@@ -272,7 +284,7 @@ final class MultiTabMainWindowController: NSWindowController {
         guard let vc = openReaderTabs.removeValue(forKey: paperId) else { return }
         vc.prepareForClose()
         if vc.isViewLoaded { vc.view.removeFromSuperview() }
-        orderedTabPaperIds.removeAll { $0 == paperId }
+        orderedTabIds.removeAll { $0 == paperId }
         cachedTabViews.removeValue(forKey: paperId)
 
         if activeTabId == paperId {
@@ -292,57 +304,59 @@ final class MultiTabMainWindowController: NSWindowController {
                 if vc.isViewLoaded { vc.view.removeFromSuperview() }
             }
         }
-        orderedTabPaperIds.removeAll { $0 != paperId }
+        orderedTabIds.removeAll { $0 != "__LIBRARY__" && $0 != paperId }
         switchToTab(id: paperId)
     }
 
     @objc func rebuildTabBarUI() {
+        rebuildTabBarUI(animatedFrom: nil)
+    }
+
+    private func rebuildTabBarUI(animatedFrom previousFrames: [String: NSRect]?) {
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
-        // 1. 固定首标签：我的文库 (Obsidian / Zotero 7 风格)
-        let isLibActive = (activeTabId == "__LIBRARY__")
-        let libTab = cachedTabViews["__LIBRARY__"] ?? ZoteroTabItemView(
-            tabId: "__LIBRARY__",
-            title: "我的文库",
-            symbol: "building.columns",
-            symbolTint: NSColor(calibratedRed: 0.36, green: 0.45, blue: 0.82, alpha: 1.0),
-            isActive: isLibActive,
-            closable: false
-        )
-        libTab.isActiveTab = isLibActive
-        libTab.onSelect = { [weak self] id in self?.switchToTab(id: id) }
-        cachedTabViews["__LIBRARY__"] = libTab
-        tabBarStack.addArrangedSubview(libTab)
+        var activeTabView: ZoteroTabItemView?
 
-        var activeTabView: NSView = libTab
+        // 标签顺序是唯一的布局来源；文库标签和论文标签都可自由换位。
+        for tabId in orderedTabIds {
+            let isTabActive = (activeTabId == tabId)
+            let tabView: ZoteroTabItemView
 
-        // 2. 打开的论文双栏阅读标签页
-        for pid in orderedTabPaperIds {
-            guard let paper = LibraryStore.shared.paper(withId: pid) else { continue }
-            let isTabActive = (activeTabId == pid)
-            let tabView = cachedTabViews[pid] ?? ZoteroTabItemView(
-                tabId: pid,
-                title: paper.title,
-                symbol: "doc.richtext.fill",
-                symbolTint: .systemRed,
-                isActive: isTabActive,
-                closable: true
-            )
+            if tabId == "__LIBRARY__" {
+                tabView = cachedTabViews[tabId] ?? ZoteroTabItemView(
+                    tabId: tabId,
+                    title: "我的文库",
+                    symbol: "building.columns",
+                    symbolTint: NSColor(calibratedRed: 0.36, green: 0.45, blue: 0.82, alpha: 1.0),
+                    isActive: isTabActive,
+                    closable: false
+                )
+                tabView.onSelect = { [weak self] id in self?.switchToTab(id: id) }
+            } else {
+                guard let paper = LibraryStore.shared.paper(withId: tabId) else { continue }
+                tabView = cachedTabViews[tabId] ?? ZoteroTabItemView(
+                    tabId: tabId,
+                    title: paper.title,
+                    symbol: "doc.richtext.fill",
+                    symbolTint: .systemRed,
+                    isActive: isTabActive,
+                    closable: true
+                )
+                tabView.onSelect = { [weak self] id in self?.switchToTab(id: id) }
+                tabView.onClose = { [weak self] id in self?.closePaperTab(paperId: id) }
+                tabView.onCloseOthers = { [weak self] id in self?.closeOtherPaperTabs(keeping: id) }
+                tabView.onRevealInFinder = { pid in
+                    NSWorkspace.shared.open(LibraryStore.shared.folderURL(for: pid))
+                }
+            }
+
             tabView.isActiveTab = isTabActive
-            tabView.onSelect = { [weak self] id in self?.switchToTab(id: id) }
-            tabView.onClose = { [weak self] id in self?.closePaperTab(paperId: id) }
-            tabView.onCloseOthers = { [weak self] id in self?.closeOtherPaperTabs(keeping: id) }
-            tabView.onRevealInFinder = { pid in
-                NSWorkspace.shared.open(LibraryStore.shared.folderURL(for: pid))
-            }
-            cachedTabViews[pid] = tabView
+            cachedTabViews[tabId] = tabView
             tabBarStack.addArrangedSubview(tabView)
-            if isTabActive {
-                activeTabView = tabView
-            }
+            if isTabActive { activeTabView = tabView }
         }
 
-        // 3. Obsidian 风格快捷创建/导入新标签按钮 (+)
+        // Obsidian 风格快捷创建/导入新标签按钮 (+)，不参与排序。
         let newTabBtn = NSButton()
         newTabBtn.bezelStyle = .inline
         newTabBtn.isBordered = false
@@ -364,8 +378,51 @@ final class MultiTabMainWindowController: NSWindowController {
         } else {
             tabBarScrollView.layoutSubtreeIfNeeded()
         }
-        scrollTabHorizontallyIntoView(activeTabView)
+        if let activeTabView {
+            scrollTabHorizontallyIntoView(activeTabView)
+        }
+        if let previousFrames {
+            animateTabReorder(from: previousFrames)
+        }
         window?.viewsNeedDisplay = true
+    }
+
+    private func moveTab(id: String, toInsertionIndex insertionIndex: Int) {
+        let previousFrames = Dictionary(
+            uniqueKeysWithValues: tabBarStack.arrangedSubviews.compactMap { view -> (String, NSRect)? in
+                guard let tab = view as? ZoteroTabItemView else { return nil }
+                return (tab.tabId, tab.frame)
+            }
+        )
+        let reordered = TabOrder.moving(id, toInsertionIndex: insertionIndex, in: orderedTabIds)
+        guard reordered != orderedTabIds else { return }
+        orderedTabIds = reordered
+        rebuildTabBarUI(animatedFrom: previousFrames)
+    }
+
+    private func animateTabReorder(from previousFrames: [String: NSRect]) {
+        guard let root = window?.contentView else { return }
+        root.layoutSubtreeIfNeeded()
+        tabBarStack.layoutSubtreeIfNeeded()
+
+        for view in tabBarStack.arrangedSubviews {
+            guard let tab = view as? ZoteroTabItemView,
+                  let oldFrame = previousFrames[tab.tabId],
+                  oldFrame.origin != tab.frame.origin else { continue }
+
+            let motion = CABasicAnimation(keyPath: "position")
+            motion.fromValue = NSValue(point: NSPoint(x: oldFrame.midX, y: oldFrame.midY))
+            motion.toValue = NSValue(point: NSPoint(x: tab.frame.midX, y: tab.frame.midY))
+            motion.duration = 0.18
+            motion.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
+            tab.layer?.add(motion, forKey: "tabReorder")
+
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0.82
+            fade.toValue = 1
+            fade.duration = 0.14
+            tab.layer?.add(fade, forKey: "tabReorderFade")
+        }
     }
 
     @objc private func openCreatePaperAction() {
@@ -489,17 +546,15 @@ final class MultiTabMainWindowController: NSWindowController {
     }
 
     @objc func selectPreviousTabShortcut() {
-        let allTabs = ["__LIBRARY__"] + orderedTabPaperIds
-        guard allTabs.count > 1, let curIdx = allTabs.firstIndex(of: activeTabId) else { return }
-        let prevIdx = (curIdx - 1 + allTabs.count) % allTabs.count
-        switchToTab(id: allTabs[prevIdx])
+        guard orderedTabIds.count > 1, let curIdx = orderedTabIds.firstIndex(of: activeTabId) else { return }
+        let prevIdx = (curIdx - 1 + orderedTabIds.count) % orderedTabIds.count
+        switchToTab(id: orderedTabIds[prevIdx])
     }
 
     @objc func selectNextTabShortcut() {
-        let allTabs = ["__LIBRARY__"] + orderedTabPaperIds
-        guard allTabs.count > 1, let curIdx = allTabs.firstIndex(of: activeTabId) else { return }
-        let nextIdx = (curIdx + 1) % allTabs.count
-        switchToTab(id: allTabs[nextIdx])
+        guard orderedTabIds.count > 1, let curIdx = orderedTabIds.firstIndex(of: activeTabId) else { return }
+        let nextIdx = (curIdx + 1) % orderedTabIds.count
+        switchToTab(id: orderedTabIds[nextIdx])
     }
 
     @objc func readerModeDualShortcut() { activeReaderVC?.setDisplayMode(2) }
