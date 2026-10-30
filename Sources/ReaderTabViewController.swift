@@ -3,6 +3,60 @@ import PDFKit
 import WebKit
 import UniformTypeIdentifiers
 
+// MARK: - Zotero 7 Native Theming & Flipped Views
+enum ZoteroTheme {
+    static let sidebarBg = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.15, green: 0.16, blue: 0.18, alpha: 1.0)
+            : NSColor(calibratedRed: 0.965, green: 0.965, blue: 0.97, alpha: 1.0)
+    }
+
+    static let sidebarHeaderBg = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.165, green: 0.175, blue: 0.195, alpha: 1.0)
+            : NSColor(calibratedRed: 0.95, green: 0.95, blue: 0.955, alpha: 1.0)
+    }
+
+    static let dividerColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.22, green: 0.23, blue: 0.25, alpha: 1.0)
+            : NSColor(calibratedRed: 0.88, green: 0.88, blue: 0.89, alpha: 1.0)
+    }
+
+    static let activeRailItemBg = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.25, green: 0.32, blue: 0.45, alpha: 0.45)
+            : NSColor(calibratedRed: 0.85, green: 0.89, blue: 0.96, alpha: 1.0)
+    }
+}
+
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+final class FlippedStackView: NSStackView {
+    override var isFlipped: Bool { true }
+}
+
+final class ZoteroRightDrawerView: NSView {
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        ZoteroTheme.sidebarBg.setFill()
+        bounds.fill()
+    }
+}
+
+final class ZoteroSidebarHeaderView: NSView {
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        ZoteroTheme.sidebarHeaderBg.setFill()
+        bounds.fill()
+
+        ZoteroTheme.dividerColor.setFill()
+        NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
+    }
+}
+
 // MARK: - Reader Tab View Controller (Minimalist, Modern macOS Dual-Pane Reader)
 final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WKScriptMessageHandler {
     private(set) var paperId: String
@@ -42,23 +96,36 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private var rightJumpRecord: ReadingJumpRecord?
     private weak var lastJumpCol: CleanPDFColumnView?
 
-    // 右侧工作台分栏 (Zotero 7 手风琴纵向卡片：论文信息、划词翻译设置、随手笔记)
-    private let rightDrawer = NSView()
+    // 双栏与侧边栏两级布局：外层 masterSplitView 分隔 PDF 绘图区与右侧边栏，内层 splitView 保持双栏 50%/50% 对等
+    private let masterSplitView = NSSplitView()
+    private let pdfCanvasContainer = NSView()
+
+    // 右侧工作台分栏 (Zotero 7 原生排版：顶部论文标题、左侧信息/笔记/翻译面板、右侧垂直图标栏)
+    private let rightDrawer = ZoteroRightDrawerView()
     private var isDrawerOpen = false
+    private var currentWorkbenchTab: Int = 0 // 0: Info, 1: Notes, 2: Translation, 3: Attachments, 4: Tags, 5: Links
     private var notesNeedRefresh = true
     private var linksNeedRefresh = true
+
+    private let sidebarHeaderView = ZoteroSidebarHeaderView()
+    private let sidebarPaperTitleLabel = NSTextField(labelWithString: "")
+
+    private let workbenchRailView = NSView()
+    private var workbenchRailButtons: [NSButton] = []
+
+    private let workbenchContentScrollView = NSScrollView()
+    private let tabInfoContainer = FlippedStackView()
+    private let tabNotesContainer = FlippedStackView()
+    private let tabTranslationContainer = FlippedStackView()
+    private let tabAttachmentsContainer = FlippedStackView()
+    private let tabTagsContainer = FlippedStackView()
+    private let tabLinksContainer = FlippedStackView()
+
+    private let metadataFieldsStack = FlippedStackView()
+    private let searchToggleBtn = NSButton()
+    private let linksStackView = FlippedStackView()
+
     private let outlineContainer = NSView()
-    private let notesContainer = NSView()
-    private let linksContainer = NSView()
-    private let linksStackView = NSStackView()
-
-    private let metaTitleLabel = NSTextField(wrappingLabelWithString: "")
-    private let metaAuthorsLabel = NSTextField(wrappingLabelWithString: "")
-    private let metaYearVenueLabel = NSTextField(labelWithString: "")
-    private let metaArxivBadge = NSButton()
-    private let metaHjfyBadge = NSButton()
-    private let metaCitationLabel = NSTextField(labelWithString: "")
-
     private let outlineTableView = NSTableView()
     private var outlineItems: [(title: String, pageIndex: Int, depth: Int)] = []
     private var isUpdatingOutlineSelection = false
@@ -151,7 +218,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         pageRatioOffset = currentPaper?.syncOffsetDelta ?? 0.0
 
-        setupMinimalTopBar(in: root)
         setupMainCanvasAndDrawer(in: root)
         setupFloatingBackBanners()
         setupSyncAndCallbacks()
@@ -166,17 +232,20 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     // MARK: - 1. Minimalist Modern macOS Top Bar (38pt height, 3 Balanced Groups)
-    private func setupMinimalTopBar(in root: NSView) {
+    private func setupMinimalTopBar(in container: NSView) {
         topBar.material = .headerView
         topBar.blendingMode = .withinWindow
         topBar.translatesAutoresizingMaskIntoConstraints = false
 
         // --- Group A (Left): 视图模式 & 同步控制 ---
+        let barIconConfig = NSImage.SymbolConfiguration(pointSize: 14.0, weight: .medium)
+        let barSubIconConfig = NSImage.SymbolConfiguration(pointSize: 13.0, weight: .medium)
+
         leftSidebarToggleBtn.bezelStyle = .texturedRounded
         leftSidebarToggleBtn.controlSize = .small
         leftSidebarToggleBtn.setButtonType(.pushOnPushOff)
         leftSidebarToggleBtn.state = .off
-        leftSidebarToggleBtn.image = NSImage(systemSymbolName: "sidebar.leading", accessibilityDescription: "展开大纲与页面缩略图")
+        leftSidebarToggleBtn.image = NSImage(systemSymbolName: "sidebar.leading", accessibilityDescription: "展开大纲与页面缩略图")?.withSymbolConfiguration(barIconConfig)
         leftSidebarToggleBtn.toolTip = "展开/收起左侧大纲与页面缩略图 (⌘1)"
         leftSidebarToggleBtn.keyEquivalent = "1"
         leftSidebarToggleBtn.keyEquivalentModifierMask = [.command]
@@ -195,7 +264,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let swapBtn = NSButton()
         swapBtn.bezelStyle = .texturedRounded
         swapBtn.controlSize = .small
-        swapBtn.image = NSImage(systemSymbolName: "arrow.left.arrow.right", accessibilityDescription: "左右互换")
+        swapBtn.image = NSImage(systemSymbolName: "arrow.left.arrow.right", accessibilityDescription: "左右互换")?.withSymbolConfiguration(barSubIconConfig)
         swapBtn.toolTip = "左右两栏位置互换 (⇧⌘X)"
         swapBtn.target = self
         swapBtn.action = #selector(swapColumnsAction)
@@ -204,7 +273,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         syncScrollBtn.controlSize = .small
         syncScrollBtn.setButtonType(.pushOnPushOff)
         syncScrollBtn.state = .on
-        syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "同步滚动")
+        syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "同步滚动")?.withSymbolConfiguration(barSubIconConfig)
         syncScrollBtn.title = " 同步"
         syncScrollBtn.imagePosition = .imageLeading
         syncScrollBtn.toolTip = "开启/关闭双栏同步滚动 (⇧⌘S)\n小技巧：按住 ⌥ Option 键滚动任意一栏可微调双栏段落对齐差"
@@ -215,7 +284,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         syncZoomBtn.controlSize = .small
         syncZoomBtn.setButtonType(.pushOnPushOff)
         syncZoomBtn.state = .on
-        syncZoomBtn.image = NSImage(systemSymbolName: "plus.magnifyingglass", accessibilityDescription: "同步缩放")
+        syncZoomBtn.image = NSImage(systemSymbolName: "plus.magnifyingglass", accessibilityDescription: "同步缩放")?.withSymbolConfiguration(barSubIconConfig)
         syncZoomBtn.toolTip = "双栏同步缩放开关"
         syncZoomBtn.target = self
         syncZoomBtn.action = #selector(toggleSyncZoomAction)
@@ -233,7 +302,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         // --- Group B (Center): 页码步进/跳转 & 缩放控制 ---
         prevPageBtn.bezelStyle = .texturedRounded
         prevPageBtn.controlSize = .small
-        prevPageBtn.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "上一页")
+        prevPageBtn.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "上一页")?.withSymbolConfiguration(barSubIconConfig)
         prevPageBtn.toolTip = "上一页"
         prevPageBtn.target = self
         prevPageBtn.action = #selector(prevPageAction)
@@ -248,7 +317,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         nextPageBtn.bezelStyle = .texturedRounded
         nextPageBtn.controlSize = .small
-        nextPageBtn.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "下一页")
+        nextPageBtn.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "下一页")?.withSymbolConfiguration(barSubIconConfig)
         nextPageBtn.toolTip = "下一页"
         nextPageBtn.target = self
         nextPageBtn.action = #selector(nextPageAction)
@@ -256,7 +325,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let zoomOutBtn = NSButton()
         zoomOutBtn.bezelStyle = .texturedRounded
         zoomOutBtn.controlSize = .small
-        zoomOutBtn.image = NSImage(systemSymbolName: "minus", accessibilityDescription: "缩小")
+        zoomOutBtn.image = NSImage(systemSymbolName: "minus", accessibilityDescription: "缩小")?.withSymbolConfiguration(barSubIconConfig)
         zoomOutBtn.toolTip = "缩小页面 (⌘-)"
         zoomOutBtn.target = self
         zoomOutBtn.action = #selector(zoomOutBothAction)
@@ -272,19 +341,20 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let zoomInBtn = NSButton()
         zoomInBtn.bezelStyle = .texturedRounded
         zoomInBtn.controlSize = .small
-        zoomInBtn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "放大")
+        zoomInBtn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "放大")?.withSymbolConfiguration(barSubIconConfig)
         zoomInBtn.toolTip = "放大页面 (⌘+)"
         zoomInBtn.target = self
         zoomInBtn.action = #selector(zoomInBothAction)
 
-        // --- Group C (Right): 页内搜索 & 右侧抽屉开关 ---
+        // --- Group C (Right): Zotero 7 原生排版 (页内搜索图标 / 侧边栏图标) ---
         searchField.placeholderString = "页内查找 (⌘F)…"
         searchField.controlSize = .small
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchFieldReturnPressed)
         searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.widthAnchor.constraint(equalToConstant: 155).isActive = true
+        searchField.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        searchField.isHidden = true
 
         searchMatchLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         searchMatchLabel.textColor = .secondaryLabelColor
@@ -293,22 +363,33 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         searchNavSeg.segmentCount = 2
         searchNavSeg.setImage(NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "上一个匹配"), forSegment: 0)
         searchNavSeg.setImage(NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "下一个匹配"), forSegment: 1)
-        searchNavSeg.setWidth(24, forSegment: 0)
-        searchNavSeg.setWidth(24, forSegment: 1)
+        searchNavSeg.setWidth(22, forSegment: 0)
+        searchNavSeg.setWidth(22, forSegment: 1)
         searchNavSeg.trackingMode = .momentary
         searchNavSeg.controlSize = .small
         searchNavSeg.target = self
         searchNavSeg.action = #selector(searchNavClicked)
         searchNavSeg.isHidden = true
 
+        searchToggleBtn.bezelStyle = .texturedRounded
+        searchToggleBtn.controlSize = .small
+        searchToggleBtn.setButtonType(.pushOnPushOff)
+        searchToggleBtn.state = .off
+        searchToggleBtn.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "在文档中搜索")?.withSymbolConfiguration(barIconConfig)
+        searchToggleBtn.toolTip = "在文档中搜索 (⌘F)"
+        searchToggleBtn.keyEquivalent = "f"
+        searchToggleBtn.keyEquivalentModifierMask = [.command]
+        searchToggleBtn.target = self
+        searchToggleBtn.action = #selector(toggleSearchFieldAction)
+
         drawerToggleBtn.bezelStyle = .texturedRounded
         drawerToggleBtn.controlSize = .small
         drawerToggleBtn.setButtonType(.pushOnPushOff)
         drawerToggleBtn.state = .off
-        drawerToggleBtn.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "展开工具栏")
-        drawerToggleBtn.title = " 工具栏"
-        drawerToggleBtn.imagePosition = .imageLeading
-        drawerToggleBtn.toolTip = "展开/收起右侧论文信息、划词翻译与随手笔记工具栏 (⌘I)"
+        drawerToggleBtn.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "切换侧边栏")?.withSymbolConfiguration(barIconConfig)
+        drawerToggleBtn.title = ""
+        drawerToggleBtn.imagePosition = .imageOnly
+        drawerToggleBtn.toolTip = "切换侧边栏 (⌘I)"
         drawerToggleBtn.keyEquivalent = "i"
         drawerToggleBtn.keyEquivalentModifierMask = [.command]
         drawerToggleBtn.target = self
@@ -340,6 +421,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             searchMatchLabel,
             searchNavSeg,
             searchField,
+            searchToggleBtn,
             drawerToggleBtn
         ])
         barStack.orientation = .horizontal
@@ -354,15 +436,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         sep.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(sep)
 
-        root.addSubview(topBar)
+        container.addSubview(topBar)
 
         let equalSpacerConstraint = leftSpacer.widthAnchor.constraint(equalTo: rightSpacer.widthAnchor)
         equalSpacerConstraint.priority = NSLayoutConstraint.Priority(240)
 
         NSLayoutConstraint.activate([
-            topBar.topAnchor.constraint(equalTo: root.topAnchor),
-            topBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            topBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            topBar.topAnchor.constraint(equalTo: container.topAnchor),
+            topBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            topBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             topBar.heightAnchor.constraint(equalToConstant: 42),
 
             barStack.topAnchor.constraint(equalTo: topBar.topAnchor),
@@ -390,37 +472,59 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // MARK: - 2. Dual-Pane SplitView + Resizable Right Workbench + Floating Left Overlay
     private func setupMainCanvasAndDrawer(in root: NSView) {
-        splitView.isVertical = true
-        splitView.dividerStyle = .thin
-        splitView.translatesAutoresizingMaskIntoConstraints = false
-        splitView.addArrangedSubview(leftCol)
-        splitView.addArrangedSubview(rightCol)
-        splitView.addArrangedSubview(rightDrawer)
+        masterSplitView.isVertical = true
+        masterSplitView.dividerStyle = .thin
+        masterSplitView.delegate = self
+        masterSplitView.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(masterSplitView)
+
+        pdfCanvasContainer.translatesAutoresizingMaskIntoConstraints = false
+        masterSplitView.addArrangedSubview(pdfCanvasContainer)
 
         setupRightDrawerContents()
 
         rightDrawer.translatesAutoresizingMaskIntoConstraints = false
         rightDrawer.isHidden = true
+        masterSplitView.addArrangedSubview(rightDrawer)
 
-        root.addSubview(splitView)
+        masterSplitView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
+        masterSplitView.setHoldingPriority(.defaultHigh, forSubviewAt: 1)
+
+        NSLayoutConstraint.activate([
+            masterSplitView.topAnchor.constraint(equalTo: root.topAnchor),
+            masterSplitView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            masterSplitView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            masterSplitView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+
+            pdfCanvasContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: 440),
+            rightDrawer.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
+            rightDrawer.widthAnchor.constraint(lessThanOrEqualToConstant: 620)
+        ])
+
+        setupMinimalTopBar(in: pdfCanvasContainer)
+
+        splitView.isVertical = true
+        splitView.dividerStyle = .thin
+        splitView.translatesAutoresizingMaskIntoConstraints = false
+        splitView.addArrangedSubview(leftCol)
+        splitView.addArrangedSubview(rightCol)
+        pdfCanvasContainer.addSubview(splitView)
 
         let equalColWidths = leftCol.widthAnchor.constraint(equalTo: rightCol.widthAnchor)
         equalColWidths.priority = .defaultLow
 
         NSLayoutConstraint.activate([
             splitView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
-            splitView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            splitView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            splitView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            splitView.leadingAnchor.constraint(equalTo: pdfCanvasContainer.leadingAnchor),
+            splitView.trailingAnchor.constraint(equalTo: pdfCanvasContainer.trailingAnchor),
+            splitView.bottomAnchor.constraint(equalTo: pdfCanvasContainer.bottomAnchor),
 
-            leftCol.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
-            rightCol.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
-            rightDrawer.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
-            rightDrawer.widthAnchor.constraint(lessThanOrEqualToConstant: 620),
+            leftCol.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
+            rightCol.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
             equalColWidths
         ])
 
-        setupLeftOverlaySidebar(in: root)
+        setupLeftOverlaySidebar(in: pdfCanvasContainer)
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self, !self.isClosed else { return }
@@ -428,7 +532,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
     }
 
-    private func setupLeftOverlaySidebar(in root: NSView) {
+    private func setupLeftOverlaySidebar(in container: NSView) {
         leftOverlaySidebar.material = .hudWindow
         leftOverlaySidebar.blendingMode = .withinWindow
         leftOverlaySidebar.state = .active
@@ -499,12 +603,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         pdfThumbnailView.translatesAutoresizingMaskIntoConstraints = false
         thumbnailsContainer.addSubview(pdfThumbnailView)
 
-        root.addSubview(leftOverlaySidebar)
+        container.addSubview(leftOverlaySidebar)
 
         NSLayoutConstraint.activate([
             leftOverlaySidebar.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 8),
-            leftOverlaySidebar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
-            leftOverlaySidebar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8),
+            leftOverlaySidebar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            leftOverlaySidebar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
             leftOverlaySidebar.widthAnchor.constraint(equalToConstant: 280),
 
             topBarView.topAnchor.constraint(equalTo: leftOverlaySidebar.topAnchor, constant: 8),
@@ -543,213 +647,299 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         ])
     }
 
+    @objc private func toggleSearchFieldAction() {
+        let shouldShow = searchField.isHidden
+        searchField.isHidden = !shouldShow
+        searchNavSeg.isHidden = !shouldShow
+        searchMatchLabel.isHidden = !shouldShow || currentSearchMatches.isEmpty
+        searchToggleBtn.state = shouldShow ? .on : .off
+        if shouldShow {
+            searchField.becomeFirstResponder()
+        } else {
+            currentSearchMatches.removeAll()
+            leftCol.pdfView.clearSelection()
+            rightCol.pdfView.clearSelection()
+            searchField.stringValue = ""
+        }
+    }
+
     private func setupRightDrawerContents() {
-        let drawerBg = NSVisualEffectView()
-        drawerBg.material = .sidebar
-        drawerBg.blendingMode = .withinWindow
-        drawerBg.translatesAutoresizingMaskIntoConstraints = false
-        rightDrawer.addSubview(drawerBg)
+        let mainInspectorArea = NSView()
+        mainInspectorArea.translatesAutoresizingMaskIntoConstraints = false
+        rightDrawer.addSubview(mainInspectorArea)
 
-        let drawerScrollView = NSScrollView()
-        drawerScrollView.drawsBackground = false
-        drawerScrollView.hasVerticalScroller = true
-        drawerScrollView.hasHorizontalScroller = false
-        drawerScrollView.translatesAutoresizingMaskIntoConstraints = false
+        workbenchRailView.translatesAutoresizingMaskIntoConstraints = false
+        rightDrawer.addSubview(workbenchRailView)
 
-        let drawerStack = NSStackView()
-        drawerStack.orientation = .vertical
-        drawerStack.alignment = .leading
-        drawerStack.spacing = 14
-        drawerStack.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 20, right: 14)
-        drawerStack.translatesAutoresizingMaskIntoConstraints = false
-        drawerScrollView.documentView = drawerStack
-        rightDrawer.addSubview(drawerScrollView)
+        let railSep = NSBox()
+        railSep.boxType = .custom
+        railSep.borderWidth = 0
+        railSep.fillColor = ZoteroTheme.dividerColor
+        railSep.translatesAutoresizingMaskIntoConstraints = false
+        rightDrawer.addSubview(railSep)
 
         NSLayoutConstraint.activate([
-            drawerBg.topAnchor.constraint(equalTo: rightDrawer.topAnchor),
-            drawerBg.bottomAnchor.constraint(equalTo: rightDrawer.bottomAnchor),
-            drawerBg.leadingAnchor.constraint(equalTo: rightDrawer.leadingAnchor),
-            drawerBg.trailingAnchor.constraint(equalTo: rightDrawer.trailingAnchor),
+            mainInspectorArea.topAnchor.constraint(equalTo: rightDrawer.topAnchor),
+            mainInspectorArea.bottomAnchor.constraint(equalTo: rightDrawer.bottomAnchor),
+            mainInspectorArea.leadingAnchor.constraint(equalTo: rightDrawer.leadingAnchor),
+            mainInspectorArea.trailingAnchor.constraint(equalTo: railSep.leadingAnchor),
 
-            drawerScrollView.topAnchor.constraint(equalTo: rightDrawer.topAnchor),
-            drawerScrollView.bottomAnchor.constraint(equalTo: rightDrawer.bottomAnchor),
-            drawerScrollView.leadingAnchor.constraint(equalTo: rightDrawer.leadingAnchor),
-            drawerScrollView.trailingAnchor.constraint(equalTo: rightDrawer.trailingAnchor),
-            drawerStack.widthAnchor.constraint(equalTo: drawerScrollView.widthAnchor)
+            railSep.topAnchor.constraint(equalTo: rightDrawer.topAnchor),
+            railSep.bottomAnchor.constraint(equalTo: rightDrawer.bottomAnchor),
+            railSep.trailingAnchor.constraint(equalTo: workbenchRailView.leadingAnchor),
+            railSep.widthAnchor.constraint(equalToConstant: 1),
+
+            workbenchRailView.topAnchor.constraint(equalTo: rightDrawer.topAnchor),
+            workbenchRailView.bottomAnchor.constraint(equalTo: rightDrawer.bottomAnchor),
+            workbenchRailView.trailingAnchor.constraint(equalTo: rightDrawer.trailingAnchor),
+            workbenchRailView.widthAnchor.constraint(equalToConstant: 44)
         ])
 
-        setupMetadataSection(in: drawerStack)
-        setupTranslationSettingsSection(in: drawerStack)
-        setupNotesSection(in: drawerStack)
+        setupSidebarHeader(in: mainInspectorArea)
+        setupSidebarContentTabs(in: mainInspectorArea)
+        setupWorkbenchRail()
 
         updateRightSidebarMetadataUI()
+        switchWorkbenchTab(to: 0)
     }
 
-    private func setupMetadataSection(in parentStack: NSStackView) {
-        let card = ModernSurfaceCardView()
-        card.cornerRadius = 8
-        card.translatesAutoresizingMaskIntoConstraints = false
+    private func setupSidebarHeader(in mainView: NSView) {
+        sidebarHeaderView.translatesAutoresizingMaskIntoConstraints = false
+        mainView.addSubview(sidebarHeaderView)
 
-        let cardStack = NSStackView()
-        cardStack.orientation = .vertical
-        cardStack.alignment = .leading
-        cardStack.spacing = 6
-        cardStack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 12, right: 12)
-        cardStack.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(cardStack)
+        sidebarPaperTitleLabel.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        sidebarPaperTitleLabel.textColor = .labelColor
+        sidebarPaperTitleLabel.lineBreakMode = .byTruncatingTail
+        sidebarPaperTitleLabel.maximumNumberOfLines = 1
+        sidebarPaperTitleLabel.isSelectable = true
+        sidebarPaperTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        sidebarHeaderView.addSubview(sidebarPaperTitleLabel)
 
-        let headerStack = NSStackView()
-        headerStack.orientation = .horizontal
-        headerStack.alignment = .centerY
-        headerStack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            sidebarHeaderView.topAnchor.constraint(equalTo: mainView.topAnchor),
+            sidebarHeaderView.leadingAnchor.constraint(equalTo: mainView.leadingAnchor),
+            sidebarHeaderView.trailingAnchor.constraint(equalTo: mainView.trailingAnchor),
+            sidebarHeaderView.heightAnchor.constraint(equalToConstant: 42),
 
-        let secTitle = NSTextField(labelWithString: "▾ 论文信息")
-        secTitle.font = .systemFont(ofSize: 13, weight: .bold)
+            sidebarPaperTitleLabel.leadingAnchor.constraint(equalTo: sidebarHeaderView.leadingAnchor, constant: 14),
+            sidebarPaperTitleLabel.centerYAnchor.constraint(equalTo: sidebarHeaderView.centerYAnchor),
+            sidebarPaperTitleLabel.trailingAnchor.constraint(equalTo: sidebarHeaderView.trailingAnchor, constant: -14)
+        ])
+    }
+
+    private func setupWorkbenchRail() {
+        workbenchRailButtons.removeAll()
+        workbenchRailView.subviews.forEach { $0.removeFromSuperview() }
+
+        let railStack = NSStackView()
+        railStack.orientation = .vertical
+        railStack.alignment = .centerX
+        railStack.spacing = 10
+        railStack.edgeInsets = NSEdgeInsets(top: 10, left: 4, bottom: 10, right: 4)
+        railStack.translatesAutoresizingMaskIntoConstraints = false
+        workbenchRailView.addSubview(railStack)
+
+        NSLayoutConstraint.activate([
+            railStack.topAnchor.constraint(equalTo: workbenchRailView.topAnchor),
+            railStack.leadingAnchor.constraint(equalTo: workbenchRailView.leadingAnchor),
+            railStack.trailingAnchor.constraint(equalTo: workbenchRailView.trailingAnchor)
+        ])
+
+        let tabDefs: [(icon: String, tooltip: String, tag: Int)] = [
+            ("doc.text", "条目信息 (元数据)", 0),
+            ("square.and.pencil", "随手笔记与高亮", 1),
+            ("character.book.closed", "划词翻译与学术解析", 2),
+            ("paperclip", "PDF 附件与文档", 3),
+            ("tag", "论文标签", 4),
+            ("link", "相关条目与外部链接", 5)
+        ]
+
+        for def in tabDefs {
+            let btn = NSButton()
+            btn.bezelStyle = .inline
+            btn.isBordered = false
+            btn.image = NSImage(systemSymbolName: def.icon, accessibilityDescription: def.tooltip)?
+                .withSymbolConfiguration(.init(pointSize: 19.0, weight: .medium))
+            btn.contentTintColor = (def.tag == currentWorkbenchTab) ? .controlAccentColor : .secondaryLabelColor
+            btn.toolTip = def.tooltip
+            btn.tag = def.tag
+            btn.target = self
+            btn.action = #selector(workbenchRailButtonClicked(_:))
+            btn.translatesAutoresizingMaskIntoConstraints = false
+            btn.widthAnchor.constraint(equalToConstant: 34).isActive = true
+            btn.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            railStack.addArrangedSubview(btn)
+            workbenchRailButtons.append(btn)
+        }
+    }
+
+    @objc private func workbenchRailButtonClicked(_ sender: NSButton) {
+        switchWorkbenchTab(to: sender.tag)
+    }
+
+    private func switchWorkbenchTab(to index: Int) {
+        currentWorkbenchTab = index
+        for btn in workbenchRailButtons {
+            let isActive = (btn.tag == index)
+            btn.contentTintColor = isActive ? .controlAccentColor : .secondaryLabelColor
+            btn.wantsLayer = true
+            btn.layer?.backgroundColor = isActive ? ZoteroTheme.activeRailItemBg.cgColor : NSColor.clear.cgColor
+            btn.layer?.cornerRadius = 6
+        }
+
+        tabInfoContainer.isHidden = (index != 0)
+        tabNotesContainer.isHidden = (index != 1)
+        tabTranslationContainer.isHidden = (index != 2)
+        tabAttachmentsContainer.isHidden = (index != 3)
+        tabTagsContainer.isHidden = (index != 4)
+        tabLinksContainer.isHidden = (index != 5)
+
+        if index == 0 {
+            updateRightSidebarMetadataUI()
+        } else if index == 1 {
+            notesNeedRefresh = true
+            refreshNotesDrawerWebView()
+        } else if index == 5 {
+            refreshLinksDrawerView()
+        }
+    }
+
+    private func setupSidebarContentTabs(in mainView: NSView) {
+        workbenchContentScrollView.drawsBackground = false
+        workbenchContentScrollView.hasVerticalScroller = true
+        workbenchContentScrollView.hasHorizontalScroller = false
+        workbenchContentScrollView.translatesAutoresizingMaskIntoConstraints = false
+        mainView.addSubview(workbenchContentScrollView)
+
+        let contentStack = FlippedStackView()
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 10
+        contentStack.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 20, right: 14)
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        workbenchContentScrollView.documentView = contentStack
+
+        NSLayoutConstraint.activate([
+            workbenchContentScrollView.topAnchor.constraint(equalTo: sidebarHeaderView.bottomAnchor),
+            workbenchContentScrollView.bottomAnchor.constraint(equalTo: mainView.bottomAnchor),
+            workbenchContentScrollView.leadingAnchor.constraint(equalTo: mainView.leadingAnchor),
+            workbenchContentScrollView.trailingAnchor.constraint(equalTo: mainView.trailingAnchor),
+            contentStack.widthAnchor.constraint(equalTo: workbenchContentScrollView.widthAnchor)
+        ])
+
+        setupInfoTab(in: contentStack)
+        setupNotesTab(in: contentStack)
+        setupTranslationTab(in: contentStack)
+        setupAttachmentsTab(in: contentStack)
+        setupTagsTab(in: contentStack)
+        setupLinksTab(in: contentStack)
+    }
+
+    private func setupInfoTab(in parentStack: NSStackView) {
+        tabInfoContainer.orientation = .vertical
+        tabInfoContainer.alignment = .leading
+        tabInfoContainer.spacing = 10
+        tabInfoContainer.translatesAutoresizingMaskIntoConstraints = false
+        parentStack.addArrangedSubview(tabInfoContainer)
+
+        let secHeader = NSStackView()
+        secHeader.orientation = .horizontal
+        secHeader.alignment = .centerY
+        secHeader.spacing = 8
+        secHeader.translatesAutoresizingMaskIntoConstraints = false
+
+        let docIcon = NSImageView()
+        docIcon.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
+        docIcon.contentTintColor = .secondaryLabelColor
+        docIcon.translatesAutoresizingMaskIntoConstraints = false
+        docIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        docIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
+
+        let secTitle = NSTextField(labelWithString: "信息")
+        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
         secTitle.textColor = .labelColor
 
-        let refreshBtn = NSButton(title: "↻ 刷新元数据与引用数", target: self, action: #selector(refreshMetadataAndCitationsAction))
-        refreshBtn.bezelStyle = .inline
-        refreshBtn.controlSize = .small
-        refreshBtn.font = .systemFont(ofSize: 11, weight: .medium)
-        refreshBtn.contentTintColor = .controlAccentColor
+        let chevronIcon = NSImageView()
+        chevronIcon.image = NSImage(systemSymbolName: "chevron.up", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 12.0, weight: .medium))
+        chevronIcon.contentTintColor = .tertiaryLabelColor
+        chevronIcon.translatesAutoresizingMaskIntoConstraints = false
+        chevronIcon.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        chevronIcon.heightAnchor.constraint(equalToConstant: 14).isActive = true
 
         let spacer = NSView()
-        headerStack.setViews([secTitle, spacer, refreshBtn], in: .leading)
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        metaTitleLabel.font = .systemFont(ofSize: 13.5, weight: .semibold)
-        metaTitleLabel.textColor = .labelColor
-        metaTitleLabel.isSelectable = true
-        metaTitleLabel.maximumNumberOfLines = 3
+        let refreshBtn = NSButton()
+        refreshBtn.bezelStyle = .inline
+        refreshBtn.isBordered = false
+        refreshBtn.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "刷新元数据与引用数")?
+            .withSymbolConfiguration(.init(pointSize: 13.0, weight: .medium))
+        refreshBtn.contentTintColor = .controlAccentColor
+        refreshBtn.toolTip = "重新从 arXiv 与 Semantic Scholar 拉取官方元数据与引用数"
+        refreshBtn.target = self
+        refreshBtn.action = #selector(refreshMetadataAndCitationsAction)
+        refreshBtn.translatesAutoresizingMaskIntoConstraints = false
+        refreshBtn.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        refreshBtn.heightAnchor.constraint(equalToConstant: 24).isActive = true
 
-        metaAuthorsLabel.font = .systemFont(ofSize: 12)
-        metaAuthorsLabel.textColor = .secondaryLabelColor
-        metaAuthorsLabel.isSelectable = true
-        metaAuthorsLabel.maximumNumberOfLines = 2
+        secHeader.setViews([docIcon, secTitle, chevronIcon, spacer, refreshBtn], in: .leading)
 
-        metaYearVenueLabel.font = .systemFont(ofSize: 11.5)
-        metaYearVenueLabel.textColor = .tertiaryLabelColor
+        metadataFieldsStack.orientation = .vertical
+        metadataFieldsStack.alignment = .leading
+        metadataFieldsStack.spacing = 5
+        metadataFieldsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let badgesStack = NSStackView()
-        badgesStack.orientation = .horizontal
-        badgesStack.spacing = 6
-        badgesStack.alignment = .centerY
+        tabInfoContainer.addArrangedSubview(secHeader)
+        tabInfoContainer.addArrangedSubview(metadataFieldsStack)
 
-        metaArxivBadge.bezelStyle = .inline
-        metaArxivBadge.controlSize = .small
-        metaArxivBadge.font = .systemFont(ofSize: 11, weight: .medium)
-        metaArxivBadge.contentTintColor = NSColor(calibratedRed: 0.05, green: 0.58, blue: 0.41, alpha: 1.0)
-        metaArxivBadge.target = self
-        metaArxivBadge.action = #selector(openArxivLinkFromSidebar)
-
-        metaHjfyBadge.bezelStyle = .inline
-        metaHjfyBadge.controlSize = .small
-        metaHjfyBadge.font = .systemFont(ofSize: 11, weight: .medium)
-        metaHjfyBadge.contentTintColor = NSColor(calibratedRed: 0.85, green: 0.46, blue: 0.02, alpha: 1.0)
-        metaHjfyBadge.target = self
-        metaHjfyBadge.action = #selector(openHjfyLinkFromSidebar)
-
-        metaCitationLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        metaCitationLabel.textColor = .controlAccentColor
-
-        badgesStack.setViews([metaArxivBadge, metaHjfyBadge, metaCitationLabel], in: .leading)
-
-        cardStack.addArrangedSubview(headerStack)
-        cardStack.addArrangedSubview(metaTitleLabel)
-        cardStack.addArrangedSubview(metaAuthorsLabel)
-        cardStack.addArrangedSubview(metaYearVenueLabel)
-        cardStack.addArrangedSubview(badgesStack)
-
-        parentStack.addArrangedSubview(card)
         NSLayoutConstraint.activate([
-            card.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
-            cardStack.topAnchor.constraint(equalTo: card.topAnchor),
-            cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-            cardStack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            headerStack.widthAnchor.constraint(equalTo: cardStack.widthAnchor)
+            tabInfoContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
+            secHeader.widthAnchor.constraint(equalTo: tabInfoContainer.widthAnchor),
+            metadataFieldsStack.widthAnchor.constraint(equalTo: tabInfoContainer.widthAnchor)
         ])
     }
 
-    private func setupTranslationSettingsSection(in parentStack: NSStackView) {
-        let card = ModernSurfaceCardView()
-        card.cornerRadius = 8
-        card.translatesAutoresizingMaskIntoConstraints = false
+    private func setupNotesTab(in parentStack: NSStackView) {
+        tabNotesContainer.orientation = .vertical
+        tabNotesContainer.alignment = .leading
+        tabNotesContainer.spacing = 10
+        tabNotesContainer.translatesAutoresizingMaskIntoConstraints = false
+        parentStack.addArrangedSubview(tabNotesContainer)
 
-        let cardStack = NSStackView()
-        cardStack.orientation = .vertical
-        cardStack.alignment = .leading
-        cardStack.spacing = 8
-        cardStack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 12, right: 12)
-        cardStack.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(cardStack)
+        let secHeader = NSStackView()
+        secHeader.orientation = .horizontal
+        secHeader.alignment = .centerY
+        secHeader.spacing = 8
+        secHeader.translatesAutoresizingMaskIntoConstraints = false
 
-        let secTitle = NSTextField(labelWithString: "▾ 划词翻译")
-        secTitle.font = .systemFont(ofSize: 13, weight: .bold)
+        let noteIcon = NSImageView()
+        noteIcon.image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
+        noteIcon.contentTintColor = .secondaryLabelColor
+        noteIcon.translatesAutoresizingMaskIntoConstraints = false
+        noteIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        noteIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
+
+        let secTitle = NSTextField(labelWithString: "随手笔记 (notes.md)")
+        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
         secTitle.textColor = .labelColor
 
-        let modeSegControl = NSSegmentedControl(labels: ["学术精读", "术语解析", "要点提炼"], trackingMode: .selectOne, target: self, action: #selector(sidebarTranslationModeChanged(_:)))
-        modeSegControl.selectedSegment = 0
-        modeSegControl.controlSize = .small
-        modeSegControl.segmentDistribution = .fillEqually
-
-        let statusLabel = NSTextField(labelWithString: "● LLM 翻译引擎: SiliconFlow / DeepSeek-V3 (已就绪)")
-        statusLabel.font = .systemFont(ofSize: 11)
-        statusLabel.textColor = NSColor(calibratedRed: 0.1, green: 0.6, blue: 0.2, alpha: 1.0)
-
-        let tipLabel = NSTextField(labelWithString: "在 PDF 任意页面中选中文本，即可浮动呼出 AI 术语精读翻译与段落解析。")
-        tipLabel.font = .systemFont(ofSize: 11)
-        tipLabel.textColor = .secondaryLabelColor
-        tipLabel.maximumNumberOfLines = 2
-
-        cardStack.addArrangedSubview(secTitle)
-        cardStack.addArrangedSubview(modeSegControl)
-        cardStack.addArrangedSubview(statusLabel)
-        cardStack.addArrangedSubview(tipLabel)
-
-        parentStack.addArrangedSubview(card)
-        NSLayoutConstraint.activate([
-            card.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
-            cardStack.topAnchor.constraint(equalTo: card.topAnchor),
-            cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-            cardStack.trailingAnchor.constraint(equalTo: card.trailingAnchor)
-        ])
-    }
-
-    private func setupNotesSection(in parentStack: NSStackView) {
-        let card = ModernSurfaceCardView()
-        card.cornerRadius = 8
-        card.translatesAutoresizingMaskIntoConstraints = false
-
-        let cardStack = NSStackView()
-        cardStack.orientation = .vertical
-        cardStack.alignment = .leading
-        cardStack.spacing = 8
-        cardStack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 12, right: 12)
-        cardStack.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(cardStack)
-
-        let headerStack = NSStackView()
-        headerStack.orientation = .horizontal
-        headerStack.alignment = .centerY
-        headerStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let secTitle = NSTextField(labelWithString: "▾ 随手笔记 (notes.md)")
-        secTitle.font = .systemFont(ofSize: 13, weight: .bold)
-        secTitle.textColor = .labelColor
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let addSnippetBtn = NSButton(title: "＋ 引用选词", target: self, action: #selector(addGeneralPageNoteAction))
         addSnippetBtn.bezelStyle = .inline
         addSnippetBtn.controlSize = .small
-        addSnippetBtn.font = .systemFont(ofSize: 11)
+        addSnippetBtn.font = .systemFont(ofSize: 11.5)
 
         let openMdBtn = NSButton(title: "定位", target: self, action: #selector(revealNotesMarkdownAction))
         openMdBtn.bezelStyle = .inline
         openMdBtn.controlSize = .small
-        openMdBtn.font = .systemFont(ofSize: 11)
+        openMdBtn.font = .systemFont(ofSize: 11.5)
 
-        let spacer = NSView()
-        headerStack.setViews([secTitle, spacer, addSnippetBtn, openMdBtn], in: .leading)
+        secHeader.setViews([noteIcon, secTitle, spacer, addSnippetBtn, openMdBtn], in: .leading)
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(WeakScriptMessageHandler(self), name: "noteAction")
@@ -757,41 +947,328 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         notesWebView.setValue(false, forKey: "drawsBackground")
         notesWebView.translatesAutoresizingMaskIntoConstraints = false
 
-        cardStack.addArrangedSubview(headerStack)
-        cardStack.addArrangedSubview(notesWebView)
+        tabNotesContainer.addArrangedSubview(secHeader)
+        tabNotesContainer.addArrangedSubview(notesWebView)
 
-        parentStack.addArrangedSubview(card)
         NSLayoutConstraint.activate([
-            card.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
-            cardStack.topAnchor.constraint(equalTo: card.topAnchor),
-            cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-            cardStack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            headerStack.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
-            notesWebView.heightAnchor.constraint(greaterThanOrEqualToConstant: 320)
+            tabNotesContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
+            secHeader.widthAnchor.constraint(equalTo: tabNotesContainer.widthAnchor),
+            notesWebView.widthAnchor.constraint(equalTo: tabNotesContainer.widthAnchor),
+            notesWebView.heightAnchor.constraint(greaterThanOrEqualToConstant: 420)
+        ])
+    }
+
+    private func setupTranslationTab(in parentStack: NSStackView) {
+        tabTranslationContainer.orientation = .vertical
+        tabTranslationContainer.alignment = .leading
+        tabTranslationContainer.spacing = 12
+        tabTranslationContainer.translatesAutoresizingMaskIntoConstraints = false
+        parentStack.addArrangedSubview(tabTranslationContainer)
+
+        let secHeader = NSStackView()
+        secHeader.orientation = .horizontal
+        secHeader.alignment = .centerY
+        secHeader.spacing = 8
+        secHeader.translatesAutoresizingMaskIntoConstraints = false
+
+        let transIcon = NSImageView()
+        transIcon.image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
+        transIcon.contentTintColor = .secondaryLabelColor
+        transIcon.translatesAutoresizingMaskIntoConstraints = false
+        transIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        transIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
+
+        let secTitle = NSTextField(labelWithString: "划词翻译与学术解析")
+        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        secTitle.textColor = .labelColor
+        secHeader.setViews([transIcon, secTitle], in: .leading)
+
+        let modeSegControl = NSSegmentedControl(labels: ["学术精读", "术语解析", "要点提炼"], trackingMode: .selectOne, target: self, action: #selector(sidebarTranslationModeChanged(_:)))
+        modeSegControl.selectedSegment = 0
+        modeSegControl.controlSize = .small
+        modeSegControl.segmentDistribution = .fillEqually
+
+        let statusLabel = NSTextField(labelWithString: "● LLM 翻译引擎: SiliconFlow / DeepSeek-V3 (已就绪)")
+        statusLabel.font = .systemFont(ofSize: 11.5)
+        statusLabel.textColor = NSColor(calibratedRed: 0.1, green: 0.6, blue: 0.2, alpha: 1.0)
+
+        let tipLabel = NSTextField(labelWithString: "在 PDF 任意页面中选中文本，即可浮动呼出 AI 术语精读翻译与段落解析。")
+        tipLabel.font = .systemFont(ofSize: 12)
+        tipLabel.textColor = .secondaryLabelColor
+        tipLabel.maximumNumberOfLines = 3
+
+        tabTranslationContainer.addArrangedSubview(secHeader)
+        tabTranslationContainer.addArrangedSubview(modeSegControl)
+        tabTranslationContainer.addArrangedSubview(statusLabel)
+        tabTranslationContainer.addArrangedSubview(tipLabel)
+
+        NSLayoutConstraint.activate([
+            tabTranslationContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
+            secHeader.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
+            modeSegControl.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
+            statusLabel.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
+            tipLabel.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor)
+        ])
+    }
+
+    private func setupAttachmentsTab(in parentStack: NSStackView) {
+        tabAttachmentsContainer.orientation = .vertical
+        tabAttachmentsContainer.alignment = .leading
+        tabAttachmentsContainer.spacing = 10
+        tabAttachmentsContainer.translatesAutoresizingMaskIntoConstraints = false
+        parentStack.addArrangedSubview(tabAttachmentsContainer)
+
+        let secHeader = NSStackView()
+        secHeader.orientation = .horizontal
+        secHeader.alignment = .centerY
+        secHeader.spacing = 8
+        secHeader.translatesAutoresizingMaskIntoConstraints = false
+
+        let attachIcon = NSImageView()
+        attachIcon.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
+        attachIcon.contentTintColor = .secondaryLabelColor
+        attachIcon.translatesAutoresizingMaskIntoConstraints = false
+        attachIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        attachIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
+
+        let secTitle = NSTextField(labelWithString: "PDF 附件与文档")
+        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        secTitle.textColor = .labelColor
+        secHeader.setViews([attachIcon, secTitle], in: .leading)
+
+        let origBtn = NSButton(title: "📄 原版 PDF (Original EN)…", target: self, action: #selector(importOrigPDFFromSidebar))
+        origBtn.bezelStyle = .texturedRounded
+        origBtn.controlSize = .small
+
+        let transBtn = NSButton(title: "📄 中文译版 (Translated ZH)…", target: self, action: #selector(importTransPDFFromSidebar))
+        transBtn.bezelStyle = .texturedRounded
+        transBtn.controlSize = .small
+
+        let extraBtn = NSButton(title: "＋ 导入其它附加文件…", target: self, action: #selector(importAttachmentFromSidebar))
+        extraBtn.bezelStyle = .texturedRounded
+        extraBtn.controlSize = .small
+
+        tabAttachmentsContainer.addArrangedSubview(secHeader)
+        tabAttachmentsContainer.addArrangedSubview(origBtn)
+        tabAttachmentsContainer.addArrangedSubview(transBtn)
+        tabAttachmentsContainer.addArrangedSubview(extraBtn)
+
+        NSLayoutConstraint.activate([
+            tabAttachmentsContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
+            secHeader.widthAnchor.constraint(equalTo: tabAttachmentsContainer.widthAnchor),
+            origBtn.widthAnchor.constraint(equalTo: tabAttachmentsContainer.widthAnchor),
+            transBtn.widthAnchor.constraint(equalTo: tabAttachmentsContainer.widthAnchor),
+            extraBtn.widthAnchor.constraint(equalTo: tabAttachmentsContainer.widthAnchor)
+        ])
+    }
+
+    private func setupTagsTab(in parentStack: NSStackView) {
+        tabTagsContainer.orientation = .vertical
+        tabTagsContainer.alignment = .leading
+        tabTagsContainer.spacing = 10
+        tabTagsContainer.translatesAutoresizingMaskIntoConstraints = false
+        parentStack.addArrangedSubview(tabTagsContainer)
+
+        let secHeader = NSStackView()
+        secHeader.orientation = .horizontal
+        secHeader.alignment = .centerY
+        secHeader.spacing = 8
+        secHeader.translatesAutoresizingMaskIntoConstraints = false
+
+        let tagIcon = NSImageView()
+        tagIcon.image = NSImage(systemSymbolName: "tag", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
+        tagIcon.contentTintColor = .secondaryLabelColor
+        tagIcon.translatesAutoresizingMaskIntoConstraints = false
+        tagIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        tagIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
+
+        let secTitle = NSTextField(labelWithString: "论文标签")
+        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        secTitle.textColor = .labelColor
+        secHeader.setViews([tagIcon, secTitle], in: .leading)
+
+        let tagDesc = NSTextField(labelWithString: "用于分类检索与文献库聚合，可在文库中按标签进行多维过滤。")
+        tagDesc.font = .systemFont(ofSize: 12)
+        tagDesc.textColor = .secondaryLabelColor
+        tagDesc.maximumNumberOfLines = 2
+
+        tabTagsContainer.addArrangedSubview(secHeader)
+        tabTagsContainer.addArrangedSubview(tagDesc)
+
+        NSLayoutConstraint.activate([
+            tabTagsContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
+            secHeader.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
+            tagDesc.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor)
+        ])
+    }
+
+    private func setupLinksTab(in parentStack: NSStackView) {
+        tabLinksContainer.orientation = .vertical
+        tabLinksContainer.alignment = .leading
+        tabLinksContainer.spacing = 10
+        tabLinksContainer.translatesAutoresizingMaskIntoConstraints = false
+        parentStack.addArrangedSubview(tabLinksContainer)
+
+        let secHeader = NSStackView()
+        secHeader.orientation = .horizontal
+        secHeader.alignment = .centerY
+        secHeader.spacing = 8
+        secHeader.translatesAutoresizingMaskIntoConstraints = false
+
+        let linkIcon = NSImageView()
+        linkIcon.image = NSImage(systemSymbolName: "link", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
+        linkIcon.contentTintColor = .secondaryLabelColor
+        linkIcon.translatesAutoresizingMaskIntoConstraints = false
+        linkIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        linkIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
+
+        let secTitle = NSTextField(labelWithString: "外部链接与文献引用")
+        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        secTitle.textColor = .labelColor
+        secHeader.setViews([linkIcon, secTitle], in: .leading)
+
+        let arxivBtn = NSButton(title: "🌐 前往 arXiv 官方主页 ↗", target: self, action: #selector(openArxivLinkFromSidebar))
+        arxivBtn.bezelStyle = .texturedRounded
+        arxivBtn.controlSize = .small
+
+        let hjfyBtn = NSButton(title: "🌐 前往幻觉翻译页面 ↗", target: self, action: #selector(openHjfyLinkFromSidebar))
+        hjfyBtn.bezelStyle = .texturedRounded
+        hjfyBtn.controlSize = .small
+
+        linksStackView.orientation = .vertical
+        linksStackView.alignment = .leading
+        linksStackView.spacing = 6
+        linksStackView.translatesAutoresizingMaskIntoConstraints = false
+
+        tabLinksContainer.addArrangedSubview(secHeader)
+        tabLinksContainer.addArrangedSubview(arxivBtn)
+        tabLinksContainer.addArrangedSubview(hjfyBtn)
+        tabLinksContainer.addArrangedSubview(linksStackView)
+
+        NSLayoutConstraint.activate([
+            tabLinksContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
+            secHeader.widthAnchor.constraint(equalTo: tabLinksContainer.widthAnchor),
+            arxivBtn.widthAnchor.constraint(equalTo: tabLinksContainer.widthAnchor),
+            hjfyBtn.widthAnchor.constraint(equalTo: tabLinksContainer.widthAnchor),
+            linksStackView.widthAnchor.constraint(equalTo: tabLinksContainer.widthAnchor)
         ])
     }
 
     func updateRightSidebarMetadataUI() {
         guard let p = currentPaper else { return }
-        metaTitleLabel.stringValue = p.title
-        metaAuthorsLabel.stringValue = p.authors.isEmpty ? "未记录作者" : p.authors
-        metaYearVenueLabel.stringValue = "\(p.year) · \(p.venue)"
-        if let aid = p.cleanArxivId, !aid.isEmpty {
-            metaArxivBadge.title = "arXiv: \(aid) ↗"
-            metaArxivBadge.isHidden = false
-            metaHjfyBadge.title = "幻觉翻译 ↗"
-            metaHjfyBadge.isHidden = false
-        } else {
-            metaArxivBadge.isHidden = true
-            metaHjfyBadge.isHidden = true
+        sidebarPaperTitleLabel.stringValue = p.title
+        sidebarPaperTitleLabel.toolTip = p.title
+
+        metadataFieldsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+        func addRow(key: String, value: String, isLink: Bool = false, linkAction: Selector? = nil) {
+            let row = FlippedView()
+            row.translatesAutoresizingMaskIntoConstraints = false
+
+            let keyLabel = NSTextField(labelWithString: key)
+            keyLabel.font = .systemFont(ofSize: 12.0, weight: .regular)
+            keyLabel.textColor = .secondaryLabelColor
+            keyLabel.alignment = .right
+            keyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+            let valView: NSView
+            if isLink {
+                let btn = NSButton(title: value, target: self, action: linkAction ?? #selector(openArxivLinkFromSidebar))
+                btn.bezelStyle = .inline
+                btn.isBordered = false
+                btn.contentTintColor = .controlAccentColor
+                btn.font = .systemFont(ofSize: 12.5)
+                btn.alignment = .left
+                btn.translatesAutoresizingMaskIntoConstraints = false
+                valView = btn
+            } else {
+                let valLabel = NSTextField(wrappingLabelWithString: value)
+                valLabel.font = .systemFont(ofSize: 12.5)
+                valLabel.textColor = .labelColor
+                valLabel.isSelectable = true
+                valLabel.translatesAutoresizingMaskIntoConstraints = false
+                valView = valLabel
+            }
+
+            row.addSubview(keyLabel)
+            row.addSubview(valView)
+
+            NSLayoutConstraint.activate([
+                keyLabel.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+                keyLabel.widthAnchor.constraint(equalToConstant: 68),
+                keyLabel.topAnchor.constraint(equalTo: row.topAnchor, constant: 3),
+
+                valView.leadingAnchor.constraint(equalTo: keyLabel.trailingAnchor, constant: 10),
+                valView.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -4),
+                valView.topAnchor.constraint(equalTo: row.topAnchor, constant: 2),
+                valView.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -3)
+            ])
+            metadataFieldsStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: metadataFieldsStack.widthAnchor).isActive = true
         }
+        addRow(key: "条目类型", value: "预印本")
+        addRow(key: "标题", value: p.title)
+
+        let authorList = p.authors.components(separatedBy: CharacterSet(charactersIn: ";,，；")).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if authorList.isEmpty {
+            addRow(key: "作者", value: "—")
+        } else {
+            let maxShow = 5
+            for (idx, author) in authorList.prefix(maxShow).enumerated() {
+                addRow(key: idx == 0 ? "作者" : "", value: author)
+            }
+            if authorList.count > maxShow {
+                addRow(key: "", value: "还有 \(authorList.count - maxShow) 个…")
+            }
+        }
+
+        addRow(key: "分类", value: p.category.isEmpty ? "—" : p.category)
+        addRow(key: "仓库", value: p.venue.isEmpty ? "arXiv" : p.venue)
+
+        let aid = p.cleanArxivId ?? ""
+        addRow(key: "存档ID", value: aid.isEmpty ? "—" : "arXiv:\(aid)")
+        addRow(key: "日期", value: p.year.isEmpty ? "—" : p.year)
+        addRow(key: "DOI", value: aid.isEmpty ? "—" : "10.48550/arXiv.\(aid)")
+
+        if !aid.isEmpty {
+            addRow(key: "网址", value: "http://arxiv.org/abs/\(aid)", isLink: true, linkAction: #selector(openArxivLinkFromSidebar))
+        } else {
+            addRow(key: "网址", value: "—")
+        }
+
+        addRow(key: "语言", value: "en-US")
+
+        if !aid.isEmpty {
+            addRow(key: "其他", value: "arXiv:\(aid) [cs.CL]")
+        }
+
         if let citations = p.citationCount {
-            metaCitationLabel.stringValue = "引用数: \(citations.formatted()) 次"
-            metaCitationLabel.isHidden = false
-        } else {
-            metaCitationLabel.isHidden = true
+            addRow(key: "引用数", value: "\(citations.formatted()) 次")
         }
+
+        let dateStr = DateFormatter.localizedString(from: p.addedAt, dateStyle: .short, timeStyle: .medium)
+        addRow(key: "添加日期", value: dateStr)
+    }
+
+    @objc private func importOrigPDFFromSidebar() {
+        promptToImportOrReplacePDF(in: leftCol)
+    }
+
+    @objc private func importTransPDFFromSidebar() {
+        promptToImportOrReplacePDF(in: rightCol)
+    }
+
+    @objc private func importAttachmentFromSidebar() {
+        guard let p = currentPaper else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择要导入到该条目的附件文件"
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        _ = LibraryStore.shared.importAttachmentFile(for: p.id, from: url)
     }
 
     @objc private func openArxivLinkFromSidebar() {
@@ -1271,6 +1748,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             }
         }
         LibraryStore.shared.updateReadingState(for: paperId) { $0.lastOpenedAt = Date() }
+        updateRightSidebarMetadataUI()
+        updateDrawerBadgeTitles()
         view.layoutSubtreeIfNeeded()
         if (modeSeg.selectedSegment == 2 || modeSeg.selectedSegment == 3) && splitView.bounds.width > 100 {
             let leftW = leftCol.frame.width
@@ -1371,7 +1850,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private func updateDrawerBadgeTitles() {
         guard let paper = currentPaper else { return }
         let noteCount = paper.annotations.count
-        drawerToggleBtn.title = noteCount > 0 ? " 工具栏 (\(noteCount))" : " 工具栏"
+        drawerToggleBtn.title = ""
+        if workbenchRailButtons.indices.contains(1) {
+            workbenchRailButtons[1].toolTip = noteCount > 0 ? "随手笔记与高亮 (\(noteCount))" : "随手笔记与高亮"
+        }
     }
 
     private func applyAnnotationsToPDFViews() {
@@ -2108,7 +2590,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             }
             leftCol.isHidden = false
             rightCol.isHidden = false
-            splitView.setPosition(splitView.bounds.width / (rightDrawer.isHidden ? 2.0 : 2.5), ofDividerAt: 0)
+            splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
         default: // 双栏对照 (默认左栏原文 EN + 右栏译文 ZH)
             if leftCol.contentSource.isNote {
                 setColumnSource(leftCol, source: .pdf(id: PDFSide.original.rawValue), syncModeSeg: false)
@@ -2118,7 +2600,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             }
             leftCol.isHidden = false
             rightCol.isHidden = false
-            splitView.setPosition(splitView.bounds.width / (rightDrawer.isHidden ? 2.0 : 2.5), ofDividerAt: 0)
+            splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
         }
         splitView.adjustSubviews()
         updatePageIndicatorAndSaveProgress()
@@ -2253,14 +2735,22 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         isDrawerOpen.toggle()
         drawerToggleBtn.state = isDrawerOpen ? .on : .off
         rightDrawer.isHidden = !isDrawerOpen
-        splitView.adjustSubviews()
-        if !isDrawerOpen {
-            splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
-        }
+        masterSplitView.adjustSubviews()
         if isDrawerOpen {
+            let drawerWidth: CGFloat = 360
+            let availableWidth = masterSplitView.bounds.width
+            if availableWidth > drawerWidth + 300 {
+                masterSplitView.setPosition(availableWidth - drawerWidth, ofDividerAt: 0)
+            }
             notesNeedRefresh = true
             refreshNotesDrawerWebView()
             updateRightSidebarMetadataUI()
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, !self.isClosed else { return }
+            self.splitView.setPosition(self.splitView.bounds.width / 2.0, ofDividerAt: 0)
+            self.leftCol.pdfView.autoScales = true
+            self.rightCol.pdfView.autoScales = true
         }
     }
 
@@ -2833,5 +3323,35 @@ extension ReaderTabViewController: NSTableViewDataSource, NSTableViewDelegate {
         guard row >= 0, row < outlineItems.count else { return }
         let pageIdx = outlineItems[row].pageIndex
         goToPageIndex(pageIdx, recordHistory: true)
+    }
+}
+
+// MARK: - NSSplitViewDelegate (Keep Master / Child Split In Perfect 50/50 Balance)
+extension ReaderTabViewController: NSSplitViewDelegate {
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard let sv = notification.object as? NSSplitView else { return }
+        if sv === masterSplitView {
+            if (modeSeg.selectedSegment == 2 || modeSeg.selectedSegment == 3) && !leftCol.isHidden && !rightCol.isHidden {
+                splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
+            }
+        }
+    }
+
+    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
+        return false
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        if splitView === masterSplitView {
+            return max(440, masterSplitView.bounds.width - 620)
+        }
+        return proposedMinimumPosition
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        if splitView === masterSplitView {
+            return masterSplitView.bounds.width - 280
+        }
+        return proposedMaximumPosition
     }
 }

@@ -500,6 +500,8 @@ function openPaperContextMenu(paperId, evt) {
         <div class="ctx-item ${arxivDisabled}" onclick="${arxivAction}"><span>跳转到 arXiv</span></div>
         <div class="ctx-item ${arxivDisabled}" onclick="${hjfyAction}"><span>跳转到幻觉翻译</span></div>
         <div class="ctx-sep"></div>
+        <div class="ctx-item" onclick="closeContextMenu(); openEditMetaModal('${pidAttr}')"><span>编辑条目元数据…</span></div>
+        <div class="ctx-sep"></div>
         <div class="ctx-item danger" onclick="closeContextMenu(); sendBridge({action:'deletePaper', paperId:'${pidAttr}'})"><span>删除条目…</span></div>
     `;
     menu.classList.add('open');
@@ -513,6 +515,70 @@ function closeContextMenu() {
     const menu = document.getElementById('ctxMenu');
     if (menu) menu.classList.remove('open');
 }
+
+window.openEditMetaModal = function(paperId) {
+    const p = (state.papers || []).find(item => item.id === paperId);
+    if (!p) return;
+    const pidEl = document.getElementById('editPaperId');
+    if (pidEl) pidEl.value = p.id;
+    const tEl = document.getElementById('editTitle');
+    if (tEl) tEl.value = p.title || '';
+    const aEl = document.getElementById('editAuthors');
+    if (aEl) aEl.value = p.authors || '';
+    const yEl = document.getElementById('editYear');
+    if (yEl) yEl.value = p.year || '';
+    const vEl = document.getElementById('editVenue');
+    if (vEl) vEl.value = p.venue || '';
+    const xEl = document.getElementById('editArxivId');
+    if (xEl) xEl.value = p.arxivId || '';
+    const cEl = document.getElementById('editCategory');
+    if (cEl) cEl.value = p.category || '';
+    const tgEl = document.getElementById('editTags');
+    if (tgEl) tgEl.value = (p.tags || []).join(', ');
+    const modal = document.getElementById('editMetaModal');
+    if (modal) modal.classList.add('open');
+};
+
+window.closeEditMetaModal = function() {
+    const modal = document.getElementById('editMetaModal');
+    if (modal) modal.classList.remove('open');
+};
+
+window.submitEditMetaModal = function() {
+    const pidEl = document.getElementById('editPaperId');
+    const paperId = pidEl ? pidEl.value : null;
+    if (!paperId) return;
+    const tEl = document.getElementById('editTitle');
+    const aEl = document.getElementById('editAuthors');
+    const yEl = document.getElementById('editYear');
+    const vEl = document.getElementById('editVenue');
+    const xEl = document.getElementById('editArxivId');
+    const cEl = document.getElementById('editCategory');
+    const tgEl = document.getElementById('editTags');
+    const tagsStr = tgEl ? tgEl.value : '';
+    const tags = tagsStr.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+
+    sendBridge({
+        action: 'saveMetadata',
+        paperId,
+        title: tEl ? tEl.value : '',
+        authors: aEl ? aEl.value : '',
+        year: yEl ? yEl.value : '',
+        venue: vEl ? vEl.value : '',
+        arxivId: xEl ? xEl.value : '',
+        category: cEl ? cEl.value : '',
+        tags: tags
+    });
+    closeEditMetaModal();
+};
+
+window.triggerRefreshMetaInModal = function() {
+    const pidEl = document.getElementById('editPaperId');
+    const paperId = pidEl ? pidEl.value : null;
+    if (!paperId) return;
+    sendBridge({ action: 'refreshArxivMetadata', paperId });
+    closeEditMetaModal();
+};
 
 function toggleSortDirection() {
     ui.sortAscending = !ui.sortAscending;
@@ -659,14 +725,14 @@ function renderSidebar() {
     )).join('');
 
     const childrenBlock = ui.treeExpanded ? `
-        ${childRowHTML('recent', '最近阅读', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#7E6EE3" stroke-width="1.35" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.8v3.4l2.2 1.4"/></svg>`)}
-        ${childRowHTML('favorites', '我的出版物', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#4CAF50" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 1.8h6l3 3v9.4h-9V1.8z"/><path d="M9.5 1.8v3h3"/><path d="M5.5 7.2h5M5.5 9.8h5M5.5 12h3"/></svg>`)}
-        ${childRowHTML('status:reading', '重复条目', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#F59E0B" stroke-width="1.35" stroke-linejoin="round"><rect x="2.5" y="1.8" width="8.2" height="10.2" rx="1"/><path d="M5.5 4.2h7.5v10H5.5z" fill="var(--bg-sidebar)" stroke="#F59E0B" stroke-width="1.35"/></svg>`)}
-        ${childRowHTML('status:unread', '未分类条目', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#E06C45" stroke-width="1.35" stroke-linejoin="round"><rect x="2.5" y="1.8" width="7.8" height="10" rx="1"/><path d="M6 4.5h7v9.5H6z" fill="var(--bg-sidebar)" stroke="#E06C45" stroke-width="1.35"/></svg>`)}
         ${catsHTML}
-        ${childRowHTML('notes', '全局笔记', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#EAB308" stroke-width="1.35" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="1.2"/><path d="M5.5 5.5h5M5.5 8.2h5M5.5 10.8h3"/></svg>`)}
-        ${childRowHTML('status:completed', '回收站', `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#D96B4F" stroke-width="1.3" stroke-linecap="round"><path d="M3 4.2h10M6 4.2V2.8h4v1.4M4.2 4.2l.6 9.3h6.4l.6-9.3"/><path d="M6.8 6.8v4.8M9.2 6.8v4.8"/></svg>`)}
+        <div class="tree-row child" style="color:var(--accent); font-size:13px;" onclick="promptCreateNewCategory(event)">
+            <span class="tree-icon" style="font-size:15px; font-weight:bold;">＋</span>
+            <span class="tree-label">新建分类…</span>
+        </div>
     ` : '';
+
+    const totalCount = (state.papers || []).length;
 
     document.getElementById('sidebarScroll').innerHTML = `
         <div class="tree-row ${ui.filterKind === 'all' ? 'active' : ''}" onclick="setFilter('all', '我的文库')">
@@ -677,74 +743,39 @@ function renderSidebar() {
                 </svg>
             </span>
             <span class="tree-label">我的文库</span>
+            <span style="font-size:12px; color:var(--text-tertiary); margin-left:auto;">${totalCount}</span>
         </div>
         ${childrenBlock}
     `;
+}
 
-    renderTagPanelOnly();
+function promptCreateNewCategory(evt) {
+    if (evt) evt.stopPropagation();
+    const name = prompt('请输入新分类名称：');
+    if (name && name.trim()) {
+        const cat = name.trim();
+        if (!state.categories) state.categories = [];
+        if (!state.categories.includes(cat)) {
+            state.categories.push(cat);
+        }
+        setFilter('cat:' + cat, cat);
+    }
 }
 
 function renderTagPanelOnly() {
-    const tagPanelEl = document.getElementById('tagPanel');
-    if (!tagPanelEl) return;
-
-    const rawTags = (state.tags || []).slice();
-    const subjectItems = [
-        'Computer Science - Computation and Language',
-        'Computer Science - Machine Learning',
-        ...rawTags
-    ];
-    const seen = new Set();
-    const allTagItems = [];
-    for (const item of subjectItems) {
-        if (!seen.has(item)) {
-            seen.add(item);
-            allTagItems.push(item);
-        }
-    }
-
-    const q = (ui.tagFilterQuery || '').toLowerCase();
-    const filteredTags = q ? allTagItems.filter(t => t.toLowerCase().includes(q)) : allTagItems;
-
-    const listHTML = filteredTags.map(t => {
-        const isTagInPapers = rawTags.includes(t);
-        const isActive = (ui.activeTag === t);
-        const clickHandler = isTagInPapers
-            ? `toggleTag('${escapeJSAttr(t)}')`
-            : `setFilter('all', '我的文库')`;
-        return `<div class="tag-line-item ${isActive ? 'active' : ''}" onclick="${clickHandler}" title="${escapeHTML(t)}">${escapeHTML(t)}</div>`;
-    }).join('');
-
-    const activeInput = document.activeElement;
-    const isTypingTagFilter = (activeInput && activeInput.id === 'tagFilterInput');
-    if (isTypingTagFilter) {
-        const scrollEl = document.getElementById('tagListScroll');
-        if (scrollEl) {
-            scrollEl.innerHTML = listHTML;
-            return;
-        }
-    }
-
-    tagPanelEl.innerHTML = `
-        <div class="tag-list-scroll" id="tagListScroll">
-            ${listHTML}
-        </div>
-        <div class="tag-filter-bar">
-            <input type="text" id="tagFilterInput" class="tag-filter-input" placeholder="筛选标签" value="${escapeHTML(ui.tagFilterQuery)}" oninput="onTagFilterInput(this.value)">
-            <button class="tag-funnel-btn" onclick="clearTagFilter()" title="筛选或清除标签">
-                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round">
-                    <path d="M1.5 2.5h13l-5 5.8v4.7l-3 1.5V8.3L1.5 2.5z"/>
-                </svg>
-                <span style="font-size:10px;">▾</span>
-            </button>
-        </div>
-    `;
+    // Tag panel removed per user request for minimal unit library design
 }
 
 function renderCenter() {
     const centerEl = document.getElementById('centerContent');
+    const filtered = getFilteredPapers();
 
-    // Mode 1: Global Notes Stream
+    const titleEl = document.getElementById('currentViewTitle');
+    const countEl = document.getElementById('currentViewCount');
+    if (titleEl) titleEl.textContent = ui.filterTitle || '我的文库';
+    if (countEl) countEl.textContent = `${filtered.length} 篇文献`;
+
+    // Global Notes Stream if selected
     if (ui.filterKind === 'notes') {
         const allAnnots = [];
         (state.papers || []).forEach(p => {
@@ -754,9 +785,9 @@ function renderCenter() {
 
         if (allAnnots.length === 0) {
             centerEl.innerHTML = `
-                <div class="empty-box">
-                    <h3>全局笔记流中暂无记录</h3>
-                    <p>双击任意论文进入双栏对照阅读器，用鼠标划选正文即可添加多色高亮与支持 LaTeX 数学公式的精读笔记。</p>
+                <div class="empty-box" style="margin:48px auto; max-width:400px; text-align:center;">
+                    <h3 style="font-size:16px; margin-bottom:8px; color:var(--text-primary);">全局笔记流中暂无记录</h3>
+                    <p style="font-size:13.5px; color:var(--text-secondary); line-height:1.5;">双击任意论文进入双栏对照阅读器，用鼠标划选正文即可添加多色高亮与精读笔记。</p>
                 </div>
             `;
             return;
@@ -765,18 +796,22 @@ function renderCenter() {
         return;
     }
 
-    const filtered = getFilteredPapers();
+    if (filtered.length === 0) {
+        centerEl.innerHTML = `
+            <div class="empty-box" style="margin:54px auto; max-width:420px; text-align:center;">
+                <h3 style="font-size:16px; margin-bottom:8px; color:var(--text-primary);">文库中暂无论文</h3>
+                <p style="font-size:13.5px; color:var(--text-secondary); line-height:1.5;">点击上方「＋ 导入论文」或直接拖入 PDF 文件即可自动解析并开启双栏精读。</p>
+            </div>
+        `;
+        return;
+    }
+
     centerEl.innerHTML = renderZoteroTableHTML(filtered);
 }
 
 function renderZoteroTableHTML(list) {
-    const sortArrow = (colKey) => {
-        if (ui.sortOrder !== colKey) return '';
-        return ui.sortAscending ? ' ▴' : ' ▾';
-    };
-
     const docTypeIconSVG = `
-        <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+        <svg width="19" height="19" viewBox="0 0 16 16" fill="none">
             <path d="M3 1.5h6.5l3 3v10H3v-13z" fill="#F8FAFC" stroke="#78869B" stroke-width="1.2"/>
             <path d="M9.5 1.5v3h3" stroke="#78869B" stroke-width="1.2"/>
             <path d="M5 6.2h5.5M5 8.5h5.5M5 10.8h3.5" stroke="#64748B" stroke-width="1.1" stroke-linecap="round"/>
@@ -785,7 +820,7 @@ function renderZoteroTableHTML(list) {
     `;
 
     const pdfAttachmentIconSVG = `
-        <svg width="17" height="18" viewBox="0 0 16 16" fill="none">
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
             <path d="M3.5 1.5h6l3 3v10h-9v-13z" fill="#FFF" stroke="#B0B7C3" stroke-width="1.15"/>
             <path d="M9.5 1.5v3h3" stroke="#B0B7C3" stroke-width="1.15"/>
             <rect x="4.5" y="7.2" width="6.5" height="3.8" rx="0.8" fill="#E05246"/>
@@ -798,12 +833,14 @@ function renderZoteroTableHTML(list) {
         const pidAttr = escapeJSAttr(p.id);
         const creatorText = formatZoteroCreator(p.authors);
         const hasAnyPDF = p.hasOriginal || p.hasTranslated || ((p.additionalPDFs || []).length > 0);
+        const arxivBadge = p.arxivId ? `<span style="font-size:11px; padding:2px 6px; border-radius:4px; background:var(--bg-subtle); color:var(--text-secondary); margin-left:8px;">arXiv:${escapeHTML(p.arxivId)}</span>` : '';
+        const yearText = p.year ? `<span style="font-size:12.5px; color:var(--text-tertiary); margin-left:6px;">(${escapeHTML(p.year)})</span>` : '';
 
         let subRows = '';
         if (isExpanded) {
             if (p.hasOriginal) {
                 subRows += `
-                <tr class="zotero-subrow" ondblclick="openPaperDual('${pidAttr}', event)" onclick="selectPaper('${pidAttr}', true)">
+                <tr class="zotero-subrow" ondblclick="openPaperDual('${pidAttr}', event)" onclick="selectPaper('${pidAttr}')">
                     <td class="subrow-indent">${pdfAttachmentIconSVG} <span style="margin-left:6px;">原版 PDF (Original EN · ${p.origPages || 0} 页)</span></td>
                     <td></td>
                     <td class="row-attach-cell"></td>
@@ -811,7 +848,7 @@ function renderZoteroTableHTML(list) {
             }
             if (p.hasTranslated) {
                 subRows += `
-                <tr class="zotero-subrow" ondblclick="openPaperDual('${pidAttr}', event)" onclick="selectPaper('${pidAttr}', true)">
+                <tr class="zotero-subrow" ondblclick="openPaperDual('${pidAttr}', event)" onclick="selectPaper('${pidAttr}')">
                     <td class="subrow-indent">${pdfAttachmentIconSVG} <span style="margin-left:6px;">中文译版 PDF (Translated ZH · ${p.transPages || 0} 页)</span></td>
                     <td></td>
                     <td class="row-attach-cell"></td>
@@ -819,33 +856,27 @@ function renderZoteroTableHTML(list) {
             }
             (p.additionalPDFs || []).forEach(ep => {
                 subRows += `
-                <tr class="zotero-subrow" ondblclick="openPaperDual('${pidAttr}', event)" onclick="selectPaper('${pidAttr}', true)">
+                <tr class="zotero-subrow" ondblclick="openPaperDual('${pidAttr}', event)" onclick="selectPaper('${pidAttr}')">
                     <td class="subrow-indent">${pdfAttachmentIconSVG} <span style="margin-left:6px;">${escapeHTML(ep.title)}</span></td>
                     <td></td>
-                    <td class="row-attach-cell"></td>
-                </tr>`;
-            });
-            (p.noteDocuments || []).forEach(nd => {
-                subRows += `
-                <tr class="zotero-subrow" ondblclick="sendBridge({action:'openPaperLeftPDFRightNote', paperId:'${pidAttr}'})" onclick="selectPaper('${pidAttr}', true); setInspectorTab(1);">
-                    <td class="subrow-indent">📝 <span style="margin-left:5px;">${escapeHTML(nd.title)}</span></td>
-                    <td>笔记</td>
                     <td class="row-attach-cell"></td>
                 </tr>`;
             });
         }
 
         return `
-        <tr class="zotero-row ${isSelected ? 'selected' : ''}" draggable="true" ondragstart="handlePaperDragStart('${pidAttr}', event)" ondragover="handlePaperDragOver('${pidAttr}', event)" ondrop="handlePaperDrop('${pidAttr}', event)" data-paper-id="${escapeHTML(p.id)}" onclick="selectPaper('${pidAttr}', true)" ondblclick="openPaperDual('${pidAttr}', event)" oncontextmenu="openPaperContextMenu('${pidAttr}', event)">
-            <td>
+        <tr class="zotero-row ${isSelected ? 'selected' : ''}" draggable="true" ondragstart="handlePaperDragStart('${pidAttr}', event)" ondragover="handlePaperDragOver('${pidAttr}', event)" ondrop="handlePaperDrop('${pidAttr}', event)" data-paper-id="${escapeHTML(p.id)}" onclick="selectPaper('${pidAttr}')" ondblclick="openPaperDual('${pidAttr}', event)" oncontextmenu="openPaperContextMenu('${pidAttr}', event)">
+            <td style="width:65%;">
                 <div class="tbl-title-cell">
                     <span class="row-twisty" onclick="toggleRowExpand('${pidAttr}', event)">${isExpanded ? '▾' : '▸'}</span>
                     <span class="row-doc-icon">${docTypeIconSVG}</span>
-                    <span class="row-title-text" title="${escapeHTML(p.title)}">${escapeHTML(p.title)}</span>
+                    <span class="row-title-text" style="font-weight:500; font-size:14.5px;" title="${escapeHTML(p.title)}">${escapeHTML(p.title)}</span>
+                    ${yearText}
+                    ${arxivBadge}
                 </div>
             </td>
-            <td title="${escapeHTML(p.authors || '')}">${escapeHTML(creatorText)}</td>
-            <td class="row-attach-cell">
+            <td style="width:28%; color:var(--text-secondary); font-size:13.5px;" title="${escapeHTML(p.authors || '')}">${escapeHTML(creatorText)}</td>
+            <td class="row-attach-cell" style="width:7%;">
                 ${hasAnyPDF ? `<span class="row-pdf-badge" onclick="openPaperDual('${pidAttr}', event)" title="双击或点击打开双栏 PDF 阅读器">${pdfAttachmentIconSVG}</span>` : ''}
             </td>
         </tr>
@@ -856,17 +887,6 @@ function renderZoteroTableHTML(list) {
     return `
     <div class="zotero-table-wrap">
         <table class="zotero-table">
-            <thead>
-                <tr>
-                    <th style="width:68%; cursor:pointer;" onclick="sortByColumn('title')">标题${sortArrow('title')}</th>
-                    <th style="width:24%; cursor:pointer;" onclick="sortByColumn('authors')">创建者${sortArrow('authors')}</th>
-                    <th style="width:42px; cursor:pointer;" onclick="openSortAndViewMenu(event)" title="附件与排序选项">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;">
-                            <path d="M13.2 7.3l-5.6 5.6a3.5 3.5 0 0 1-5-5l5.8-5.8a2.3 2.3 0 0 1 3.3 3.3L6 11.1a1.2 1.2 0 0 1-1.7-1.7l5.1-5.1"/>
-                        </svg>
-                    </th>
-                </tr>
-            </thead>
             <tbody>${rowsHTML}</tbody>
         </table>
     </div>
@@ -876,10 +896,11 @@ function renderZoteroTableHTML(list) {
 function renderInspector() {
     const headerEl = document.getElementById('inspectorHeader');
     const bodyEl = document.getElementById('inspectorBody');
+    if (!bodyEl) return;
     const filteredCount = getFilteredPapers().length;
     const p = (state.papers || []).find(item => item.id === state.selectedPaperId);
 
-    // Zotero 7 Summary State ("此视图中有 N 个条目") when no item detail is open
+    // Summary State ("此视图中有 N 个条目") when no item detail is open
     if (ui.inspectorShowingSummary || !p) {
         bodyEl.dataset.inspPaperId = '';
         if (headerEl) headerEl.style.display = 'none';
@@ -1278,9 +1299,12 @@ document.getElementById('searchInput').addEventListener('input', (e) => {
     renderCenter();
     if (ui.inspectorShowingSummary) renderInspector();
 });
-document.getElementById('inspectorBody').addEventListener('scroll', () => {
-    syncDropSlotRects();
-});
+const inspBody = document.getElementById('inspectorBody');
+if (inspBody) {
+    inspBody.addEventListener('scroll', () => {
+        syncDropSlotRects();
+    });
+}
 window.addEventListener('resize', () => {
     syncDropSlotRects();
 });
@@ -1290,12 +1314,14 @@ document.addEventListener('click', () => {
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         closeCreatePaperModal();
+        closeEditMetaModal();
         closeContextMenu();
         return;
     }
     const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
     if (document.getElementById('createModal').classList.contains('open')) return;
+    if (document.getElementById('editMetaModal') && document.getElementById('editMetaModal').classList.contains('open')) return;
 
     if (e.key === 'Enter' && state.selectedPaperId) {
         e.preventDefault();
