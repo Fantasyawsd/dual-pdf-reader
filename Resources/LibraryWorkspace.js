@@ -793,8 +793,7 @@ function renderCenter() {
         if (allAnnots.length === 0) {
             centerEl.innerHTML = `
                 <div class="empty-box" style="margin:48px auto; max-width:400px; text-align:center;">
-                    <h3 style="font-size:16px; margin-bottom:8px; color:var(--text-primary);">全局笔记流中暂无记录</h3>
-                    <p style="font-size:13.5px; color:var(--text-secondary); line-height:1.5;">双击任意论文进入双栏对照阅读器，用鼠标划选正文即可添加多色高亮与精读笔记。</p>
+                    <h3 style="font-size:16px; margin-bottom:8px; color:var(--text-primary);">暂无笔记</h3>
                 </div>
             `;
             return;
@@ -806,8 +805,7 @@ function renderCenter() {
     if (filtered.length === 0) {
         centerEl.innerHTML = `
             <div class="empty-box" style="margin:54px auto; max-width:420px; text-align:center;">
-                <h3 style="font-size:16px; margin-bottom:8px; color:var(--text-primary);">文库中暂无论文</h3>
-                <p style="font-size:13.5px; color:var(--text-secondary); line-height:1.5;">点击上方「＋ 导入论文」或直接拖入 PDF 文件即可自动解析并开启双栏精读。</p>
+                <h3 style="font-size:16px; margin-bottom:8px; color:var(--text-primary);">暂无论文</h3>
             </div>
         `;
         return;
@@ -1188,11 +1186,10 @@ function renderInspectorNotesTab(bodyEl, p) {
     if (notes.length === 0 && noteDocs.length === 0) {
         bodyEl.innerHTML = `
             <div style="text-align:center;padding:36px 14px;color:var(--text-secondary);">
-                <div style="font-size:14.5px;font-weight:600;margin-bottom:6px;">该论文暂无高亮或精读笔记</div>
-                <div style="font-size:13px;color:var(--text-tertiary);line-height:1.6;margin-bottom:14px;">论文笔记统一在阅读器右侧边栏编辑；划选 PDF 文字后点击「引用笔记」，即可添加返回原文的链接。</div>
+                <div style="font-size:14px;font-weight:500;margin-bottom:12px;">暂无笔记</div>
                 <div style="display:flex;justify-content:center;gap:8px;">
-                    <button class="btn-primary" onclick="sendBridge({action:'openPaperNotesSidebar', paperId:'${pidAttr}'})">打开右侧笔记</button>
-                    <button class="btn-secondary" onclick="openPaperDual('${pidAttr}', event)">中英双栏打开</button>
+                    <button class="btn-primary" onclick="sendBridge({action:'openPaperNotesSidebar', paperId:'${pidAttr}'})">打开笔记</button>
+                    <button class="btn-secondary" onclick="openPaperDual('${pidAttr}', event)">双栏打开</button>
                 </div>
             </div>
         `;

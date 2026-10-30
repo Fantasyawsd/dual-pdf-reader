@@ -59,39 +59,38 @@
 <!-- Create / Import Paper Modal -->
 <div class="modal-backdrop" id="createModal">
     <div class="modal-dialog">
-        <h3 class="modal-title">创建条目 / 导入论文</h3>
+        <h3 class="modal-title">导入论文</h3>
         <div class="modal-tabs">
-            <button class="modal-tab-btn active" id="modalTabLocal" onclick="switchModalTab('local')">📁 直接上传 PDF (自动识别)</button>
-            <button class="modal-tab-btn" id="modalTabArxiv" onclick="switchModalTab('arxiv')">🌐 输入 arXiv ID / 链接</button>
+            <button class="modal-tab-btn active" id="modalTabLocal" onclick="switchModalTab('local')">本地 PDF</button>
+            <button class="modal-tab-btn" id="modalTabArxiv" onclick="switchModalTab('arxiv')">arXiv 导入</button>
         </div>
 
         <!-- Mode A: Upload Local PDF -->
         <div id="modalLocalSection">
             <input type="hidden" id="mLocalArxivId" value="">
-            <p class="modal-sub">支持上传 PDF 文件，系统优先解析 arXiv ID 并在联网时拉取官方元数据与引用数，否则通过内置引擎极速提取。</p>
             <div style="display:flex; gap:8px; margin-bottom:14px;">
                 <button class="btn-primary" style="flex:1; justify-content:center; height:38px;" onclick="sendBridge({action:'pickModalPDFs', mode:'both'})">
-                    选择 1 或 2 个 PDF 文件 (自动配对中英版本)…
+                    选择 PDF 文件…
                 </button>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px;">
                 <div class="pdf-slot-card" style="cursor:pointer;" onclick="sendBridge({action:'pickModalPDFs', mode:'original'})">
-                    <div class="pdf-slot-label">原版 PDF (Original EN)</div>
-                    <div class="pdf-slot-meta" id="modalOrigStatus">点击单独选择文件…</div>
+                    <div class="pdf-slot-label">原版 PDF</div>
+                    <div class="pdf-slot-meta" id="modalOrigStatus">未选择</div>
                 </div>
                 <div class="pdf-slot-card" style="cursor:pointer;" onclick="sendBridge({action:'pickModalPDFs', mode:'translated'})">
-                    <div class="pdf-slot-label">中文译版 (Translated ZH)</div>
-                    <div class="pdf-slot-meta" id="modalTransStatus">点击单独选择文件…</div>
+                    <div class="pdf-slot-label">中文译版</div>
+                    <div class="pdf-slot-meta" id="modalTransStatus">未选择</div>
                 </div>
             </div>
             <div class="form-grid">
                 <div class="form-full">
-                    <label class="form-label">论文标题 (留空自动从 PDF 提取)</label>
-                    <input type="text" id="mTitle" class="form-control" placeholder="例如：Attention Is All You Need">
+                    <label class="form-label">论文标题</label>
+                    <input type="text" id="mTitle" class="form-control" placeholder="留空自动提取">
                 </div>
                 <div class="form-full">
                     <label class="form-label">作者</label>
-                    <input type="text" id="mAuthors" class="form-control" placeholder="例如：Ashish Vaswani, Noam Shazeer">
+                    <input type="text" id="mAuthors" class="form-control">
                 </div>
                 <div>
                     <label class="form-label">发表年份</label>
@@ -106,7 +105,7 @@
                     <input type="text" id="mCategory" class="form-control" value="大模型架构 (LLM)">
                 </div>
                 <div>
-                    <label class="form-label">标签 (用逗号分隔)</label>
+                    <label class="form-label">标签</label>
                     <input type="text" id="mTags" class="form-control" placeholder="MoE, MLA, RL">
                 </div>
             </div>
@@ -118,11 +117,10 @@
 
         <!-- Mode B: Input ArXiv ID -->
         <div id="modalArxivSection" style="display:none;">
-            <p class="modal-sub">输入论文的 arXiv ID (如 1706.03762v7) 或论文链接，系统将自动拉取官方元数据与引用数，下载 PDF 并创建以论文名命名的条目。</p>
             <div class="form-grid" style="margin-bottom:16px;">
                 <div class="form-full">
-                    <label class="form-label">arXiv ID 或论文网页链接</label>
-                    <input type="text" id="mArxivInput" class="form-control" placeholder="例如：1706.03762 或 https://arxiv.org/abs/1706.03762v7">
+                    <label class="form-label">arXiv ID 或网页链接</label>
+                    <input type="text" id="mArxivInput" class="form-control" placeholder="1706.03762 或 https://arxiv.org/abs/1706.03762">
                 </div>
                 <div class="form-full">
                     <label class="form-label">所属分类合集</label>
@@ -131,7 +129,7 @@
             </div>
             <div style="display:flex; justify-content:flex-end; gap:8px;">
                 <button class="btn-secondary" onclick="closeCreatePaperModal()">取消</button>
-                <button class="btn-primary" id="btnSubmitArxiv" onclick="submitArxivImportModal()">解析元数据并下载创建</button>
+                <button class="btn-primary" id="btnSubmitArxiv" onclick="submitArxivImportModal()">导入</button>
             </div>
         </div>
     </div>
@@ -140,8 +138,7 @@
 <!-- Edit Paper Metadata Modal -->
 <div class="modal-backdrop" id="editMetaModal">
     <div class="modal-dialog">
-        <h3 class="modal-title">编辑条目元数据</h3>
-        <p class="modal-sub">修改该条目的基础文献信息，保存后将自动同步至条目 meta.json。</p>
+        <h3 class="modal-title">编辑元数据</h3>
         <input type="hidden" id="editPaperId">
         <div class="form-grid">
             <div class="form-full">
@@ -149,7 +146,7 @@
                 <input type="text" id="editTitle" class="form-control">
             </div>
             <div class="form-full">
-                <label class="form-label">创建者 / 作者</label>
+                <label class="form-label">作者</label>
                 <input type="text" id="editAuthors" class="form-control">
             </div>
             <div>
@@ -162,19 +159,19 @@
             </div>
             <div class="form-full">
                 <label class="form-label">arXiv ID</label>
-                <input type="text" id="editArxivId" class="form-control" placeholder="例如：1706.03762v7">
+                <input type="text" id="editArxivId" class="form-control">
             </div>
             <div>
                 <label class="form-label">所属分类合集</label>
                 <input type="text" id="editCategory" class="form-control">
             </div>
             <div>
-                <label class="form-label">标签 (用逗号分隔)</label>
+                <label class="form-label">标签</label>
                 <input type="text" id="editTags" class="form-control">
             </div>
         </div>
         <div style="display:flex; justify-content:space-between; align-items:center; margin-top:16px;">
-            <button class="btn-secondary" style="color:var(--accent);" onclick="triggerRefreshMetaInModal()">↻ 重新从 arXiv 拉取最新元数据</button>
+            <button class="btn-secondary" style="color:var(--accent);" onclick="triggerRefreshMetaInModal()">重新拉取 arXiv 元数据</button>
             <div style="display:flex; gap:8px;">
                 <button class="btn-secondary" onclick="closeEditMetaModal()">取消</button>
                 <button class="btn-primary" onclick="submitEditMetaModal()">保存修改</button>
@@ -189,7 +186,7 @@
 <!-- Drag & Drop Overlay -->
 <div class="drag-overlay" id="dragOverlay">
     <div class="drag-overlay-card" id="dragOverlayText">
-        释放 PDF 文件即可智能识别中英双栏并导入文献库
+        导入 PDF 文件
     </div>
 </div>
 

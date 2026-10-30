@@ -5,47 +5,13 @@ import UniformTypeIdentifiers
 
 // MARK: - Zotero 7 Native Theming & Flipped Views
 enum ZoteroTheme {
-    static let sidebarBg = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedRed: 0.15, green: 0.16, blue: 0.18, alpha: 1.0)
-            : NSColor(calibratedRed: 0.965, green: 0.965, blue: 0.97, alpha: 1.0)
-    }
-
-    static let sidebarHeaderBg = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedRed: 0.165, green: 0.175, blue: 0.195, alpha: 1.0)
-            : NSColor(calibratedRed: 0.95, green: 0.95, blue: 0.955, alpha: 1.0)
-    }
-
-    static let dividerColor = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedRed: 0.22, green: 0.23, blue: 0.25, alpha: 1.0)
-            : NSColor(calibratedRed: 0.88, green: 0.88, blue: 0.89, alpha: 1.0)
-    }
-
-    static let activeRailItemBg = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedRed: 0.25, green: 0.32, blue: 0.45, alpha: 0.45)
-            : NSColor(calibratedRed: 0.85, green: 0.89, blue: 0.96, alpha: 1.0)
-    }
-
-    static let cardBg = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedRed: 0.18, green: 0.19, blue: 0.22, alpha: 1.0)
-            : NSColor(calibratedRed: 0.99, green: 0.99, blue: 0.99, alpha: 1.0)
-    }
-
-    static let cardBorder = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedRed: 0.24, green: 0.25, blue: 0.28, alpha: 1.0)
-            : NSColor(calibratedRed: 0.88, green: 0.88, blue: 0.90, alpha: 1.0)
-    }
-
-    static let tagBg = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedRed: 0.22, green: 0.28, blue: 0.38, alpha: 0.5)
-            : NSColor(calibratedRed: 0.90, green: 0.93, blue: 0.98, alpha: 1.0)
-    }
+    static let sidebarBg = NSColor.windowBackgroundColor
+    static let sidebarHeaderBg = NSColor.windowBackgroundColor
+    static let dividerColor = NSColor.separatorColor
+    static let activeRailItemBg = NSColor.controlAccentColor.withAlphaComponent(0.14)
+    static let cardBg = NSColor.controlBackgroundColor
+    static let cardBorder = NSColor.separatorColor.withAlphaComponent(0.35)
+    static let tagBg = NSColor.quaternaryLabelColor.withAlphaComponent(0.18)
 }
 
 final class FlippedView: NSView {
@@ -103,7 +69,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // 左侧浮动覆盖式边栏（大纲目录与页面预览，无碰撞直接覆盖）
     private let leftOverlaySidebar = NSVisualEffectView()
-    private let leftOverlaySeg = NSSegmentedControl(labels: ["📑 目录大纲", "🖼️ 页面预览"], trackingMode: .selectOne, target: nil, action: nil)
+    private let leftOverlaySeg = NSSegmentedControl(labels: ["大纲", "缩略图"], trackingMode: .selectOne, target: nil, action: nil)
     private let leftOverlayCloseBtn = NSButton()
     private let thumbnailsContainer = NSView()
     private let pdfThumbnailView = PDFThumbnailView()
@@ -338,8 +304,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         resetAlignBtn.controlSize = .small
         resetAlignBtn.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
         resetAlignBtn.contentTintColor = .controlAccentColor
-        resetAlignBtn.title = "对齐已微调 ↺"
-        resetAlignBtn.toolTip = "当前已通过 ⌥ Option 滚动微调了双栏对齐偏移，点击重置为 0"
+        resetAlignBtn.title = "重置对齐"
+        resetAlignBtn.toolTip = "重置双栏对齐偏移"
         resetAlignBtn.target = self
         resetAlignBtn.action = #selector(resetSyncAlignmentAction)
         resetAlignBtn.isHidden = abs(pageRatioOffset) < 0.005
@@ -541,9 +507,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             masterSplitView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             masterSplitView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
 
-            pdfCanvasContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: 440),
-            rightDrawer.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
-            rightDrawer.widthAnchor.constraint(lessThanOrEqualToConstant: 620)
+            pdfCanvasContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: 360)
         ])
 
         setupMinimalTopBar(in: pdfCanvasContainer)
@@ -752,7 +716,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         sidebarHeaderView.translatesAutoresizingMaskIntoConstraints = false
         mainView.addSubview(sidebarHeaderView)
 
-        sidebarPaperTitleLabel.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        sidebarPaperTitleLabel.font = .systemFont(ofSize: 13.0, weight: .semibold)
         sidebarPaperTitleLabel.textColor = .labelColor
         sidebarPaperTitleLabel.lineBreakMode = .byTruncatingTail
         sidebarPaperTitleLabel.maximumNumberOfLines = 1
@@ -764,7 +728,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             sidebarHeaderView.topAnchor.constraint(equalTo: mainView.topAnchor),
             sidebarHeaderView.leadingAnchor.constraint(equalTo: mainView.leadingAnchor),
             sidebarHeaderView.trailingAnchor.constraint(equalTo: mainView.trailingAnchor),
-            sidebarHeaderView.heightAnchor.constraint(equalToConstant: 42),
+            sidebarHeaderView.heightAnchor.constraint(equalToConstant: 38),
 
             sidebarPaperTitleLabel.leadingAnchor.constraint(equalTo: sidebarHeaderView.leadingAnchor, constant: 14),
             sidebarPaperTitleLabel.centerYAnchor.constraint(equalTo: sidebarHeaderView.centerYAnchor),
@@ -779,8 +743,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let railStack = NSStackView()
         railStack.orientation = .vertical
         railStack.alignment = .centerX
-        railStack.spacing = 10
-        railStack.edgeInsets = NSEdgeInsets(top: 10, left: 4, bottom: 10, right: 4)
+        railStack.spacing = 8
+        railStack.edgeInsets = NSEdgeInsets(top: 8, left: 4, bottom: 8, right: 4)
         railStack.translatesAutoresizingMaskIntoConstraints = false
         workbenchRailView.addSubview(railStack)
 
@@ -791,12 +755,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         ])
 
         let tabDefs: [(icon: String, tooltip: String, tag: Int)] = [
-            ("doc.text", "条目信息 (元数据)", 0),
-            ("square.and.pencil", "随手笔记与高亮", 1),
-            ("character.book.closed", "划词翻译与学术解析", 2),
-            ("paperclip", "PDF 附件与文档", 3),
-            ("tag", "论文标签", 4),
-            ("link", "相关条目与外部链接", 5)
+            ("info.circle", "文献信息", 0),
+            ("square.and.pencil", "随手笔记", 1),
+            ("character.book.closed", "划词翻译", 2),
+            ("paperclip", "附件", 3),
+            ("tag", "标签", 4),
+            ("link", "相关条目与链接", 5)
         ]
 
         for def in tabDefs {
@@ -804,15 +768,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             btn.bezelStyle = .inline
             btn.isBordered = false
             btn.image = NSImage(systemSymbolName: def.icon, accessibilityDescription: def.tooltip)?
-                .withSymbolConfiguration(.init(pointSize: 19.0, weight: .medium))
+                .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
             btn.contentTintColor = (def.tag == currentWorkbenchTab) ? .controlAccentColor : .secondaryLabelColor
             btn.toolTip = def.tooltip
             btn.tag = def.tag
             btn.target = self
             btn.action = #selector(workbenchRailButtonClicked(_:))
             btn.translatesAutoresizingMaskIntoConstraints = false
-            btn.widthAnchor.constraint(equalToConstant: 34).isActive = true
-            btn.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            btn.widthAnchor.constraint(equalToConstant: 32).isActive = true
+            btn.heightAnchor.constraint(equalToConstant: 32).isActive = true
             railStack.addArrangedSubview(btn)
             workbenchRailButtons.append(btn)
         }
@@ -896,7 +860,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private func setupInfoTab(in parentStack: NSStackView) {
         tabInfoContainer.orientation = .vertical
         tabInfoContainer.alignment = .leading
-        tabInfoContainer.spacing = 10
+        tabInfoContainer.spacing = 8
         tabInfoContainer.translatesAutoresizingMaskIntoConstraints = false
         parentStack.addArrangedSubview(tabInfoContainer)
 
@@ -906,25 +870,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         secHeader.spacing = 8
         secHeader.translatesAutoresizingMaskIntoConstraints = false
 
-        let docIcon = NSImageView()
-        docIcon.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
-        docIcon.contentTintColor = .secondaryLabelColor
-        docIcon.translatesAutoresizingMaskIntoConstraints = false
-        docIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
-        docIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
-
-        let secTitle = NSTextField(labelWithString: "信息")
-        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
-        secTitle.textColor = .labelColor
-
-        let chevronIcon = NSImageView()
-        chevronIcon.image = NSImage(systemSymbolName: "chevron.up", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 12.0, weight: .medium))
-        chevronIcon.contentTintColor = .tertiaryLabelColor
-        chevronIcon.translatesAutoresizingMaskIntoConstraints = false
-        chevronIcon.widthAnchor.constraint(equalToConstant: 14).isActive = true
-        chevronIcon.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        let secTitle = NSTextField(labelWithString: "条目信息")
+        secTitle.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        secTitle.textColor = .secondaryLabelColor
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -932,21 +880,21 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let refreshBtn = NSButton()
         refreshBtn.bezelStyle = .inline
         refreshBtn.isBordered = false
-        refreshBtn.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "刷新元数据与引用数")?
-            .withSymbolConfiguration(.init(pointSize: 13.0, weight: .medium))
-        refreshBtn.contentTintColor = .controlAccentColor
-        refreshBtn.toolTip = "重新从 arXiv 与 Semantic Scholar 拉取官方元数据与引用数"
+        refreshBtn.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "刷新元数据")?
+            .withSymbolConfiguration(.init(pointSize: 12.0, weight: .medium))
+        refreshBtn.contentTintColor = .secondaryLabelColor
+        refreshBtn.toolTip = "重新拉取官方元数据"
         refreshBtn.target = self
         refreshBtn.action = #selector(refreshMetadataAndCitationsAction)
         refreshBtn.translatesAutoresizingMaskIntoConstraints = false
-        refreshBtn.widthAnchor.constraint(equalToConstant: 24).isActive = true
-        refreshBtn.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        refreshBtn.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        refreshBtn.heightAnchor.constraint(equalToConstant: 22).isActive = true
 
-        secHeader.setViews([docIcon, secTitle, chevronIcon, spacer, refreshBtn], in: .leading)
+        secHeader.setViews([secTitle, spacer, refreshBtn], in: .leading)
 
         metadataFieldsStack.orientation = .vertical
         metadataFieldsStack.alignment = .leading
-        metadataFieldsStack.spacing = 5
+        metadataFieldsStack.spacing = 4
         metadataFieldsStack.translatesAutoresizingMaskIntoConstraints = false
 
         tabInfoContainer.addArrangedSubview(secHeader)
@@ -972,22 +920,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         secHeader.spacing = 8
         secHeader.translatesAutoresizingMaskIntoConstraints = false
 
-        let noteIcon = NSImageView()
-        noteIcon.image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
-        noteIcon.contentTintColor = .secondaryLabelColor
-        noteIcon.translatesAutoresizingMaskIntoConstraints = false
-        noteIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
-        noteIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
-
-        let secTitle = NSTextField(labelWithString: "论文笔记")
-        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        let secTitle = NSTextField(labelWithString: "随手笔记")
+        secTitle.font = .systemFont(ofSize: 13.0, weight: .semibold)
         secTitle.textColor = .labelColor
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let addSnippetBtn = NSButton(title: "＋ 引用选词", target: self, action: #selector(addGeneralPageNoteAction))
+        let addSnippetBtn = NSButton(title: "＋ 引用", target: self, action: #selector(addGeneralPageNoteAction))
         addSnippetBtn.bezelStyle = .inline
         addSnippetBtn.controlSize = .small
         addSnippetBtn.font = .systemFont(ofSize: 11.5)
@@ -997,7 +937,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         openMdBtn.controlSize = .small
         openMdBtn.font = .systemFont(ofSize: 11.5)
 
-        secHeader.setViews([noteIcon, secTitle, spacer, addSnippetBtn, openMdBtn], in: .leading)
+        secHeader.setViews([secTitle, spacer, addSnippetBtn, openMdBtn], in: .leading)
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(WeakScriptMessageHandler(self), name: "noteAction")
@@ -1139,13 +1079,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         secHeader.spacing = 8
         secHeader.translatesAutoresizingMaskIntoConstraints = false
 
-        let transIcon = NSImageView()
-        transIcon.image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
-        transIcon.contentTintColor = .secondaryLabelColor
-
-        let secTitle = NSTextField(labelWithString: "划词翻译与学术解析")
-        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        let secTitle = NSTextField(labelWithString: "划词翻译")
+        secTitle.font = .systemFont(ofSize: 13.0, weight: .semibold)
         secTitle.textColor = .labelColor
 
         let headerSpacer = NSView()
@@ -1155,11 +1090,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         settingsBtn.bezelStyle = .inline
         settingsBtn.isBordered = false
         settingsBtn.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "翻译模型与密钥设置")
-        settingsBtn.toolTip = "配置 LLM 模型与 API Key (DeepSeek / SiliconFlow / OpenAI)"
+        settingsBtn.toolTip = "模型与 API 设置"
         settingsBtn.target = self
         settingsBtn.action = #selector(openTranslationSettingsModal)
 
-        secHeader.addArrangedSubview(transIcon)
         secHeader.addArrangedSubview(secTitle)
         secHeader.addArrangedSubview(headerSpacer)
         secHeader.addArrangedSubview(settingsBtn)
@@ -1207,7 +1141,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         sourceHeaderRow.spacing = 6
         sourceHeaderRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let sourceLabel = NSTextField(labelWithString: "待翻译原文 (支持PDF选词或直接输入)")
+        let sourceLabel = NSTextField(labelWithString: "原文")
         sourceLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
         sourceLabel.textColor = .secondaryLabelColor
 
@@ -1248,12 +1182,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         actionBtnRow.alignment = .centerY
         actionBtnRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let translateBtn = NSButton(title: "▶ 立即翻译", target: self, action: #selector(sidebarTranslateAction))
+        let translateBtn = NSButton(title: "翻译", target: self, action: #selector(sidebarTranslateAction))
         translateBtn.bezelStyle = .rounded
         translateBtn.controlSize = .small
         translateBtn.keyEquivalent = "\r"
 
-        let transPageBtn = NSButton(title: "📄 翻译当前整页", target: self, action: #selector(sidebarTranslateCurrentPageAction))
+        let transPageBtn = NSButton(title: "当前页", target: self, action: #selector(sidebarTranslateCurrentPageAction))
         transPageBtn.bezelStyle = .rounded
         transPageBtn.controlSize = .small
 
@@ -1278,7 +1212,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         resultHeaderRow.spacing = 6
         resultHeaderRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let resultTitle = NSTextField(labelWithString: "译文与学术解析结果")
+        let resultTitle = NSTextField(labelWithString: "译文")
         resultTitle.font = .systemFont(ofSize: 11.5, weight: .semibold)
         resultTitle.textColor = .secondaryLabelColor
 
@@ -1340,25 +1274,19 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         secHeader.spacing = 8
         secHeader.translatesAutoresizingMaskIntoConstraints = false
 
-        let attachIcon = NSImageView()
-        attachIcon.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
-        attachIcon.contentTintColor = .secondaryLabelColor
-
-        let secTitle = NSTextField(labelWithString: "PDF 附件与文档")
-        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        let secTitle = NSTextField(labelWithString: "附件")
+        secTitle.font = .systemFont(ofSize: 13.0, weight: .semibold)
         secTitle.textColor = .labelColor
 
         let headerSpacer = NSView()
         headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let addAttachBtn = NSButton(title: "＋ 导入附件…", target: self, action: #selector(importAttachmentFromSidebar))
+        let addAttachBtn = NSButton(title: "＋ 导入…", target: self, action: #selector(importAttachmentFromSidebar))
         addAttachBtn.bezelStyle = .inline
         addAttachBtn.isBordered = false
         addAttachBtn.contentTintColor = .controlAccentColor
         addAttachBtn.font = .systemFont(ofSize: 12.0, weight: .medium)
 
-        secHeader.addArrangedSubview(attachIcon)
         secHeader.addArrangedSubview(secTitle)
         secHeader.addArrangedSubview(headerSpacer)
         secHeader.addArrangedSubview(addAttachBtn)
@@ -1394,19 +1322,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         secHeader.spacing = 8
         secHeader.translatesAutoresizingMaskIntoConstraints = false
 
-        let tagIcon = NSImageView()
-        tagIcon.image = NSImage(systemSymbolName: "tag", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
-        tagIcon.contentTintColor = .secondaryLabelColor
-
-        let secTitle = NSTextField(labelWithString: "论文标签")
-        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        let secTitle = NSTextField(labelWithString: "标签")
+        secTitle.font = .systemFont(ofSize: 13.0, weight: .semibold)
         secTitle.textColor = .labelColor
 
         tagsCountBadge.font = .systemFont(ofSize: 12.0)
         tagsCountBadge.textColor = .secondaryLabelColor
 
-        secHeader.addArrangedSubview(tagIcon)
         secHeader.addArrangedSubview(secTitle)
         secHeader.addArrangedSubview(tagsCountBadge)
 
@@ -1434,13 +1356,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let addTagStack = FlippedStackView()
         addTagStack.orientation = .vertical
         addTagStack.alignment = .leading
-        addTagStack.spacing = 8
+        addTagStack.spacing = 6
         addTagStack.translatesAutoresizingMaskIntoConstraints = false
         addTagCard.contentView = addTagStack
-
-        let addTagTitle = NSTextField(labelWithString: "＋ 添加新标签")
-        addTagTitle.font = .systemFont(ofSize: 11.5, weight: .bold)
-        addTagTitle.textColor = .secondaryLabelColor
 
         let inputRow = NSStackView()
         inputRow.orientation = .horizontal
@@ -1448,7 +1366,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         inputRow.alignment = .centerY
         inputRow.translatesAutoresizingMaskIntoConstraints = false
 
-        tagsInputField.placeholderString = "输入新标签名称，按回车添加…"
+        tagsInputField.placeholderString = "新标签…"
         tagsInputField.identifier = NSUserInterfaceItemIdentifier("readerTagInput")
         tagsInputField.controlSize = .small
         tagsInputField.target = self
@@ -1462,7 +1380,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         inputRow.addArrangedSubview(tagsInputField)
         inputRow.addArrangedSubview(addBtn)
 
-        addTagStack.addArrangedSubview(addTagTitle)
         addTagStack.addArrangedSubview(inputRow)
 
         let suggestCard = makeSidebarCardView()
@@ -1473,7 +1390,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         suggestStack.translatesAutoresizingMaskIntoConstraints = false
         suggestCard.contentView = suggestStack
 
-        let suggestTitle = NSTextField(labelWithString: "文库常用标签 (点击快速添加)")
+        let suggestTitle = NSTextField(labelWithString: "常用标签")
         suggestTitle.font = .systemFont(ofSize: 11.5, weight: .bold)
         suggestTitle.textColor = .secondaryLabelColor
 
@@ -1542,25 +1459,19 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         secHeader.spacing = 8
         secHeader.translatesAutoresizingMaskIntoConstraints = false
 
-        let linkIcon = NSImageView()
-        linkIcon.image = NSImage(systemSymbolName: "link", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
-        linkIcon.contentTintColor = .secondaryLabelColor
-
-        let secTitle = NSTextField(labelWithString: "外部链接与文献引用")
-        secTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        let secTitle = NSTextField(labelWithString: "链接与文献")
+        secTitle.font = .systemFont(ofSize: 13.0, weight: .semibold)
         secTitle.textColor = .labelColor
 
         let headerSpacer = NSView()
         headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let addLinkBtn = NSButton(title: "＋ 添加外部链接…", target: self, action: #selector(promptAddCustomExternalLink))
+        let addLinkBtn = NSButton(title: "＋ 添加…", target: self, action: #selector(promptAddCustomExternalLink))
         addLinkBtn.bezelStyle = .inline
         addLinkBtn.isBordered = false
         addLinkBtn.contentTintColor = .controlAccentColor
         addLinkBtn.font = .systemFont(ofSize: 12.0, weight: .medium)
 
-        secHeader.addArrangedSubview(linkIcon)
         secHeader.addArrangedSubview(secTitle)
         secHeader.addArrangedSubview(headerSpacer)
         secHeader.addArrangedSubview(addLinkBtn)
@@ -1594,7 +1505,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             row.translatesAutoresizingMaskIntoConstraints = false
 
             let keyLabel = NSTextField(labelWithString: key)
-            keyLabel.font = .systemFont(ofSize: 12.0, weight: .regular)
+            keyLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
             keyLabel.textColor = .secondaryLabelColor
             keyLabel.alignment = .right
             keyLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -1605,13 +1516,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 btn.bezelStyle = .inline
                 btn.isBordered = false
                 btn.contentTintColor = .controlAccentColor
-                btn.font = .systemFont(ofSize: 12.5)
+                btn.font = .systemFont(ofSize: 12.0)
                 btn.alignment = .left
                 btn.translatesAutoresizingMaskIntoConstraints = false
                 valView = btn
             } else {
                 let valLabel = NSTextField(wrappingLabelWithString: value)
-                valLabel.font = .systemFont(ofSize: 12.5)
+                valLabel.font = .systemFont(ofSize: 12.0)
                 valLabel.textColor = .labelColor
                 valLabel.isSelectable = true
                 valLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -1623,56 +1534,51 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
             NSLayoutConstraint.activate([
                 keyLabel.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-                keyLabel.widthAnchor.constraint(equalToConstant: 68),
-                keyLabel.topAnchor.constraint(equalTo: row.topAnchor, constant: 3),
+                keyLabel.widthAnchor.constraint(equalToConstant: 52),
+                keyLabel.topAnchor.constraint(equalTo: row.topAnchor, constant: 2),
 
                 valView.leadingAnchor.constraint(equalTo: keyLabel.trailingAnchor, constant: 10),
                 valView.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -4),
                 valView.topAnchor.constraint(equalTo: row.topAnchor, constant: 2),
-                valView.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -3)
+                valView.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -2)
             ])
             metadataFieldsStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: metadataFieldsStack.widthAnchor).isActive = true
         }
-        addRow(key: "条目类型", value: p.cleanArxivId == nil ? "PDF 文档" : "arXiv 文献")
-        addRow(key: "标题", value: p.title)
 
         let authorList = p.authors.components(separatedBy: CharacterSet(charactersIn: ";,，；")).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        if authorList.isEmpty {
-            addRow(key: "作者", value: "—")
-        } else {
+        if !authorList.isEmpty {
             let maxShow = 5
             for (idx, author) in authorList.prefix(maxShow).enumerated() {
                 addRow(key: idx == 0 ? "作者" : "", value: author)
             }
             if authorList.count > maxShow {
-                addRow(key: "", value: "还有 \(authorList.count - maxShow) 个…")
+                addRow(key: "", value: "还有 \(authorList.count - maxShow) 人…")
             }
         }
 
-        addRow(key: "分类", value: p.category.isEmpty ? "—" : p.category)
-        addRow(key: "仓库", value: p.venue.isEmpty ? (p.cleanArxivId == nil ? "—" : "arXiv") : p.venue)
+        if !p.category.isEmpty {
+            addRow(key: "分类", value: p.category)
+        }
+        if !p.venue.isEmpty {
+            addRow(key: "期刊", value: p.venue)
+        }
 
         let aid = p.cleanArxivId ?? ""
-        addRow(key: "存档ID", value: aid.isEmpty ? "—" : "arXiv:\(aid)")
-        addRow(key: "日期", value: p.year.isEmpty ? "—" : p.year)
-        addRow(key: "DOI", value: aid.isEmpty ? "—" : "10.48550/arXiv.\(aid)")
-
         if !aid.isEmpty {
-            addRow(key: "网址", value: "http://arxiv.org/abs/\(aid)", isLink: true, linkAction: #selector(openArxivLinkFromSidebar))
-        } else {
-            addRow(key: "网址", value: "—")
+            addRow(key: "arXiv", value: aid)
         }
-
-        let sourceDocument = LibraryStore.shared.pdfURL(for: p, side: .original).flatMap { PDFDocument(url: $0) }
-        addRow(key: "语言", value: Self.detectedLanguage(in: sourceDocument))
+        if !p.year.isEmpty {
+            addRow(key: "年份", value: p.year)
+        }
+        if !aid.isEmpty {
+            addRow(key: "DOI", value: "10.48550/arXiv.\(aid)")
+            addRow(key: "网址", value: "https://arxiv.org/abs/\(aid)", isLink: true, linkAction: #selector(openArxivLinkFromSidebar))
+        }
 
         if let citations = p.citationCount {
-            addRow(key: "引用数", value: "\(citations.formatted()) 次")
+            addRow(key: "引用", value: "\(citations.formatted()) 次")
         }
-
-        let dateStr = DateFormatter.localizedString(from: p.addedAt, dateStyle: .short, timeStyle: .medium)
-        addRow(key: "添加日期", value: dateStr)
     }
 
     // MARK: - Tab 2: 翻译与学术解析 (Actions & UI Refresh)
@@ -1694,8 +1600,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
 
         if sidebarTransResultMarkdown.isEmpty {
-            let placeholderHTML = MarkdownMathRenderer.buildSinglePreviewHTML(markdown: "*在 PDF 页面中划选任意文字，或在上方输入框键入文本后点击「立即翻译」即可在此生成学术译文与术语解析。*")
-            sidebarTransResultWebView.loadHTMLString(placeholderHTML, baseURL: nil)
+            sidebarTransResultWebView.loadHTMLString("", baseURL: nil)
         }
     }
 
@@ -1825,8 +1730,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             .withSymbolConfiguration(.init(pointSize: 14.0, weight: .medium))
         origIcon.contentTintColor = .controlAccentColor
 
-        let origTitle = NSTextField(labelWithString: "原版 PDF (Original EN)")
-        origTitle.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        let origTitle = NSTextField(labelWithString: "原版 PDF")
+        origTitle.font = .systemFont(ofSize: 12.0, weight: .semibold)
 
         let origSpacer = NSView()
         origSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -1849,16 +1754,16 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             origDetails.textColor = .secondaryLabelColor
             origDetails.lineBreakMode = .byTruncatingMiddle
 
-            let revealBtn = makeCompactActionButton(title: "在Finder中显示", symbol: "folder", action: #selector(revealOriginalInFinder))
+            let revealBtn = makeCompactActionButton(title: "Finder", symbol: "folder", action: #selector(revealOriginalInFinder))
             let replaceBtn = makeCompactActionButton(title: "替换…", symbol: "arrow.triangle.2.circlepath", action: #selector(importOrigPDFFromSidebar))
             origBtnRow.addArrangedSubview(revealBtn)
             origBtnRow.addArrangedSubview(replaceBtn)
         } else {
-            origDetails = NSTextField(labelWithString: "尚未绑定原版英文 PDF")
+            origDetails = NSTextField(labelWithString: "未绑定")
             origDetails.font = .systemFont(ofSize: 11.0)
             origDetails.textColor = .placeholderTextColor
 
-            let addBtn = makeCompactActionButton(title: "＋ 导入 PDF…", symbol: "plus", action: #selector(importOrigPDFFromSidebar))
+            let addBtn = makeCompactActionButton(title: "导入…", symbol: "plus", action: #selector(importOrigPDFFromSidebar))
             origBtnRow.addArrangedSubview(addBtn)
         }
 
@@ -1889,8 +1794,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             .withSymbolConfiguration(.init(pointSize: 14.0, weight: .medium))
         transIcon.contentTintColor = NSColor.systemGreen
 
-        let transTitle = NSTextField(labelWithString: "中文译版 (Translated ZH)")
-        transTitle.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        let transTitle = NSTextField(labelWithString: "中文译版")
+        transTitle.font = .systemFont(ofSize: 12.0, weight: .semibold)
 
         let transSpacer = NSView()
         transSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -1913,7 +1818,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             transDetails.textColor = .secondaryLabelColor
             transDetails.lineBreakMode = .byTruncatingMiddle
 
-            let revealBtn = makeCompactActionButton(title: "在Finder中显示", symbol: "folder", action: #selector(revealTranslatedInFinder))
+            let revealBtn = makeCompactActionButton(title: "Finder", symbol: "folder", action: #selector(revealTranslatedInFinder))
             let replaceBtn = makeCompactActionButton(title: "替换…", symbol: "arrow.triangle.2.circlepath", action: #selector(importTransPDFFromSidebar))
             let removeBtn = makeCompactActionButton(title: "移除", symbol: "trash", action: #selector(removeTranslatedPDFFindFromSidebar), tint: .systemRed)
 
@@ -1921,11 +1826,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             transBtnRow.addArrangedSubview(replaceBtn)
             transBtnRow.addArrangedSubview(removeBtn)
         } else {
-            transDetails = NSTextField(labelWithString: "尚未导入中文译本 (支持幻觉翻译 PDF 或自定义译稿)")
+            transDetails = NSTextField(labelWithString: "未导入")
             transDetails.font = .systemFont(ofSize: 11.0)
             transDetails.textColor = .placeholderTextColor
 
-            let addBtn = makeCompactActionButton(title: "＋ 导入中文 PDF…", symbol: "plus", action: #selector(importTransPDFFromSidebar))
+            let addBtn = makeCompactActionButton(title: "导入…", symbol: "plus", action: #selector(importTransPDFFromSidebar))
             transBtnRow.addArrangedSubview(addBtn)
         }
 
@@ -1938,20 +1843,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         // --- Section 2: 附加文件列表 (Local files) ---
         let localResources = p.resources.filter { $0.isLocalFile }
-        let attachHeader = NSTextField(labelWithString: "附加文件列表 (\(localResources.count))")
-        attachHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
-        attachHeader.textColor = .secondaryLabelColor
-        attachmentsListStack.addArrangedSubview(attachHeader)
+        if !localResources.isEmpty {
+            let attachHeader = NSTextField(labelWithString: "附加文件 (\(localResources.count))")
+            attachHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
+            attachHeader.textColor = .secondaryLabelColor
+            attachmentsListStack.addArrangedSubview(attachHeader)
 
-        if localResources.isEmpty {
-            let emptyCard = makeSidebarCardView()
-            let emptyLbl = NSTextField(wrappingLabelWithString: "暂无附加文件。点击上方「＋ 导入附件…」可导入演示文稿、代码压缩包、补充图表等。")
-            emptyLbl.font = .systemFont(ofSize: 11.5)
-            emptyLbl.textColor = .tertiaryLabelColor
-            emptyCard.contentView = emptyLbl
-            attachmentsListStack.addArrangedSubview(emptyCard)
-            emptyCard.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
-        } else {
             for res in localResources {
                 let card = makeSidebarCardView()
                 let cStack = FlippedStackView()
@@ -2101,12 +1998,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         tagsCountBadge.stringValue = "(\(p.tags.count))"
 
-        if p.tags.isEmpty {
-            let emptyLbl = NSTextField(labelWithString: "当前论文尚未添加标签")
-            emptyLbl.font = .systemFont(ofSize: 11.5)
-            emptyLbl.textColor = .tertiaryLabelColor
-            tagsChipsStack.addArrangedSubview(emptyLbl)
-        } else {
+        if !p.tags.isEmpty {
             var currentRow = NSStackView()
             currentRow.orientation = .horizontal
             currentRow.spacing = 6
@@ -2133,12 +2025,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
 
         let availableTags = LibraryStore.shared.allUniqueTags.filter { !p.tags.contains($0) }
-        if availableTags.isEmpty {
-            let emptySuggest = NSTextField(labelWithString: "暂无其他文库标签")
-            emptySuggest.font = .systemFont(ofSize: 11.5)
-            emptySuggest.textColor = .tertiaryLabelColor
-            suggestedTagsStack.addArrangedSubview(emptySuggest)
-        } else {
+        if !availableTags.isEmpty {
             var currentRow = NSStackView()
             currentRow.orientation = .horizontal
             currentRow.spacing = 6
@@ -2234,7 +2121,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         guard let p = currentPaper else { return }
 
         // --- Section 1: 官方学术导航 ---
-        let navHeader = NSTextField(labelWithString: "学术文献导航")
+        let navHeader = NSTextField(labelWithString: "学术文献")
         navHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
         navHeader.textColor = .secondaryLabelColor
         linksCardsStack.addArrangedSubview(navHeader)
@@ -2261,7 +2148,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             .withSymbolConfiguration(.init(pointSize: 13.0, weight: .medium))
         arxivIcon.contentTintColor = .controlAccentColor
 
-        let arxivTitle = NSTextField(labelWithString: "arXiv 官方文献主页")
+        let arxivTitle = NSTextField(labelWithString: "arXiv")
         arxivTitle.font = .systemFont(ofSize: 12.0, weight: .semibold)
 
         let arxivSpacer = NSView()
@@ -2284,8 +2171,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             arxivUrlLbl.textColor = .secondaryLabelColor
             arxivUrlLbl.lineBreakMode = .byTruncatingMiddle
 
-            let openBtn = makeCompactActionButton(title: "打开 ↗", symbol: "safari", action: #selector(openArxivLinkFromSidebar))
-            let copyBtn = makeCompactActionButton(title: "复制 📋", symbol: "doc.on.doc", action: #selector(copyArxivLinkFromSidebar))
+            let openBtn = makeCompactActionButton(title: "打开", symbol: "safari", action: #selector(openArxivLinkFromSidebar))
+            let copyBtn = makeCompactActionButton(title: "复制", symbol: "doc.on.doc", action: #selector(copyArxivLinkFromSidebar))
             arxivBtnRow.addArrangedSubview(openBtn)
             arxivBtnRow.addArrangedSubview(copyBtn)
         } else {
@@ -2293,7 +2180,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             arxivUrlLbl.font = .systemFont(ofSize: 11.0)
             arxivUrlLbl.textColor = .placeholderTextColor
 
-            let bindBtn = makeCompactActionButton(title: "＋ 绑定 arXiv ID…", symbol: "plus", action: #selector(promptBindArxivId))
+            let bindBtn = makeCompactActionButton(title: "绑定…", symbol: "plus", action: #selector(promptBindArxivId))
             arxivBtnRow.addArrangedSubview(bindBtn)
         }
 
@@ -2305,74 +2192,60 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         arxivStack.widthAnchor.constraint(equalTo: arxivCard.widthAnchor, constant: -20).isActive = true
 
         // 2) 幻觉翻译卡片
-        let hjfyCard = makeSidebarCardView()
-        let hjfyStack = FlippedStackView()
-        hjfyStack.orientation = .vertical
-        hjfyStack.alignment = .leading
-        hjfyStack.spacing = 5
-        hjfyStack.translatesAutoresizingMaskIntoConstraints = false
-        hjfyCard.contentView = hjfyStack
-
-        let hjfyTopRow = NSStackView()
-        hjfyTopRow.orientation = .horizontal
-        hjfyTopRow.alignment = .centerY
-        hjfyTopRow.spacing = 6
-        hjfyTopRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let hjfyIcon = NSImageView()
-        hjfyIcon.image = NSImage(systemSymbolName: "text.bubble.fill", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 13.0, weight: .medium))
-        hjfyIcon.contentTintColor = NSColor.systemIndigo
-
-        let hjfyTitle = NSTextField(labelWithString: "幻觉翻译 (双语快速阅读)")
-        hjfyTitle.font = .systemFont(ofSize: 12.0, weight: .semibold)
-
-        let hjfySpacer = NSView()
-        hjfySpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        hjfyTopRow.addArrangedSubview(hjfyIcon)
-        hjfyTopRow.addArrangedSubview(hjfyTitle)
-        hjfyTopRow.addArrangedSubview(hjfySpacer)
-
-        let hjfyUrlLbl: NSTextField
-        let hjfyBtnRow = NSStackView()
-        hjfyBtnRow.orientation = .horizontal
-        hjfyBtnRow.spacing = 8
-        hjfyBtnRow.translatesAutoresizingMaskIntoConstraints = false
-
         if !aid.isEmpty {
+            let hjfyCard = makeSidebarCardView()
+            let hjfyStack = FlippedStackView()
+            hjfyStack.orientation = .vertical
+            hjfyStack.alignment = .leading
+            hjfyStack.spacing = 5
+            hjfyStack.translatesAutoresizingMaskIntoConstraints = false
+            hjfyCard.contentView = hjfyStack
+
+            let hjfyTopRow = NSStackView()
+            hjfyTopRow.orientation = .horizontal
+            hjfyTopRow.alignment = .centerY
+            hjfyTopRow.spacing = 6
+            hjfyTopRow.translatesAutoresizingMaskIntoConstraints = false
+
+            let hjfyIcon = NSImageView()
+            hjfyIcon.image = NSImage(systemSymbolName: "text.bubble.fill", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 13.0, weight: .medium))
+            hjfyIcon.contentTintColor = NSColor.systemIndigo
+
+            let hjfyTitle = NSTextField(labelWithString: "幻觉翻译")
+            hjfyTitle.font = .systemFont(ofSize: 12.0, weight: .semibold)
+
+            let hjfySpacer = NSView()
+            hjfySpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+            hjfyTopRow.addArrangedSubview(hjfyIcon)
+            hjfyTopRow.addArrangedSubview(hjfyTitle)
+            hjfyTopRow.addArrangedSubview(hjfySpacer)
+
             let urlStr = "https://hjfy.top/arxiv/\(aid)"
-            hjfyUrlLbl = NSTextField(labelWithString: urlStr)
+            let hjfyUrlLbl = NSTextField(labelWithString: urlStr)
             hjfyUrlLbl.font = .systemFont(ofSize: 11.0)
             hjfyUrlLbl.textColor = .secondaryLabelColor
             hjfyUrlLbl.lineBreakMode = .byTruncatingMiddle
 
-            let openBtn = makeCompactActionButton(title: "前往 ↗", symbol: "safari", action: #selector(openHjfyLinkFromSidebar))
-            let copyBtn = makeCompactActionButton(title: "复制 📋", symbol: "doc.on.doc", action: #selector(copyHjfyLinkFromSidebar))
+            let hjfyBtnRow = NSStackView()
+            hjfyBtnRow.orientation = .horizontal
+            hjfyBtnRow.spacing = 8
+            hjfyBtnRow.translatesAutoresizingMaskIntoConstraints = false
+
+            let openBtn = makeCompactActionButton(title: "前往", symbol: "safari", action: #selector(openHjfyLinkFromSidebar))
+            let copyBtn = makeCompactActionButton(title: "复制", symbol: "doc.on.doc", action: #selector(copyHjfyLinkFromSidebar))
             hjfyBtnRow.addArrangedSubview(openBtn)
             hjfyBtnRow.addArrangedSubview(copyBtn)
-        } else {
-            hjfyUrlLbl = NSTextField(labelWithString: "需先关联 arXiv ID 才能跳转幻觉翻译")
-            hjfyUrlLbl.font = .systemFont(ofSize: 11.0)
-            hjfyUrlLbl.textColor = .placeholderTextColor
 
-            let disabledBtn = NSButton(title: "不可用 (无 arXiv ID)", target: nil, action: nil)
-            disabledBtn.bezelStyle = .inline
-            disabledBtn.isBordered = false
-            disabledBtn.isEnabled = false
-            disabledBtn.font = .systemFont(ofSize: 11.0)
-            hjfyBtnRow.addArrangedSubview(disabledBtn)
-        }
+            hjfyStack.addArrangedSubview(hjfyTopRow)
+            hjfyStack.addArrangedSubview(hjfyUrlLbl)
+            hjfyStack.addArrangedSubview(hjfyBtnRow)
+            linksCardsStack.addArrangedSubview(hjfyCard)
+            hjfyCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+            hjfyStack.widthAnchor.constraint(equalTo: hjfyCard.widthAnchor, constant: -20).isActive = true
 
-        hjfyStack.addArrangedSubview(hjfyTopRow)
-        hjfyStack.addArrangedSubview(hjfyUrlLbl)
-        hjfyStack.addArrangedSubview(hjfyBtnRow)
-        linksCardsStack.addArrangedSubview(hjfyCard)
-        hjfyCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
-        hjfyStack.widthAnchor.constraint(equalTo: hjfyCard.widthAnchor, constant: -20).isActive = true
-
-        // 3) DOI 官方出版链接
-        if !aid.isEmpty {
+            // 3) DOI 官方出版链接
             let doiCard = makeSidebarCardView()
             let doiStack = FlippedStackView()
             doiStack.orientation = .vertical
@@ -2381,7 +2254,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             doiStack.translatesAutoresizingMaskIntoConstraints = false
             doiCard.contentView = doiStack
 
-            let doiTitle = NSTextField(labelWithString: "DOI 官方文献引用")
+            let doiTitle = NSTextField(labelWithString: "DOI")
             doiTitle.font = .systemFont(ofSize: 12.0, weight: .semibold)
 
             let doiUrl = "https://doi.org/10.48550/arXiv.\(aid)"
@@ -2395,20 +2268,20 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             doiBtnRow.spacing = 8
             doiBtnRow.translatesAutoresizingMaskIntoConstraints = false
 
-            let openBtn = NSButton(title: "打开 ↗", target: self, action: #selector(openDoiLinkFromSidebar))
-            openBtn.bezelStyle = .inline
-            openBtn.isBordered = false
-            openBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
-            openBtn.contentTintColor = .controlAccentColor
+            let doiOpenBtn = NSButton(title: "打开", target: self, action: #selector(openDoiLinkFromSidebar))
+            doiOpenBtn.bezelStyle = .inline
+            doiOpenBtn.isBordered = false
+            doiOpenBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
+            doiOpenBtn.contentTintColor = .controlAccentColor
 
-            let copyBtn = NSButton(title: "复制 📋", target: self, action: #selector(copyDoiLinkFromSidebar))
-            copyBtn.bezelStyle = .inline
-            copyBtn.isBordered = false
-            copyBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
-            copyBtn.contentTintColor = .controlAccentColor
+            let doiCopyBtn = NSButton(title: "复制", target: self, action: #selector(copyDoiLinkFromSidebar))
+            doiCopyBtn.bezelStyle = .inline
+            doiCopyBtn.isBordered = false
+            doiCopyBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
+            doiCopyBtn.contentTintColor = .controlAccentColor
 
-            doiBtnRow.addArrangedSubview(openBtn)
-            doiBtnRow.addArrangedSubview(copyBtn)
+            doiBtnRow.addArrangedSubview(doiOpenBtn)
+            doiBtnRow.addArrangedSubview(doiCopyBtn)
 
             doiStack.addArrangedSubview(doiTitle)
             doiStack.addArrangedSubview(doiLbl)
@@ -2421,20 +2294,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         // --- Section 2: 自定义外部链接 ---
         let customLinks = p.resources.filter { !$0.isLocalFile }
-        let customHeader = NSTextField(labelWithString: "自定义关联链接 (\(customLinks.count))")
-        customHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
-        customHeader.textColor = .secondaryLabelColor
-        linksCardsStack.addArrangedSubview(customHeader)
+        if !customLinks.isEmpty {
+            let customHeader = NSTextField(labelWithString: "外部链接 (\(customLinks.count))")
+            customHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
+            customHeader.textColor = .secondaryLabelColor
+            linksCardsStack.addArrangedSubview(customHeader)
 
-        if customLinks.isEmpty {
-            let emptyCard = makeSidebarCardView()
-            let emptyLbl = NSTextField(wrappingLabelWithString: "暂无自定义外部链接。点击右上角「＋ 添加外部链接…」添加 GitHub 仓库、项目主页等。")
-            emptyLbl.font = .systemFont(ofSize: 11.5)
-            emptyLbl.textColor = .tertiaryLabelColor
-            emptyCard.contentView = emptyLbl
-            linksCardsStack.addArrangedSubview(emptyCard)
-            emptyCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
-        } else {
             for res in customLinks {
                 let card = makeSidebarCardView()
                 let cStack = FlippedStackView()
@@ -2476,21 +2341,21 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 btnRow.spacing = 8
                 btnRow.translatesAutoresizingMaskIntoConstraints = false
 
-                let openBtn = NSButton(title: "打开 ↗", target: self, action: #selector(openCustomLinkFromBtn(_:)))
+                let openBtn = NSButton(title: "打开", target: self, action: #selector(openCustomLinkFromBtn(_:)))
                 openBtn.bezelStyle = .inline
                 openBtn.isBordered = false
                 openBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
                 openBtn.contentTintColor = .controlAccentColor
                 openBtn.identifier = NSUserInterfaceItemIdentifier(res.urlOrPath)
 
-                let copyBtn = NSButton(title: "复制 📋", target: self, action: #selector(copyCustomLinkFromBtn(_:)))
+                let copyBtn = NSButton(title: "复制", target: self, action: #selector(copyCustomLinkFromBtn(_:)))
                 copyBtn.bezelStyle = .inline
                 copyBtn.isBordered = false
                 copyBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
                 copyBtn.contentTintColor = .controlAccentColor
                 copyBtn.identifier = NSUserInterfaceItemIdentifier(res.urlOrPath)
 
-                let delBtn = NSButton(title: "删除 ✕", target: self, action: #selector(deleteCustomLinkFromBtn(_:)))
+                let delBtn = NSButton(title: "删除", target: self, action: #selector(deleteCustomLinkFromBtn(_:)))
                 delBtn.bezelStyle = .inline
                 delBtn.isBordered = false
                 delBtn.font = .systemFont(ofSize: 11.5, weight: .medium)
@@ -2511,21 +2376,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             }
         }
 
-        // --- Section 3: 关联论文文献 ---
-        let relHeader = NSTextField(labelWithString: "文库关联文献 (\(p.relatedPapers.count))")
-        relHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
-        relHeader.textColor = .secondaryLabelColor
-        linksCardsStack.addArrangedSubview(relHeader)
+        // --- Section 3: 关联文献 ---
+        if !p.relatedPapers.isEmpty {
+            let relHeader = NSTextField(labelWithString: "关联文献 (\(p.relatedPapers.count))")
+            relHeader.font = .systemFont(ofSize: 11.5, weight: .bold)
+            relHeader.textColor = .secondaryLabelColor
+            linksCardsStack.addArrangedSubview(relHeader)
 
-        if p.relatedPapers.isEmpty {
-            let emptyCard = makeSidebarCardView()
-            let emptyLbl = NSTextField(wrappingLabelWithString: "暂无关联论文。点击下方按钮可与文库其他论文双向绑定。")
-            emptyLbl.font = .systemFont(ofSize: 11.0)
-            emptyLbl.textColor = .tertiaryLabelColor
-            emptyCard.contentView = emptyLbl
-            linksCardsStack.addArrangedSubview(emptyCard)
-            emptyCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
-        } else {
             for rel in p.relatedPapers {
                 let targetTitle = LibraryStore.shared.paper(withId: rel.targetPaperId)?.title ?? rel.targetPaperId
                 let card = makeDrawerResourceCard(
@@ -2542,7 +2399,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             }
         }
 
-        let addRelBtn = NSButton(title: "＋ 关联库内其他论文…", target: self, action: #selector(addRelatedPaperInDrawer))
+        let addRelBtn = NSButton(title: "＋ 关联文献…", target: self, action: #selector(addRelatedPaperInDrawer))
         addRelBtn.bezelStyle = .rounded
         addRelBtn.controlSize = .small
         linksCardsStack.addArrangedSubview(addRelBtn)
@@ -2579,11 +2436,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         vStack.alignment = .leading
         vStack.spacing = 2
 
-        let delBtn = NSButton(title: "✕", target: self, action: removeAction)
+        let delBtn = NSButton()
         delBtn.bezelStyle = .inline
         delBtn.isBordered = false
-        delBtn.font = .systemFont(ofSize: 11)
-        delBtn.contentTintColor = .tertiaryLabelColor
+        delBtn.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "删除关联")?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
+        delBtn.contentTintColor = .secondaryLabelColor
+        delBtn.target = self
+        delBtn.action = removeAction
         delBtn.identifier = NSUserInterfaceItemIdentifier(removeId)
 
         let spacer = NSView()
@@ -2924,6 +2784,32 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             col.pdfView.onBeforeInternalLinkJump = { [weak self, weak col] destPage, destPoint, isCmdPressed in
                 guard let self = self, let col = col else { return false }
                 return self.handleReferenceJump(from: col, toPage: destPage, point: destPoint, inOppositePaneOnly: isCmdPressed)
+            }
+            col.pdfView.onContextMenuTranslate = { [weak self] text in
+                guard let self = self else { return }
+                self.sidebarTransSourceTextView.string = text
+                if !self.isDrawerOpen { self.toggleRightDrawerAction() }
+                self.switchWorkbenchTab(to: 2)
+                self.sidebarTranslateAction()
+            }
+            col.pdfView.onContextMenuHighlight = { [weak self, weak col] selection, color in
+                guard let self = self, let col = col else { return }
+                self.activeSelectionPDFView = col.pdfView
+                _ = self.createAnnotationFromCurrentSelection(color: color, note: "", linkedURL: nil, linkedTitle: nil)
+                self.applyAnnotationsToPDFViews()
+            }
+            col.pdfView.onContextMenuAddNote = { [weak self, weak col] selection in
+                guard let self = self, let col = col else { return }
+                self.activeSelectionPDFView = col.pdfView
+                self.quoteSelectionToPaperNote(from: col.pdfView, selection: selection)
+                if !self.isDrawerOpen { self.toggleRightDrawerAction() }
+                self.switchWorkbenchTab(to: 1)
+            }
+            col.pdfView.onContextMenuSwapColumns = { [weak self] in
+                self?.swapColumnsAction()
+            }
+            col.pdfView.onContextMenuResetSync = { [weak self] in
+                self?.resetSyncAlignmentAction()
             }
         }
     }
@@ -4102,6 +3988,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             notesNeedRefresh = true
             refreshNotesDrawerWebView()
             updateRightSidebarMetadataUI()
+        } else {
+            masterSplitView.setPosition(masterSplitView.bounds.width, ofDividerAt: 0)
+        }
+        masterSplitView.adjustSubviews()
+        pdfCanvasContainer.layoutSubtreeIfNeeded()
+        if (modeSeg.selectedSegment == 2 || modeSeg.selectedSegment == 3) && !leftCol.isHidden && !rightCol.isHidden {
+            splitView.adjustSubviews()
+            splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
         }
         DispatchQueue.main.async { [weak self] in
             guard let self = self, !self.isClosed else { return }
@@ -4487,27 +4381,39 @@ extension ReaderTabViewController: NSTableViewDataSource, NSTableViewDelegate {
 extension ReaderTabViewController: NSSplitViewDelegate {
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard let sv = notification.object as? NSSplitView else { return }
-        if sv === masterSplitView {
+        if sv === masterSplitView || sv === splitView {
             if (modeSeg.selectedSegment == 2 || modeSeg.selectedSegment == 3) && !leftCol.isHidden && !rightCol.isHidden {
+                pdfCanvasContainer.layoutSubtreeIfNeeded()
                 splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
             }
         }
     }
 
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
+        if splitView === masterSplitView && subview === rightDrawer {
+            return true
+        }
         return false
     }
 
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         if splitView === masterSplitView {
-            return max(440, masterSplitView.bounds.width - 620)
+            if isDrawerOpen {
+                return max(440, masterSplitView.bounds.width - 620)
+            } else {
+                return masterSplitView.bounds.width
+            }
         }
         return proposedMinimumPosition
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         if splitView === masterSplitView {
-            return masterSplitView.bounds.width - 280
+            if isDrawerOpen {
+                return masterSplitView.bounds.width - 280
+            } else {
+                return masterSplitView.bounds.width
+            }
         }
         return proposedMaximumPosition
     }

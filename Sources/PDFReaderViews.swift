@@ -124,6 +124,11 @@ final class InteractivePDFView: PDFView {
     var onBeforeInternalLinkJump: ((PDFPage, NSPoint, Bool) -> Bool)?
     var onFileDropped: ((URL) -> Void)?
     var onOptionScrollPerformed: (() -> Void)?
+    var onContextMenuTranslate: ((String) -> Void)?
+    var onContextMenuHighlight: ((PDFSelection, HighlightColor) -> Void)?
+    var onContextMenuAddNote: ((PDFSelection) -> Void)?
+    var onContextMenuSwapColumns: (() -> Void)?
+    var onContextMenuResetSync: (() -> Void)?
 
     var storedAnnotations: [PaperAnnotation] = []
 
@@ -220,6 +225,160 @@ final class InteractivePDFView: PDFView {
             .urlReadingFileURLsOnly: true
         ]) as? [URL] else { return nil }
         return urls.first(where: { $0.pathExtension.lowercased() == "pdf" })
+    }
+
+    // MARK: - Native macOS Context Menu
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu(title: "PDF Context Menu")
+
+        if let sel = currentSelection,
+           let text = sel.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty {
+            let copyItem = NSMenuItem(title: "拷贝", action: #selector(copySelectedTextAction), keyEquivalent: "c")
+            copyItem.target = self
+            menu.addItem(copyItem)
+
+            let transItem = NSMenuItem(title: "划词翻译", action: #selector(contextMenuTranslateAction), keyEquivalent: "t")
+            transItem.target = self
+            transItem.image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: nil)
+            menu.addItem(transItem)
+
+            let highlightItem = NSMenuItem(title: "高亮标注", action: nil, keyEquivalent: "")
+            highlightItem.image = NSImage(systemSymbolName: "highlighter", accessibilityDescription: nil)
+            let highlightSubmenu = NSMenu(title: "高亮标注")
+            for c in HighlightColor.allCases {
+                let colorItem = NSMenuItem(title: c.displayName, action: #selector(contextMenuHighlightAction(_:)), keyEquivalent: "")
+                colorItem.target = self
+                colorItem.representedObject = c
+                let swatchImg = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { rect in
+                    c.solidColor.setFill()
+                    NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+                    return true
+                }
+                colorItem.image = swatchImg
+                highlightSubmenu.addItem(colorItem)
+            }
+            highlightItem.submenu = highlightSubmenu
+            menu.addItem(highlightItem)
+
+            let noteItem = NSMenuItem(title: "引用至笔记", action: #selector(contextMenuNoteAction), keyEquivalent: "n")
+            noteItem.target = self
+            noteItem.image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: nil)
+            menu.addItem(noteItem)
+
+            let scholarItem = NSMenuItem(title: "在 Google 学术中搜索", action: #selector(contextMenuScholarAction), keyEquivalent: "")
+            scholarItem.target = self
+            scholarItem.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+            menu.addItem(scholarItem)
+
+            menu.addItem(NSMenuItem.separator())
+        }
+
+        let prevItem = NSMenuItem(title: "上一页", action: #selector(contextMenuPrevPageAction), keyEquivalent: "")
+        prevItem.target = self
+        prevItem.isEnabled = canGoToPreviousPage
+        menu.addItem(prevItem)
+
+        let nextItem = NSMenuItem(title: "下一页", action: #selector(contextMenuNextPageAction), keyEquivalent: "")
+        nextItem.target = self
+        nextItem.isEnabled = canGoToNextPage
+        menu.addItem(nextItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let autoZoomItem = NSMenuItem(title: "自适应页面", action: #selector(contextMenuFitPageAction), keyEquivalent: "")
+        autoZoomItem.target = self
+        menu.addItem(autoZoomItem)
+
+        let actualSizeItem = NSMenuItem(title: "实际大小 (100%)", action: #selector(contextMenuActualSizeAction), keyEquivalent: "")
+        actualSizeItem.target = self
+        menu.addItem(actualSizeItem)
+
+        let zoomInItem = NSMenuItem(title: "放大", action: #selector(contextMenuZoomInAction), keyEquivalent: "=")
+        zoomInItem.target = self
+        menu.addItem(zoomInItem)
+
+        let zoomOutItem = NSMenuItem(title: "缩小", action: #selector(contextMenuZoomOutAction), keyEquivalent: "-")
+        zoomOutItem.target = self
+        menu.addItem(zoomOutItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let swapItem = NSMenuItem(title: "左右栏互换", action: #selector(contextMenuSwapAction), keyEquivalent: "")
+        swapItem.target = self
+        swapItem.image = NSImage(systemSymbolName: "arrow.left.arrow.right", accessibilityDescription: nil)
+        menu.addItem(swapItem)
+
+        let resetSyncItem = NSMenuItem(title: "重置对齐", action: #selector(contextMenuResetSyncAction), keyEquivalent: "")
+        resetSyncItem.target = self
+        resetSyncItem.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)
+        menu.addItem(resetSyncItem)
+
+        return menu
+    }
+
+    @objc private func copySelectedTextAction() {
+        copy(self)
+    }
+
+    @objc private func contextMenuTranslateAction() {
+        guard let sel = currentSelection,
+              let text = sel.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return }
+        onContextMenuTranslate?(text)
+    }
+
+    @objc private func contextMenuHighlightAction(_ sender: NSMenuItem) {
+        guard let sel = currentSelection,
+              let color = sender.representedObject as? HighlightColor else { return }
+        onContextMenuHighlight?(sel, color)
+    }
+
+    @objc private func contextMenuNoteAction() {
+        guard let sel = currentSelection else { return }
+        onContextMenuAddNote?(sel)
+    }
+
+    @objc private func contextMenuScholarAction() {
+        guard let sel = currentSelection,
+              let text = sel.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty,
+              let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://scholar.google.com/scholar?q=\(encoded)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func contextMenuPrevPageAction() {
+        goToPreviousPage(nil)
+    }
+
+    @objc private func contextMenuNextPageAction() {
+        goToNextPage(nil)
+    }
+
+    @objc private func contextMenuFitPageAction() {
+        autoScales = true
+    }
+
+    @objc private func contextMenuActualSizeAction() {
+        autoScales = false
+        scaleFactor = 1.0
+    }
+
+    @objc private func contextMenuZoomInAction() {
+        zoomIn(nil)
+    }
+
+    @objc private func contextMenuZoomOutAction() {
+        zoomOut(nil)
+    }
+
+    @objc private func contextMenuSwapAction() {
+        onContextMenuSwapColumns?()
+    }
+
+    @objc private func contextMenuResetSyncAction() {
+        onContextMenuResetSync?()
     }
 }
 
