@@ -468,6 +468,15 @@ check(TabOrder.insertionIndex(
     ]
 ) == 1, "Tab insertion index follows the nearest tab midpoint")
 
+let dragStack = NonDraggableStackView(frame: NSRect(x: 0, y: 0, width: 400, height: 34))
+dragStack.draggingExited(nil)
+check(!dragStack.isHidden, "Finishing a drag outside the tab strip does not invoke an unavailable superclass callback")
+
+let activeTabItem = ZoteroTabItemView(tabId: "active", title: "Active", symbol: "doc.richtext.fill", symbolTint: .systemRed, isActive: true, closable: true)
+let inactiveTabItem = ZoteroTabItemView(tabId: "inactive", title: "Inactive", symbol: "doc.richtext.fill", symbolTint: .systemRed, isActive: false, closable: true)
+check(!activeTabItem.closeButton.isHidden && inactiveTabItem.closeButton.isHidden,
+      "Obsidian-style tabs show close controls on the active tab and only reveal inactive controls on hover")
+
 let initialFrame = testWin.frame
 let dummyEvent = NSEvent.mouseEvent(
     with: .leftMouseDown,
@@ -529,6 +538,25 @@ testReader.view.layoutSubtreeIfNeeded()
 let splitWidthAfter = testReader.leftCol.frame.width
 check(abs(splitWidthBefore - splitWidthAfter) < 0.01 && splitWidthBefore > 100, "Left sidebar is overlay with zero volume collision (left column width unchanged)")
 testReader.toggleLeftSidebarAction()
+
+// Verify right drawer is independent and dual PDF columns remain balanced 50/50
+testReader.view.layoutSubtreeIfNeeded()
+let dualLeftBefore = testReader.leftCol.frame.width
+let dualRightBefore = testReader.rightCol.frame.width
+check(abs(dualLeftBefore - dualRightBefore) <= 2.0 && dualLeftBefore > 100, "Dual PDF columns are equally balanced 50/50 when right drawer is closed")
+
+testReader.toggleRightDrawerAction()
+testReader.view.layoutSubtreeIfNeeded()
+let dualLeftWithDrawer = testReader.leftCol.frame.width
+let dualRightWithDrawer = testReader.rightCol.frame.width
+check(abs(dualLeftWithDrawer - dualRightWithDrawer) <= 2.0 && dualLeftWithDrawer > 100, "Dual PDF columns remain equally balanced 50/50 when right drawer is opened")
+check(dualLeftWithDrawer < dualLeftBefore, "Dual columns shrink equally to accommodate right sidebar")
+
+testReader.toggleRightDrawerAction()
+testReader.view.layoutSubtreeIfNeeded()
+let dualLeftAfter = testReader.leftCol.frame.width
+let dualRightAfter = testReader.rightCol.frame.width
+check(abs(dualLeftAfter - dualRightAfter) <= 2.0 && abs(dualLeftAfter - dualLeftBefore) <= 2.0, "Dual PDF columns restore to full width 50/50 when right drawer is closed")
 
 // (F) Standalone window controller
 let standaloneCtrl = StandaloneReaderWindowController(paperId: createdItem.id, store: store)

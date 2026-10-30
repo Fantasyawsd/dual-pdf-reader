@@ -1,5 +1,4 @@
 import Cocoa
-import QuartzCore
 import UniformTypeIdentifiers
 
 final class MultiTabMainWindowController: NSWindowController {
@@ -77,41 +76,12 @@ final class MultiTabMainWindowController: NSWindowController {
         tabBarScrollView.documentView = tabBarDocumentView
 
         tabBarStack.orientation = .horizontal
-        tabBarStack.spacing = 6
+        tabBarStack.spacing = 2
+        tabBarStack.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 0, right: 6)
         tabBarStack.alignment = .centerY
         tabBarStack.translatesAutoresizingMaskIntoConstraints = false
         tabBarDocumentView.addSubview(tabBarStack)
         titleTabBar.addSubview(tabBarScrollView)
-
-        // 标签栏右侧下拉菜单按钮 (⌄) 与右侧栏同步刷新按钮 (↻)
-        let tabMenuBtn = NSButton()
-        tabMenuBtn.bezelStyle = .inline
-        tabMenuBtn.isBordered = false
-        tabMenuBtn.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "标签页与快捷操作菜单")
-        tabMenuBtn.symbolConfiguration = .init(pointSize: 13.5, weight: .regular)
-        tabMenuBtn.contentTintColor = .secondaryLabelColor
-        tabMenuBtn.toolTip = "快速打开 PDF / 切换标签页"
-        tabMenuBtn.target = self
-        tabMenuBtn.action = #selector(showTitlebarQuickMenu(_:))
-        tabMenuBtn.translatesAutoresizingMaskIntoConstraints = false
-        titleTabBar.addSubview(tabMenuBtn)
-
-        let rightRailSep = NSBox()
-        rightRailSep.boxType = .separator
-        rightRailSep.translatesAutoresizingMaskIntoConstraints = false
-        titleTabBar.addSubview(rightRailSep)
-
-        let syncRefreshBtn = NSButton()
-        syncRefreshBtn.bezelStyle = .inline
-        syncRefreshBtn.isBordered = false
-        syncRefreshBtn.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "刷新文库")
-        syncRefreshBtn.symbolConfiguration = .init(pointSize: 14.5, weight: .regular)
-        syncRefreshBtn.contentTintColor = .secondaryLabelColor
-        syncRefreshBtn.toolTip = "刷新文库与同步状态"
-        syncRefreshBtn.target = self
-        syncRefreshBtn.action = #selector(refreshLibraryFromTitlebar)
-        syncRefreshBtn.translatesAutoresizingMaskIntoConstraints = false
-        titleTabBar.addSubview(syncRefreshBtn)
 
         let bottomSep = NSBox()
         bottomSep.boxType = .separator
@@ -135,7 +105,7 @@ final class MultiTabMainWindowController: NSWindowController {
             tabBarScrollView.leadingAnchor.constraint(equalTo: titleTabBar.leadingAnchor, constant: 80),
             tabBarScrollView.centerYAnchor.constraint(equalTo: titleTabBar.centerYAnchor),
             tabBarScrollView.heightAnchor.constraint(equalToConstant: 34),
-            tabBarScrollView.trailingAnchor.constraint(lessThanOrEqualTo: tabMenuBtn.leadingAnchor, constant: -8),
+            tabBarScrollView.trailingAnchor.constraint(lessThanOrEqualTo: titleTabBar.trailingAnchor, constant: -16),
             matchScrollWidth,
 
             tabBarDocumentView.topAnchor.constraint(equalTo: tabBarScrollView.contentView.topAnchor),
@@ -146,20 +116,6 @@ final class MultiTabMainWindowController: NSWindowController {
             tabBarStack.leadingAnchor.constraint(equalTo: tabBarDocumentView.leadingAnchor),
             tabBarStack.trailingAnchor.constraint(equalTo: tabBarDocumentView.trailingAnchor),
             tabBarStack.centerYAnchor.constraint(equalTo: tabBarDocumentView.centerYAnchor),
-
-            tabMenuBtn.trailingAnchor.constraint(equalTo: rightRailSep.leadingAnchor, constant: -8),
-            tabMenuBtn.centerYAnchor.constraint(equalTo: titleTabBar.centerYAnchor),
-            tabMenuBtn.widthAnchor.constraint(equalToConstant: 28),
-            tabMenuBtn.heightAnchor.constraint(equalToConstant: 28),
-
-            rightRailSep.topAnchor.constraint(equalTo: titleTabBar.topAnchor),
-            rightRailSep.bottomAnchor.constraint(equalTo: titleTabBar.bottomAnchor),
-            rightRailSep.trailingAnchor.constraint(equalTo: titleTabBar.trailingAnchor, constant: -44),
-
-            syncRefreshBtn.centerXAnchor.constraint(equalTo: titleTabBar.trailingAnchor, constant: -22),
-            syncRefreshBtn.centerYAnchor.constraint(equalTo: titleTabBar.centerYAnchor),
-            syncRefreshBtn.widthAnchor.constraint(equalToConstant: 28),
-            syncRefreshBtn.heightAnchor.constraint(equalToConstant: 28),
 
             bottomSep.bottomAnchor.constraint(equalTo: titleTabBar.bottomAnchor),
             bottomSep.leadingAnchor.constraint(equalTo: titleTabBar.leadingAnchor),
@@ -309,10 +265,6 @@ final class MultiTabMainWindowController: NSWindowController {
     }
 
     @objc func rebuildTabBarUI() {
-        rebuildTabBarUI(animatedFrom: nil)
-    }
-
-    private func rebuildTabBarUI(animatedFrom previousFrames: [String: NSRect]?) {
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
         var activeTabView: ZoteroTabItemView?
@@ -356,23 +308,6 @@ final class MultiTabMainWindowController: NSWindowController {
             if isTabActive { activeTabView = tabView }
         }
 
-        // Obsidian 风格快捷创建/导入新标签按钮 (+)，不参与排序。
-        let newTabBtn = NSButton()
-        newTabBtn.bezelStyle = .inline
-        newTabBtn.isBordered = false
-        newTabBtn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "新建或导入论文")
-        newTabBtn.symbolConfiguration = .init(pointSize: 11.5, weight: .semibold)
-        newTabBtn.contentTintColor = .secondaryLabelColor
-        newTabBtn.toolTip = "新建或导入论文 (⌘N)"
-        newTabBtn.target = self
-        newTabBtn.action = #selector(openCreatePaperAction)
-        newTabBtn.translatesAutoresizingMaskIntoConstraints = false
-        tabBarStack.addArrangedSubview(newTabBtn)
-        NSLayoutConstraint.activate([
-            newTabBtn.widthAnchor.constraint(equalToConstant: 24),
-            newTabBtn.heightAnchor.constraint(equalToConstant: 24)
-        ])
-
         if let root = window?.contentView {
             root.layoutSubtreeIfNeeded()
         } else {
@@ -381,53 +316,17 @@ final class MultiTabMainWindowController: NSWindowController {
         if let activeTabView {
             scrollTabHorizontallyIntoView(activeTabView)
         }
-        if let previousFrames {
-            animateTabReorder(from: previousFrames)
-        }
         window?.viewsNeedDisplay = true
     }
 
     private func moveTab(id: String, toInsertionIndex insertionIndex: Int) {
-        let previousFrames = Dictionary(
-            uniqueKeysWithValues: tabBarStack.arrangedSubviews.compactMap { view -> (String, NSRect)? in
-                guard let tab = view as? ZoteroTabItemView else { return nil }
-                return (tab.tabId, tab.frame)
-            }
-        )
         let reordered = TabOrder.moving(id, toInsertionIndex: insertionIndex, in: orderedTabIds)
         guard reordered != orderedTabIds else { return }
         orderedTabIds = reordered
-        rebuildTabBarUI(animatedFrom: previousFrames)
-    }
-
-    private func animateTabReorder(from previousFrames: [String: NSRect]) {
-        guard let root = window?.contentView else { return }
-        root.layoutSubtreeIfNeeded()
-        tabBarStack.layoutSubtreeIfNeeded()
-
-        for view in tabBarStack.arrangedSubviews {
-            guard let tab = view as? ZoteroTabItemView,
-                  let oldFrame = previousFrames[tab.tabId],
-                  oldFrame.origin != tab.frame.origin else { continue }
-
-            let motion = CABasicAnimation(keyPath: "position")
-            motion.fromValue = NSValue(point: NSPoint(x: oldFrame.midX, y: oldFrame.midY))
-            motion.toValue = NSValue(point: NSPoint(x: tab.frame.midX, y: tab.frame.midY))
-            motion.duration = 0.18
-            motion.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
-            tab.layer?.add(motion, forKey: "tabReorder")
-
-            let fade = CABasicAnimation(keyPath: "opacity")
-            fade.fromValue = 0.82
-            fade.toValue = 1
-            fade.duration = 0.14
-            tab.layer?.add(fade, forKey: "tabReorderFade")
+        // 等拖拽会话结束后直接换位，不播放交换动画。
+        DispatchQueue.main.async { [weak self] in
+            self?.rebuildTabBarUI()
         }
-    }
-
-    @objc private func openCreatePaperAction() {
-        switchToTab(id: "__LIBRARY__")
-        libraryVC.evaluateJavaScript("window.openCreatePaperModal && window.openCreatePaperModal();")
     }
 
     private func scrollTabHorizontallyIntoView(_ tabView: NSView) {
@@ -448,48 +347,6 @@ final class MultiTabMainWindowController: NSWindowController {
     }
 
     // MARK: - Menu Bar Actions
-    @objc func showTitlebarQuickMenu(_ sender: NSButton) {
-        let menu = NSMenu()
-        let libItem = NSMenuItem(title: "我的文库", action: #selector(switchToLibraryTabShortcut), keyEquivalent: "1")
-        libItem.target = self
-        libItem.state = (activeTabId == "__LIBRARY__") ? .on : .off
-        menu.addItem(libItem)
-
-        if !orderedTabPaperIds.isEmpty {
-            menu.addItem(.separator())
-            for pid in orderedTabPaperIds {
-                guard let paper = LibraryStore.shared.paper(withId: pid) else { continue }
-                let item = NSMenuItem(title: paper.title, action: #selector(selectTabFromMenuItem(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = pid
-                item.state = (activeTabId == pid) ? .on : .off
-                menu.addItem(item)
-            }
-        }
-
-        menu.addItem(.separator())
-        let newItem = NSMenuItem(title: "导入论文…", action: #selector(newPaperShortcutAction), keyEquivalent: "n")
-        newItem.target = self
-        menu.addItem(newItem)
-
-        let quickItem = NSMenuItem(title: "快速双栏打开 PDF…", action: #selector(quickOpenPDFShortcutAction), keyEquivalent: "o")
-        quickItem.target = self
-        menu.addItem(quickItem)
-
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
-    }
-
-    @objc private func selectTabFromMenuItem(_ sender: NSMenuItem) {
-        if let pid = sender.representedObject as? String {
-            switchToTab(id: pid)
-        }
-    }
-
-    @objc func refreshLibraryFromTitlebar() {
-        LibraryStore.shared.reloadAllPapers()
-        libraryVC.refreshAllUI()
-    }
-
     @objc func newPaperShortcutAction() {
         switchToTab(id: "__LIBRARY__")
         libraryVC.presentCreatePaperModal()

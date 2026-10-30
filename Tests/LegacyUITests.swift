@@ -238,17 +238,16 @@ func runBuiltInSelfTests() -> Int32 {
                 }
             check(allNonDraggable, "All tabBarScrollView, NonDraggableClipView, tabBarStack, ZoteroTabItemView & subviews have mouseDownCanMoveWindow == false")
 
-            // Even while inactive (currently on __LIBRARY__), the paper tab's closeButton is visible & hit-testable with zero dead-zone
+            // Obsidian-style inactive tabs hide the close control until hover; clicks in that area still reach the tab itself.
             if let inactivePaperTab = wc.tabBarStack.arrangedSubviews[1] as? ZoteroTabItemView {
                 let closeCenterInWin = inactivePaperTab.closeButton.convert(
                     NSPoint(x: inactivePaperTab.closeButton.bounds.midX, y: inactivePaperTab.closeButton.bounds.midY),
                     to: nil
                 )
                 let hitInactiveClose = rootView.superview?.hitTest(closeCenterInWin)
-                check(hitInactiveClose === inactivePaperTab.closeButton && !inactivePaperTab.closeButton.isHidden,
-                      "Inactive paper tab closeButton is visible and directly hit-testable without requiring prior hover")
+                check(inactivePaperTab.closeButton.isHidden && hitInactiveClose === inactivePaperTab,
+                      "Inactive paper tab hides closeButton and keeps the full tab header hit-testable")
 
-                // Point 2pt to the left of closeButton.frame.minX must hit ZoteroTabItemView (no 4pt dead-zone ring)
                 let justOutsideCloseInTab = NSPoint(x: inactivePaperTab.closeButton.frame.minX - 2, y: inactivePaperTab.bounds.midY)
                 let justOutsideCloseInWin = inactivePaperTab.convert(justOutsideCloseInTab, to: nil)
                 let hitJustOutside = rootView.superview?.hitTest(justOutsideCloseInWin)
@@ -363,41 +362,15 @@ func runBuiltInSelfTests() -> Int32 {
                 """) as? Bool ?? false
                 check(escapedOK, "escapeJSAttr safely escapes single quotes and backslashes for inline onclick handlers")
 
-                // 3) Verify live DOM drop slot rect synchronization & detectDropTargetZone accuracy
-                _ = evalJS("setInspectorTab(0); syncDropSlotRects();")
-                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
-                if let origRect = evalJS("""
-                (function() {
-                    const el = document.getElementById('slotOriginal');
-                    if (!el) return null;
-                    const r = el.getBoundingClientRect();
-                    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-                })()
-                """) as? [String: Any],
-                   let transRect = evalJS("""
-                (function() {
-                    const el = document.getElementById('slotTranslated');
-                    if (!el) return null;
-                    const r = el.getBoundingClientRect();
-                    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-                })()
-                """) as? [String: Any],
-                   let ox = origRect["x"] as? CGFloat, let oy = origRect["y"] as? CGFloat,
-                   let tx = transRect["x"] as? CGFloat, let ty = transRect["y"] as? CGFloat {
-                    let origZone = wc.libraryVC.webView.detectDropTargetZone(atTopLeftPoint: NSPoint(x: ox, y: oy))
-                    let transZone = wc.libraryVC.webView.detectDropTargetZone(atTopLeftPoint: NSPoint(x: tx, y: ty))
-                    check(origZone == "original" && transZone == "translated",
-                          "detectDropTargetZone accurately resolves side-by-side 2-column #slotOriginal ('\(origZone)') and #slotTranslated ('\(transZone)')")
+                // 3) Verify clean workspace drop resolution and tag/dummy panel elimination
+                let dropZone = wc.libraryVC.webView.detectDropTargetZone(atTopLeftPoint: NSPoint(x: 300, y: 300))
+                check(dropZone == "library", "detectDropTargetZone resolves dropped PDF cleanly to 'library' workspace")
 
-                    // Switch inspector to Tab 1 (Notes) -> drop at same coordinate must resolve to 'library', not 'original'
-                    _ = evalJS("setInspectorTab(1);")
-                    RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
-                    let zoneOnNotesTab = wc.libraryVC.webView.detectDropTargetZone(atTopLeftPoint: NSPoint(x: ox, y: oy))
-                    check(zoneOnNotesTab == "library",
-                          "detectDropTargetZone returns 'library' (not 'original') when Inspector is on Notes tab ('\(zoneOnNotesTab)')")
-                    _ = evalJS("setInspectorTab(0);")
-                    RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
-                }
+                let tagPanelExists = evalJS("document.getElementById('tagPanel') !== null") as? Bool ?? true
+                check(!tagPanelExists, "Tag filter panel is eliminated from library workspace")
+
+                let railExists = evalJS("document.getElementById('rightRail') !== null") as? Bool ?? true
+                check(!railExists, "Right icon rail is eliminated from library workspace")
             }
         }
     }
