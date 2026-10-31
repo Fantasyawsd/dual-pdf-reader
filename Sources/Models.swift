@@ -72,19 +72,19 @@ enum HighlightColor: String, Codable, CaseIterable {
 
     var nsColor: NSColor {
         switch self {
-        case .yellow: return NSColor(calibratedRed: 1.0, green: 0.88, blue: 0.22, alpha: 0.42)
-        case .green:  return NSColor(calibratedRed: 0.30, green: 0.86, blue: 0.45, alpha: 0.38)
-        case .blue:   return NSColor(calibratedRed: 0.32, green: 0.70, blue: 1.0, alpha: 0.38)
-        case .pink:   return NSColor(calibratedRed: 1.0, green: 0.45, blue: 0.62, alpha: 0.38)
+        case .yellow: return NSColor(calibratedRed: 1.0, green: 0.84, blue: 0.0, alpha: 0.35)
+        case .green:  return NSColor(calibratedRed: 0.37, green: 0.70, blue: 0.21, alpha: 0.35)
+        case .blue:   return NSColor(calibratedRed: 0.18, green: 0.66, blue: 0.90, alpha: 0.35)
+        case .pink:   return NSColor(calibratedRed: 1.0, green: 0.40, blue: 0.40, alpha: 0.35)
         }
     }
 
     var solidColor: NSColor {
         switch self {
-        case .yellow: return NSColor(calibratedRed: 0.96, green: 0.72, blue: 0.08, alpha: 1.0)
-        case .green:  return NSColor(calibratedRed: 0.16, green: 0.72, blue: 0.34, alpha: 1.0)
-        case .blue:   return NSColor(calibratedRed: 0.18, green: 0.54, blue: 0.94, alpha: 1.0)
-        case .pink:   return NSColor(calibratedRed: 0.92, green: 0.28, blue: 0.48, alpha: 1.0)
+        case .yellow: return NSColor(calibratedRed: 1.0, green: 0.83, blue: 0.0, alpha: 1.0)
+        case .green:  return NSColor(calibratedRed: 0.37, green: 0.70, blue: 0.21, alpha: 1.0)
+        case .blue:   return NSColor(calibratedRed: 0.18, green: 0.66, blue: 0.90, alpha: 1.0)
+        case .pink:   return NSColor(calibratedRed: 1.0, green: 0.40, blue: 0.40, alpha: 1.0)
         }
     }
 

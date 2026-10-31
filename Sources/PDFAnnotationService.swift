@@ -1,5 +1,47 @@
 import PDFKit
 
+/// 采用 CoreGraphics 正片叠底 (Multiply) 模式绘制的高亮标注。
+/// 彻底解决普通 Alpha 混合模式下黑色文字发灰发暗、对比度受损、遮挡文字的缺陷。
+/// 在正片叠底模式下：黑色文字 (0.0) 乘以任何高亮色结果恒为 0.0（保持 100% 绝对纯黑锐利），
+/// 白色纸面 (1.0) 呈现饱和通透的荧光底色。
+final class MultiplyHighlightAnnotation: PDFAnnotation {
+    var hasCommentBadge: Bool = false
+    var badgeColor: NSColor = .systemYellow
+
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        context.saveGState()
+
+        // 1. 正片叠底模式绘制高亮色块
+        context.setBlendMode(.multiply)
+        context.setFillColor(color.cgColor)
+
+        let cornerRadius: CGFloat = min(2.0, bounds.height * 0.15)
+        let highlightPath = CGPath(roundedRect: bounds, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+        context.addPath(highlightPath)
+        context.fillPath()
+
+        // 2. 若有随手笔记或外链，在末端绘制非侵入式微型便签角标，绝不横向划破文字
+        if hasCommentBadge {
+            context.setBlendMode(.normal)
+            let badgeSize: CGFloat = 8.0
+            let badgeRect = CGRect(
+                x: bounds.maxX - badgeSize * 0.7,
+                y: bounds.maxY - badgeSize * 0.7,
+                width: badgeSize,
+                height: badgeSize
+            )
+
+            context.setFillColor(NSColor.white.cgColor)
+            context.fillEllipse(in: badgeRect)
+
+            context.setFillColor(badgeColor.cgColor)
+            context.fillEllipse(in: badgeRect.insetBy(dx: 1.0, dy: 1.0))
+        }
+
+        context.restoreGState()
+    }
+}
+
 enum PDFSelectionAnnotationFactory {
     static func make(selection: PDFSelection, document: PDFDocument, side: PDFSide,
                      pdfDocumentId: String? = nil,
@@ -50,25 +92,24 @@ final class PDFAnnotationRenderer {
         }
         for (id, model) in models where state.models[id] != model {
             var rendered: [PDFAnnotation] = []
-            for region in model.pageRegions {
+            let hasNoteOrLink = !model.markdownNote.isEmpty || model.linkedURL != nil
+            let allRegions = model.pageRegions
+            for (regionIdx, region) in allRegions.enumerated() {
                 guard region.pageIndex >= 0, region.pageIndex < document.pageCount,
                       let page = document.page(at: region.pageIndex) else { continue }
-                for rect in region.rects {
-                    let highlight = PDFAnnotation(bounds: rect.cgRect, forType: .highlight, withProperties: nil)
+                for (rectIdx, rect) in region.rects.enumerated() {
+                    let isLast = (regionIdx == allRegions.count - 1 && rectIdx == region.rects.count - 1)
+                    let highlight = MultiplyHighlightAnnotation(bounds: rect.cgRect, forType: .highlight, withProperties: nil)
                     highlight.color = model.color.nsColor
                     highlight.userName = "DualPDF_CustomAnnot"
+                    highlight.hasCommentBadge = isLast && hasNoteOrLink
+                    highlight.badgeColor = model.color.solidColor
+
                     var tooltip = model.markdownNote
                     if let link = model.linkedURL { tooltip += (tooltip.isEmpty ? "" : "\n") + "🔗 \(model.linkedTitle ?? link)" }
                     highlight.contents = tooltip
                     page.addAnnotation(highlight)
                     rendered.append(highlight)
-                    if model.linkedURL != nil {
-                        let underline = PDFAnnotation(bounds: rect.cgRect, forType: .underline, withProperties: nil)
-                        underline.color = .systemBlue
-                        underline.userName = "DualPDF_CustomAnnot"
-                        page.addAnnotation(underline)
-                        rendered.append(underline)
-                    }
                 }
             }
             state.rendered[id] = rendered

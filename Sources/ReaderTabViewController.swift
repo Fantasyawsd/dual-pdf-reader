@@ -3296,34 +3296,26 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         container.addArrangedSubview(makeToolbarSeparator())
 
-        let quoteToNoteBtn = NSButton(title: " 引用笔记", image: NSImage(systemSymbolName: "arrow.turn.down.right", accessibilityDescription: "引用笔记") ?? NSImage(), target: self, action: #selector(popoverQuoteToNoteClicked))
+        let quoteToNoteBtn = NSButton(title: "引用笔记", image: NSImage(systemSymbolName: "arrow.turn.down.right", accessibilityDescription: "引用笔记") ?? NSImage(), target: self, action: #selector(popoverQuoteToNoteClicked))
         quoteToNoteBtn.imagePosition = .imageLeading
         quoteToNoteBtn.bezelStyle = .texturedRounded
         quoteToNoteBtn.controlSize = .small
         quoteToNoteBtn.contentTintColor = .controlAccentColor
-        quoteToNoteBtn.toolTip = "直接将选中文本创建为可点击跳转链接并插入到论文笔记栏中"
         container.addArrangedSubview(quoteToNoteBtn)
 
-        let translateBtn = NSButton(title: " AI 翻译", image: NSImage(systemSymbolName: "sparkles", accessibilityDescription: "AI 翻译") ?? NSImage(), target: self, action: #selector(popoverLLMTranslateClicked))
+        let translateBtn = NSButton(title: "翻译", image: NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: "翻译") ?? NSImage(), target: self, action: #selector(popoverLLMTranslateClicked))
         translateBtn.imagePosition = .imageLeading
         translateBtn.bezelStyle = .texturedRounded
         translateBtn.controlSize = .small
-        translateBtn.toolTip = "使用 LLM 或内置学术双语引擎翻译选中文本与公式"
         container.addArrangedSubview(translateBtn)
 
-        let noteBtn = NSButton(title: " 批注", image: NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: "批注") ?? NSImage(), target: self, action: #selector(popoverAddNoteClicked))
+        let noteBtn = NSButton(title: "批注", image: NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: "批注") ?? NSImage(), target: self, action: #selector(popoverAddNoteClicked))
         noteBtn.imagePosition = .imageLeading
         noteBtn.bezelStyle = .texturedRounded
         noteBtn.controlSize = .small
         container.addArrangedSubview(noteBtn)
 
-        let linkBtn = NSButton(title: " 链接", image: NSImage(systemSymbolName: "link", accessibilityDescription: "链接") ?? NSImage(), target: self, action: #selector(popoverAttachLinkClicked))
-        linkBtn.imagePosition = .imageLeading
-        linkBtn.bezelStyle = .texturedRounded
-        linkBtn.controlSize = .small
-        container.addArrangedSubview(linkBtn)
-
-        let copyBtn = NSButton(title: " 复制", image: NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "复制") ?? NSImage(), target: self, action: #selector(popoverCopyClicked))
+        let copyBtn = NSButton(title: "复制", image: NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "复制") ?? NSImage(), target: self, action: #selector(popoverCopyClicked))
         copyBtn.imagePosition = .imageLeading
         copyBtn.bezelStyle = .texturedRounded
         copyBtn.controlSize = .small
