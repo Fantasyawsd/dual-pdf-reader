@@ -646,6 +646,7 @@ testReader.toggleLeftSidebarAction()
 testReader.view.layoutSubtreeIfNeeded()
 let splitWidthAfter = testReader.leftCol.frame.width
 check(abs(splitWidthBefore - splitWidthAfter) < 0.01 && splitWidthBefore > 100, "Left sidebar is overlay with zero volume collision (left column width unchanged)")
+check(testReader.leftSidebarToggleBtn.toolTip?.contains("大纲") == true, "Outline button adopts list.bullet.indent outline icon and clean nomenclature")
 testReader.toggleLeftSidebarAction()
 
 // Verify right drawer is independent and dual PDF columns remain balanced 50/50

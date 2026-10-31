@@ -286,7 +286,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // 极简现代化顶栏控件
     private let topBar = NSVisualEffectView()
-    private let leftSidebarToggleBtn = NSButton()
+    private let outlineToggleBtn = NSButton()
+    var leftSidebarToggleBtn: NSButton { outlineToggleBtn }
     private let modeSeg = NSSegmentedControl(labels: ["仅原文", "仅译文", "双栏对照"], trackingMode: .selectOne, target: nil, action: nil)
     private let swapBtn = NSButton()
     var isSwapButtonHidden: Bool { swapBtn.isHidden }
@@ -488,16 +489,16 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let barIconConfig = NSImage.SymbolConfiguration(pointSize: 14.0, weight: .medium)
         let barSubIconConfig = NSImage.SymbolConfiguration(pointSize: 13.0, weight: .medium)
 
-        leftSidebarToggleBtn.bezelStyle = .texturedRounded
-        leftSidebarToggleBtn.controlSize = .small
-        leftSidebarToggleBtn.setButtonType(.pushOnPushOff)
-        leftSidebarToggleBtn.state = .off
-        leftSidebarToggleBtn.image = NSImage(systemSymbolName: "sidebar.leading", accessibilityDescription: "展开大纲与页面缩略图")?.withSymbolConfiguration(barIconConfig)
-        leftSidebarToggleBtn.toolTip = "展开/收起左侧大纲与页面缩略图 (⌘1)"
-        leftSidebarToggleBtn.keyEquivalent = "1"
-        leftSidebarToggleBtn.keyEquivalentModifierMask = [.command]
-        leftSidebarToggleBtn.target = self
-        leftSidebarToggleBtn.action = #selector(toggleLeftSidebarAction)
+        outlineToggleBtn.bezelStyle = .texturedRounded
+        outlineToggleBtn.controlSize = .small
+        outlineToggleBtn.setButtonType(.pushOnPushOff)
+        outlineToggleBtn.state = .off
+        outlineToggleBtn.image = NSImage(systemSymbolName: "list.bullet.indent", accessibilityDescription: "大纲与缩略图")?.withSymbolConfiguration(barIconConfig)
+        outlineToggleBtn.toolTip = "大纲与缩略图 (⌘1)"
+        outlineToggleBtn.keyEquivalent = "1"
+        outlineToggleBtn.keyEquivalentModifierMask = [.command]
+        outlineToggleBtn.target = self
+        outlineToggleBtn.action = #selector(toggleLeftSidebarAction)
 
         modeSeg.selectedSegment = 2
         modeSeg.controlSize = .regular
@@ -643,7 +644,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         self.dualColumnSeparator = dualSep
 
         let barStack = NSStackView(views: [
-            leftSidebarToggleBtn,
+            outlineToggleBtn,
             makeToolbarSeparator(),
             modeSeg,
             swapBtn,
@@ -2754,7 +2755,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     @objc func toggleLeftSidebarAction() {
         isLeftOverlayOpen.toggle()
         leftOverlaySidebar.isHidden = !isLeftOverlayOpen
-        leftSidebarToggleBtn.state = isLeftOverlayOpen ? .on : .off
+        outlineToggleBtn.state = isLeftOverlayOpen ? .on : .off
         if isLeftOverlayOpen {
             pdfThumbnailView.pdfView = leftCol.pdfView
         }
