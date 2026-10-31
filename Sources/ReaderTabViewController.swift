@@ -829,6 +829,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // MARK: - 2. Dual-Pane SplitView + Resizable Right Workbench + Floating Left Overlay
     private func setupMainCanvasAndDrawer(in root: NSView) {
+        // 顶栏横跨整个窗口顶部，侧栏展开/收起时顶栏按钮保持静止固定在右上角
+        setupMinimalTopBar(in: root)
+
         masterSplitView.isVertical = true
         masterSplitView.dividerStyle = .thin
         masterSplitView.delegate = self
@@ -848,15 +851,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         masterSplitView.setHoldingPriority(.defaultHigh, forSubviewAt: 1)
 
         NSLayoutConstraint.activate([
-            masterSplitView.topAnchor.constraint(equalTo: root.topAnchor),
+            masterSplitView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
             masterSplitView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             masterSplitView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             masterSplitView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
 
             pdfCanvasContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: 360)
         ])
-
-        setupMinimalTopBar(in: pdfCanvasContainer)
 
         splitView.isVertical = true
         splitView.dividerStyle = .thin
@@ -873,7 +874,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
 
         NSLayoutConstraint.activate([
-            splitView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            splitView.topAnchor.constraint(equalTo: pdfCanvasContainer.topAnchor),
             splitView.leadingAnchor.constraint(equalTo: pdfCanvasContainer.leadingAnchor),
             splitView.trailingAnchor.constraint(equalTo: pdfCanvasContainer.trailingAnchor),
             splitView.bottomAnchor.constraint(equalTo: pdfCanvasContainer.bottomAnchor)
@@ -961,7 +962,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         container.addSubview(leftOverlaySidebar)
 
         NSLayoutConstraint.activate([
-            leftOverlaySidebar.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 8),
+            leftOverlaySidebar.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
             leftOverlaySidebar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
             leftOverlaySidebar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
             leftOverlaySidebar.widthAnchor.constraint(equalToConstant: 280),
