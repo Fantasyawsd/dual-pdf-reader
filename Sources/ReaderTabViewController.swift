@@ -32,6 +32,17 @@ final class DualPDFSplitView: NSSplitView {
         return visibleCount > 1 ? 1.0 : 0.0
     }
 
+    override var dividerColor: NSColor {
+        let visibleCount = subviews.filter { !$0.isHidden }.count
+        return visibleCount > 1 ? super.dividerColor : .clear
+    }
+
+    override func drawDivider(in rect: NSRect) {
+        let visibleCount = subviews.filter { !$0.isHidden }.count
+        guard visibleCount > 1 else { return }
+        super.drawDivider(in: rect)
+    }
+
     override func setPosition(_ position: CGFloat, ofDividerAt dividerIndex: Int) {
         guard dividerIndex == 0 else {
             super.setPosition(position, ofDividerAt: dividerIndex)
@@ -49,10 +60,17 @@ final class DualPDFSplitView: NSSplitView {
             return
         }
         let visibleSubviews = subviews.filter { !$0.isHidden }
-        if visibleSubviews.count == 1, let singleView = visibleSubviews.first {
-            singleView.frame = bounds
-            for v in subviews where v.isHidden {
-                v.frame = NSRect(x: bounds.width, y: 0, width: 0, height: bounds.height)
+        if visibleSubviews.count == 1 {
+            if subviews.count >= 2 {
+                if subviews[0].isHidden {
+                    subviews[0].frame = NSRect(x: 0, y: 0, width: 0, height: bounds.height)
+                    subviews[1].frame = bounds
+                } else {
+                    subviews[0].frame = bounds
+                    subviews[1].frame = NSRect(x: bounds.width, y: 0, width: 0, height: bounds.height)
+                }
+            } else if let singleView = visibleSubviews.first {
+                singleView.frame = bounds
             }
             return
         }
@@ -4950,10 +4968,9 @@ extension ReaderTabViewController: NSSplitViewDelegate {
                 return masterSplitView.bounds.width
             }
         } else if splitView === self.splitView {
-            if leftCol.isHidden {
+            let visibleCount = self.splitView.subviews.filter { !$0.isHidden }.count
+            if visibleCount <= 1 {
                 return 0
-            } else if rightCol.isHidden {
-                return splitView.bounds.width
             }
             return 200
         }
@@ -4968,9 +4985,8 @@ extension ReaderTabViewController: NSSplitViewDelegate {
                 return masterSplitView.bounds.width
             }
         } else if splitView === self.splitView {
-            if leftCol.isHidden {
-                return 0
-            } else if rightCol.isHidden {
+            let visibleCount = self.splitView.subviews.filter { !$0.isHidden }.count
+            if visibleCount <= 1 {
                 return splitView.bounds.width
             }
             return max(200, splitView.bounds.width - 200 - splitView.dividerThickness)
