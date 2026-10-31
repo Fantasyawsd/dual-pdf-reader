@@ -286,21 +286,32 @@ final class InteractivePDFView: PDFView {
            let doc = document {
             let pagePoint = convert(viewPoint, to: page)
 
-            // 1. 检测是否点击了 PDF 原生内部跳转链接 (References / TOC / Figure Links)
+            // 1. 检测是否点击了 PDF 原生内部跳转链接 (References / TOC / Figure Links) 或外部链接 (URL)
             if let hitAnnot = page.annotation(at: pagePoint),
                (hitAnnot.type == "Link" || hitAnnot.type == "/Link") {
+                let zeroBorder = PDFBorder()
+                zeroBorder.lineWidth = 0
+                hitAnnot.border = zeroBorder
+                hitAnnot.color = .clear
+                hitAnnot.setValue("/N", forAnnotationKey: PDFAnnotationKey(rawValue: "H"))
+
                 var targetDest: PDFDestination?
                 if let goTo = hitAnnot.action as? PDFActionGoTo {
                     targetDest = goTo.destination
                 } else if let dest = hitAnnot.destination {
                     targetDest = dest
                 }
-                if let dest = targetDest, let destPage = dest.page {
+                if let dest = targetDest {
                     let isCmdPressed = event.modifierFlags.contains(.command)
-                    let handled = onBeforeInternalLinkJump?(destPage, dest.point, isCmdPressed) ?? false
-                    if handled {
-                        return
+                    let handled = (dest.page != nil) ? (onBeforeInternalLinkJump?(dest.page!, dest.point, isCmdPressed) ?? false) : false
+                    if !handled {
+                        self.go(to: dest)
                     }
+                    return
+                }
+                if let actionURL = (hitAnnot.action as? PDFActionURL)?.url ?? hitAnnot.url {
+                    NSWorkspace.shared.open(actionURL)
+                    return
                 }
             }
 

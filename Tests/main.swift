@@ -835,6 +835,32 @@ do {
     }
 }
 
+do {
+    let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("link_test_\(UUID().uuidString).pdf")
+    try? writePDF(tempURL, pages: 1, text: "Link Test Page")
+    if let dummyDoc = PDFDocument(url: tempURL), let page = dummyDoc.page(at: 0) {
+        let linkAnnot = PDFAnnotation(bounds: NSRect(x: 100, y: 100, width: 200, height: 20), forType: .link, withProperties: nil)
+        let initialBorder = PDFBorder()
+        initialBorder.lineWidth = 1.0
+        linkAnnot.border = initialBorder
+        linkAnnot.color = NSColor.cyan
+        linkAnnot.setValue("/I", forAnnotationKey: PDFAnnotationKey(rawValue: "H"))
+        page.addAnnotation(linkAnnot)
+
+        check(linkAnnot.border?.lineWidth == 1.0, "Link annotation starts with non-zero border")
+        check(linkAnnot.color == NSColor.cyan, "Link annotation starts with visible color")
+        check((linkAnnot.value(forAnnotationKey: PDFAnnotationKey(rawValue: "H")) as? String) == "/I", "Link annotation starts with /I highlight mode")
+
+        ReaderTabViewController.stripLinkAnnotationBorders(in: dummyDoc)
+
+        check(linkAnnot.border?.lineWidth == 0, "stripLinkAnnotationBorders sets border lineWidth to 0")
+        check(linkAnnot.color.alphaComponent == 0.0, "stripLinkAnnotationBorders sets color to transparent (alpha 0)")
+        check((linkAnnot.value(forAnnotationKey: PDFAnnotationKey(rawValue: "H")) as? String) == "/N", "stripLinkAnnotationBorders sets /N (none) highlight mode")
+        try? FileManager.default.removeItem(at: tempURL)
+    } else {
+        check(false, "Failed to create dummy PDFDocument for link annotation test")
+    }
+}
 
 print("\nRegression tests: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)

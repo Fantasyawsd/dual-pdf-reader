@@ -3435,14 +3435,32 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
     }
 
+    static func stripLinkAnnotationBorders(in document: PDFDocument) {
+        let border = PDFBorder()
+        border.lineWidth = 0
+        let noneHighlightKey = PDFAnnotationKey(rawValue: "H")
+        for i in 0..<document.pageCount {
+            guard let page = document.page(at: i) else { continue }
+            for annot in page.annotations where annot.type == "Link" || annot.type == "/Link" {
+                annot.border = border
+                annot.color = .clear
+                annot.setValue("/N", forAnnotationKey: noneHighlightKey)
+            }
+        }
+    }
+
     private func stripVisibleLinkAnnotationBorders() {
         let border = PDFBorder()
         border.lineWidth = 0
+        let noneHighlightKey = PDFAnnotationKey(rawValue: "H")
         for column in [leftCol, rightCol] {
             for page in column.pdfView.visiblePages {
                 for annotation in page.annotations where annotation.type == "Link" || annotation.type == "/Link" {
-                    annotation.border = border
-                    annotation.color = .clear
+                    if annotation.border?.lineWidth != 0 || annotation.color != .clear {
+                        annotation.border = border
+                        annotation.color = .clear
+                        annotation.setValue("/N", forAnnotationKey: noneHighlightKey)
+                    }
                 }
             }
         }
@@ -3472,6 +3490,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             let effectivePDFId = validPDFIds.contains(requestedPDFId) ? requestedPDFId : col.side.rawValue
             if let url = LibraryStore.shared.pdfURL(for: paper, pdfId: effectivePDFId),
                let doc = PDFDocument(url: url) {
+                ReaderTabViewController.stripLinkAnnotationBorders(in: doc)
                 col.pdfView.document = doc
                 col.pdfView.autoScales = true
                 col.applyContentSource(.pdf(id: effectivePDFId), paper: paper, hasPDFDocument: true)
