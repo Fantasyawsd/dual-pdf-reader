@@ -71,6 +71,166 @@ final class ModernCardView: NSView {
     }
 }
 
+final class ModernTagChipView: NSView {
+    override var isFlipped: Bool { true }
+    override var wantsUpdateLayer: Bool { true }
+
+    private let label: NSTextField
+    private let delBtn: NSButton
+    private let onDelete: () -> Void
+
+    override var intrinsicContentSize: NSSize {
+        let labelWidth = label.intrinsicContentSize.width
+        return NSSize(width: ceil(labelWidth) + 33, height: 22)
+    }
+
+    init(tag: String, onDelete: @escaping () -> Void) {
+        self.onDelete = onDelete
+        let lbl = NSTextField(labelWithString: tag)
+        lbl.font = .systemFont(ofSize: 11.5, weight: .medium)
+        lbl.textColor = .labelColor
+        lbl.isBezeled = false
+        lbl.isEditable = false
+        lbl.drawsBackground = false
+        lbl.lineBreakMode = .byTruncatingTail
+        lbl.translatesAutoresizingMaskIntoConstraints = false
+        self.label = lbl
+
+        let btn = NSButton()
+        btn.bezelStyle = .inline
+        btn.isBordered = false
+        btn.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "删除标签")?
+            .withSymbolConfiguration(.init(pointSize: 11.0, weight: .medium))
+        btn.contentTintColor = .secondaryLabelColor
+        btn.identifier = NSUserInterfaceItemIdentifier(tag)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        self.delBtn = btn
+
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        layer?.cornerRadius = 11
+        layer?.borderWidth = 0.5
+        updateColors()
+
+        btn.target = self
+        btn.action = #selector(deleteClicked)
+
+        addSubview(lbl)
+        addSubview(btn)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 22),
+            lbl.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            lbl.centerYAnchor.constraint(equalTo: centerYAnchor),
+            btn.leadingAnchor.constraint(equalTo: lbl.trailingAnchor, constant: 4),
+            btn.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            btn.centerYAnchor.constraint(equalTo: centerYAnchor),
+            btn.widthAnchor.constraint(equalToConstant: 13),
+            btn.heightAnchor.constraint(equalToConstant: 13)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func updateColors() {
+        layer?.backgroundColor = ZoteroTheme.tagBg.cgColor
+        layer?.borderColor = ZoteroTheme.cardBorder.cgColor
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        updateColors()
+    }
+
+    @objc private func deleteClicked() {
+        onDelete()
+    }
+}
+
+final class TagFlowView: NSView {
+    override var isFlipped: Bool { true }
+
+    var horizontalSpacing: CGFloat = 6
+    var verticalSpacing: CGFloat = 6
+
+    private var items: [NSView] = []
+    private var calculatedHeight: CGFloat = 24
+    private var lastLayoutWidth: CGFloat = 0
+    private var heightConstraint: NSLayoutConstraint?
+
+    override var intrinsicContentSize: NSSize {
+        return NSSize(width: NSView.noIntrinsicMetric, height: calculatedHeight)
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        let hc = heightAnchor.constraint(equalToConstant: 24)
+        hc.priority = NSLayoutConstraint.Priority(999)
+        hc.isActive = true
+        self.heightConstraint = hc
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setViews(_ views: [NSView]) {
+        subviews.forEach { $0.removeFromSuperview() }
+        items = views
+        for view in views {
+            view.translatesAutoresizingMaskIntoConstraints = true
+            addSubview(view)
+        }
+        let targetWidth = bounds.width > 20 ? bounds.width : 260
+        recalculateLayout(forWidth: targetWidth)
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let currentWidth = bounds.width
+        if currentWidth > 20 && abs(currentWidth - lastLayoutWidth) > 1.0 {
+            recalculateLayout(forWidth: currentWidth)
+        }
+    }
+
+    private func recalculateLayout(forWidth width: CGFloat) {
+        lastLayoutWidth = width
+        guard !items.isEmpty else {
+            calculatedHeight = 0
+            heightConstraint?.constant = 0
+            invalidateIntrinsicContentSize()
+            return
+        }
+
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var rowHeight: CGFloat = 0
+
+        for item in items {
+            let size = item.fittingSize
+            let itemWidth = min(width, ceil(size.width))
+            let itemHeight = max(22, ceil(size.height))
+
+            if currentX + itemWidth > width && currentX > 0 {
+                currentX = 0
+                currentY += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+
+            item.frame = NSRect(x: currentX, y: currentY, width: itemWidth, height: itemHeight)
+            currentX += itemWidth + horizontalSpacing
+            rowHeight = max(rowHeight, itemHeight)
+        }
+
+        calculatedHeight = currentY + rowHeight
+        heightConstraint?.constant = calculatedHeight
+        invalidateIntrinsicContentSize()
+    }
+}
+
 final class ZoteroRightDrawerView: NSView {
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
@@ -177,10 +337,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let linksCardsStack = FlippedStackView()
 
     // 侧边栏标签管理 (Tab 4)
-    private let tagsChipsStack = FlippedStackView()
+    private let tagsFlowView = TagFlowView()
     private let tagsInputField = NSTextField()
     private let tagsCountBadge = NSTextField(labelWithString: "")
-    private let suggestedTagsStack = FlippedStackView()
+    private let suggestedTagsFlowView = TagFlowView()
 
     private let outlineContainer = NSView()
     private let outlineTableView = NSTableView()
@@ -1387,13 +1547,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         currentTagsTitle.font = .systemFont(ofSize: 11.5, weight: .bold)
         currentTagsTitle.textColor = .secondaryLabelColor
 
-        tagsChipsStack.orientation = .vertical
-        tagsChipsStack.alignment = .leading
-        tagsChipsStack.spacing = 6
-        tagsChipsStack.translatesAutoresizingMaskIntoConstraints = false
-
         tagsCardStack.addArrangedSubview(currentTagsTitle)
-        tagsCardStack.addArrangedSubview(tagsChipsStack)
+        tagsCardStack.addArrangedSubview(tagsFlowView)
 
         let addTagCard = makeSidebarCardView()
         let addTagStack = FlippedStackView()
@@ -1415,10 +1570,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         tagsInputField.target = self
         tagsInputField.action = #selector(addTagFromInput)
         tagsInputField.translatesAutoresizingMaskIntoConstraints = false
+        tagsInputField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let addBtn = NSButton(title: "添加", target: self, action: #selector(addTagFromInput))
         addBtn.bezelStyle = .rounded
         addBtn.controlSize = .small
+        addBtn.translatesAutoresizingMaskIntoConstraints = false
+        addBtn.setContentHuggingPriority(.required, for: .horizontal)
 
         inputRow.addArrangedSubview(tagsInputField)
         inputRow.addArrangedSubview(addBtn)
@@ -1437,13 +1595,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         suggestTitle.font = .systemFont(ofSize: 11.5, weight: .bold)
         suggestTitle.textColor = .secondaryLabelColor
 
-        suggestedTagsStack.orientation = .vertical
-        suggestedTagsStack.alignment = .leading
-        suggestedTagsStack.spacing = 6
-        suggestedTagsStack.translatesAutoresizingMaskIntoConstraints = false
-
         suggestStack.addArrangedSubview(suggestTitle)
-        suggestStack.addArrangedSubview(suggestedTagsStack)
+        suggestStack.addArrangedSubview(suggestedTagsFlowView)
 
         tabTagsContainer.addArrangedSubview(secHeader)
         tabTagsContainer.addArrangedSubview(tagsCard)
@@ -1454,13 +1607,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             tabTagsContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
             secHeader.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
             tagsCard.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
-            tagsChipsStack.widthAnchor.constraint(equalTo: tagsCardStack.widthAnchor),
+            tagsFlowView.widthAnchor.constraint(equalTo: tagsCardStack.widthAnchor),
 
             addTagCard.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
             inputRow.widthAnchor.constraint(equalTo: addTagStack.widthAnchor),
 
             suggestCard.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
-            suggestedTagsStack.widthAnchor.constraint(equalTo: suggestStack.widthAnchor)
+            suggestedTagsFlowView.widthAnchor.constraint(equalTo: suggestStack.widthAnchor)
         ])
 
         refreshTagsTabUI()
@@ -1793,6 +1946,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             origDetails.font = .systemFont(ofSize: 11.0)
             origDetails.textColor = .secondaryLabelColor
             origDetails.lineBreakMode = .byTruncatingMiddle
+            origDetails.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
             let revealBtn = makeCompactActionButton(title: "Finder", symbol: "folder", action: #selector(revealOriginalInFinder))
             let replaceBtn = makeCompactActionButton(title: "替换…", symbol: "arrow.triangle.2.circlepath", action: #selector(importOrigPDFFromSidebar))
@@ -1812,6 +1966,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         origStack.addArrangedSubview(origBtnRow)
         attachmentsListStack.addArrangedSubview(origCard)
         origCard.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
+        origTopRow.widthAnchor.constraint(equalTo: origStack.widthAnchor).isActive = true
+        origDetails.widthAnchor.constraint(equalTo: origStack.widthAnchor).isActive = true
 
         // 2) 中文译版 PDF 卡片
         let transCard = makeSidebarCardView()
@@ -1856,6 +2012,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             transDetails.font = .systemFont(ofSize: 11.0)
             transDetails.textColor = .secondaryLabelColor
             transDetails.lineBreakMode = .byTruncatingMiddle
+            transDetails.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
             let revealBtn = makeCompactActionButton(title: "Finder", symbol: "folder", action: #selector(revealTranslatedInFinder))
             let replaceBtn = makeCompactActionButton(title: "替换…", symbol: "arrow.triangle.2.circlepath", action: #selector(importTransPDFFromSidebar))
@@ -1878,6 +2035,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         transStack.addArrangedSubview(transBtnRow)
         attachmentsListStack.addArrangedSubview(transCard)
         transCard.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
+        transTopRow.widthAnchor.constraint(equalTo: transStack.widthAnchor).isActive = true
+        transDetails.widthAnchor.constraint(equalTo: transStack.widthAnchor).isActive = true
 
         // --- Section 2: 附加文件列表 (Local files) ---
         let localResources = p.resources.filter { $0.isLocalFile }
@@ -1919,6 +2078,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 let nameLbl = NSTextField(labelWithString: res.title)
                 nameLbl.font = .systemFont(ofSize: 12.0, weight: .medium)
                 nameLbl.lineBreakMode = .byTruncatingMiddle
+                nameLbl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
                 let spacer = NSView()
                 spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -1931,6 +2091,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 let detailLbl = NSTextField(labelWithString: "大小: \(sizeStr)")
                 detailLbl.font = .systemFont(ofSize: 11.0)
                 detailLbl.textColor = .tertiaryLabelColor
+                detailLbl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
                 let btnRow = NSStackView()
                 btnRow.orientation = .horizontal
@@ -1967,6 +2128,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 cStack.addArrangedSubview(btnRow)
 
                 attachmentsListStack.addArrangedSubview(card)
+                card.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
+                topRow.widthAnchor.constraint(equalTo: cStack.widthAnchor).isActive = true
+                detailLbl.widthAnchor.constraint(equalTo: cStack.widthAnchor).isActive = true
                 card.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
             }
         }
@@ -2029,110 +2193,50 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // MARK: - Tab 4: 论文标签 (Actions & UI Refresh)
     private func refreshTagsTabUI() {
-        tagsChipsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        suggestedTagsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         guard let p = currentPaper else { return }
 
         tagsCountBadge.stringValue = "(\(p.tags.count))"
 
-        if !p.tags.isEmpty {
-            var currentRow = NSStackView()
-            currentRow.orientation = .horizontal
-            currentRow.spacing = 6
-            currentRow.alignment = .centerY
-            tagsChipsStack.addArrangedSubview(currentRow)
-
-            var currentWidth: CGFloat = 0
-            let maxWidth: CGFloat = 260
-
-            for tag in p.tags {
-                let chip = makeTagChipView(tag: tag)
-                let chipWidth = (tag as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12.0)]).width + 36
-                if currentWidth + chipWidth > maxWidth && currentWidth > 0 {
-                    currentRow = NSStackView()
-                    currentRow.orientation = .horizontal
-                    currentRow.spacing = 6
-                    currentRow.alignment = .centerY
-                    tagsChipsStack.addArrangedSubview(currentRow)
-                    currentWidth = 0
+        if p.tags.isEmpty {
+            let emptyLbl = NSTextField(labelWithString: "暂无标签")
+            emptyLbl.font = .systemFont(ofSize: 11.5)
+            emptyLbl.textColor = .placeholderTextColor
+            emptyLbl.isBezeled = false
+            emptyLbl.isEditable = false
+            emptyLbl.drawsBackground = false
+            tagsFlowView.setViews([emptyLbl])
+        } else {
+            let chips = p.tags.map { tag in
+                ModernTagChipView(tag: tag) { [weak self] in
+                    guard let self = self, let paper = self.currentPaper else { return }
+                    LibraryStore.shared.removeTag(tag, for: paper.id)
+                    self.refreshTagsTabUI()
                 }
-                currentRow.addArrangedSubview(chip)
-                currentWidth += chipWidth + 6
             }
+            tagsFlowView.setViews(chips)
         }
 
         let availableTags = LibraryStore.shared.allUniqueTags.filter { !p.tags.contains($0) }
-        if !availableTags.isEmpty {
-            var currentRow = NSStackView()
-            currentRow.orientation = .horizontal
-            currentRow.spacing = 6
-            currentRow.alignment = .centerY
-            suggestedTagsStack.addArrangedSubview(currentRow)
-
-            var currentWidth: CGFloat = 0
-            let maxWidth: CGFloat = 260
-
-            for tag in availableTags.prefix(12) {
+        if availableTags.isEmpty {
+            let emptyLbl = NSTextField(labelWithString: "暂无推荐标签")
+            emptyLbl.font = .systemFont(ofSize: 11.5)
+            emptyLbl.textColor = .placeholderTextColor
+            emptyLbl.isBezeled = false
+            emptyLbl.isEditable = false
+            emptyLbl.drawsBackground = false
+            suggestedTagsFlowView.setViews([emptyLbl])
+        } else {
+            let buttons = availableTags.prefix(12).map { tag -> NSButton in
                 let btn = NSButton(title: "＋ \(tag)", target: self, action: #selector(addSuggestedTagFromBtn(_:)))
                 btn.bezelStyle = .inline
                 btn.isBordered = false
                 btn.contentTintColor = .controlAccentColor
-                btn.font = .systemFont(ofSize: 11.5)
+                btn.font = .systemFont(ofSize: 11.5, weight: .medium)
                 btn.identifier = NSUserInterfaceItemIdentifier(tag)
-
-                let btnWidth = (tag as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11.5)]).width + 24
-                if currentWidth + btnWidth > maxWidth && currentWidth > 0 {
-                    currentRow = NSStackView()
-                    currentRow.orientation = .horizontal
-                    currentRow.spacing = 6
-                    currentRow.alignment = .centerY
-                    suggestedTagsStack.addArrangedSubview(currentRow)
-                    currentWidth = 0
-                }
-                currentRow.addArrangedSubview(btn)
-                currentWidth += btnWidth + 6
+                return btn
             }
+            suggestedTagsFlowView.setViews(buttons)
         }
-    }
-
-    private func makeTagChipView(tag: String) -> NSView {
-        let chipBox = NSBox()
-        chipBox.boxType = .custom
-        chipBox.borderWidth = 0.5
-        chipBox.borderColor = ZoteroTheme.cardBorder
-        chipBox.fillColor = ZoteroTheme.tagBg
-        chipBox.cornerRadius = 10
-        chipBox.translatesAutoresizingMaskIntoConstraints = false
-
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.spacing = 4
-        row.alignment = .centerY
-        row.edgeInsets = NSEdgeInsets(top: 2, left: 8, bottom: 2, right: 6)
-        row.translatesAutoresizingMaskIntoConstraints = false
-        chipBox.contentView = row
-
-        let label = NSTextField(labelWithString: tag)
-        label.font = .systemFont(ofSize: 12.0, weight: .medium)
-        label.textColor = .labelColor
-
-        let delBtn = NSButton()
-        delBtn.bezelStyle = .inline
-        delBtn.isBordered = false
-        delBtn.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "删除标签")?
-            .withSymbolConfiguration(.init(pointSize: 10.0, weight: .medium))
-        delBtn.contentTintColor = .secondaryLabelColor
-        delBtn.target = self
-        delBtn.action = #selector(removeTagFromBtn(_:))
-        delBtn.identifier = NSUserInterfaceItemIdentifier(tag)
-        delBtn.translatesAutoresizingMaskIntoConstraints = false
-        delBtn.widthAnchor.constraint(equalToConstant: 14).isActive = true
-        delBtn.heightAnchor.constraint(equalToConstant: 14).isActive = true
-
-        row.addArrangedSubview(label)
-        row.addArrangedSubview(delBtn)
-
-        return chipBox
     }
 
     @objc private func addTagFromInput() {
@@ -2226,6 +2330,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         arxivStack.addArrangedSubview(arxivBtnRow)
         linksCardsStack.addArrangedSubview(arxivCard)
         arxivCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+        arxivTopRow.widthAnchor.constraint(equalTo: arxivStack.widthAnchor).isActive = true
+        arxivUrlLbl.widthAnchor.constraint(equalTo: arxivStack.widthAnchor).isActive = true
+        arxivUrlLbl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         // 2) 幻觉翻译卡片
         if !aid.isEmpty {
@@ -2263,6 +2370,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             hjfyUrlLbl.font = .systemFont(ofSize: 11.0)
             hjfyUrlLbl.textColor = .secondaryLabelColor
             hjfyUrlLbl.lineBreakMode = .byTruncatingMiddle
+            hjfyUrlLbl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
             let hjfyBtnRow = NSStackView()
             hjfyBtnRow.orientation = .horizontal
@@ -2279,6 +2387,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             hjfyStack.addArrangedSubview(hjfyBtnRow)
             linksCardsStack.addArrangedSubview(hjfyCard)
             hjfyCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+            hjfyTopRow.widthAnchor.constraint(equalTo: hjfyStack.widthAnchor).isActive = true
+            hjfyUrlLbl.widthAnchor.constraint(equalTo: hjfyStack.widthAnchor).isActive = true
 
             // 3) DOI 官方出版链接
             let doiCard = makeSidebarCardView()
@@ -2297,6 +2407,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             doiLbl.font = .systemFont(ofSize: 11.0)
             doiLbl.textColor = .secondaryLabelColor
             doiLbl.lineBreakMode = .byTruncatingMiddle
+            doiLbl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
             let doiBtnRow = NSStackView()
             doiBtnRow.orientation = .horizontal
@@ -2324,6 +2435,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
             linksCardsStack.addArrangedSubview(doiCard)
             doiCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+            doiTitle.widthAnchor.constraint(equalTo: doiStack.widthAnchor).isActive = true
+            doiLbl.widthAnchor.constraint(equalTo: doiStack.widthAnchor).isActive = true
         }
 
         // --- Section 2: 自定义外部链接 ---
@@ -2357,6 +2470,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 let nameLbl = NSTextField(labelWithString: res.title)
                 nameLbl.font = .systemFont(ofSize: 12.0, weight: .semibold)
                 nameLbl.lineBreakMode = .byTruncatingTail
+                nameLbl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
                 let spacer = NSView()
                 spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -2369,6 +2483,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 urlLbl.font = .systemFont(ofSize: 11.0)
                 urlLbl.textColor = .secondaryLabelColor
                 urlLbl.lineBreakMode = .byTruncatingMiddle
+                urlLbl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
                 let btnRow = NSStackView()
                 btnRow.orientation = .horizontal
@@ -2406,6 +2521,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
                 linksCardsStack.addArrangedSubview(card)
                 card.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
+                topRow.widthAnchor.constraint(equalTo: cStack.widthAnchor).isActive = true
+                urlLbl.widthAnchor.constraint(equalTo: cStack.widthAnchor).isActive = true
             }
         }
 
