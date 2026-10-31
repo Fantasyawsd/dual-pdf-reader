@@ -683,6 +683,25 @@ testReader.view.layoutSubtreeIfNeeded()
 testReader.setColumnSplitRatioForTesting(0.5)
 testReader.applyColumnSplitRatio()
 
+// Check that dual column subviews cannot be collapsed on drag
+check(!testReader.canCollapseColumn(testReader.leftCol), "Left column in splitView cannot collapse on drag")
+check(!testReader.canCollapseColumn(testReader.rightCol), "Right column in splitView cannot collapse on drag")
+
+// Clamping to minimum size (cannot drag paper to disappear)
+testReader.dualSplitView.setPosition(10, ofDividerAt: 0)
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.leftCol.frame.width >= 199, "Dragging divider too far left clamps left column to minimum size")
+check(testReader.rightCol.frame.width >= 199, "Dragging divider too far left keeps right column visible")
+
+testReader.dualSplitView.setPosition(testReader.dualSplitView.bounds.width - 10, ofDividerAt: 0)
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.rightCol.frame.width >= 199, "Dragging divider too far right clamps right column to minimum size")
+check(testReader.leftCol.frame.width >= 199, "Dragging divider too far right keeps left column visible")
+
+testReader.setColumnSplitRatioForTesting(0.5)
+testReader.applyColumnSplitRatio()
+testReader.view.layoutSubtreeIfNeeded()
+
 // Single-column mode hides dual-column exclusive controls and expands to full canvas width
 testReader.setDisplayMode(0)
 testReader.view.layoutSubtreeIfNeeded()

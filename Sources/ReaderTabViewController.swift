@@ -49,7 +49,10 @@ final class DualPDFSplitView: NSSplitView {
             return
         }
         let total = max(1, bounds.width - dividerThickness)
-        let ratio = max(0.15, min(0.85, position / total))
+        let effectiveMinW = min(200, max(50, total / 2))
+        let minRatio = effectiveMinW / total
+        let maxRatio = (total - effectiveMinW) / total
+        let ratio = max(minRatio, min(maxRatio, position / total))
         onSplitRatioChanged?(ratio)
         adjustSubviews()
     }
@@ -77,7 +80,8 @@ final class DualPDFSplitView: NSSplitView {
         if subviews.count == 2 && !subviews[0].isHidden && !subviews[1].isHidden {
             let ratio = splitRatioProvider?() ?? 0.5
             let total = max(0, bounds.width - dividerThickness)
-            let w0 = max(100, min(total - 100, round(total * ratio)))
+            let effectiveMinW = min(200, max(50, total / 2))
+            let w0 = max(effectiveMinW, min(total - effectiveMinW, round(total * ratio)))
             let w1 = max(0, total - w0)
             subviews[0].frame = NSRect(x: 0, y: 0, width: w0, height: bounds.height)
             subviews[1].frame = NSRect(x: w0 + dividerThickness, y: 0, width: w1, height: bounds.height)
@@ -363,6 +367,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let modeSeg = NSSegmentedControl(labels: ["仅原文", "仅译文", "双栏对照"], trackingMode: .selectOne, target: nil, action: nil)
     private let swapBtn = ModernHoverButton()
     var isSwapButtonHidden: Bool { swapBtn.isHidden }
+    var dualSplitView: DualPDFSplitView { splitView }
+    func canCollapseColumn(_ col: CleanPDFColumnView) -> Bool {
+        splitView(splitView, canCollapseSubview: col)
+    }
     func setColumnSplitRatioForTesting(_ ratio: CGFloat) { columnSplitRatio = ratio }
     private var dualColumnSeparator: NSView?
     let syncScrollBtn = ModernHoverButton()
@@ -4944,14 +4952,15 @@ extension ReaderTabViewController: NSSplitViewDelegate {
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard let sv = notification.object as? NSSplitView else { return }
         if sv === splitView {
-            if !leftCol.isHidden && !rightCol.isHidden && splitView.bounds.width > 200 {
+            if !leftCol.isHidden && !rightCol.isHidden && splitView.bounds.width > 100 {
                 let total = splitView.bounds.width - splitView.dividerThickness
-                if total > 100 {
+                if total > 50 {
                     let firstWidth = splitView.subviews.first?.bounds.width ?? (splitView.bounds.width / 2.0)
                     let ratio = firstWidth / total
-                    if ratio >= 0.15 && ratio <= 0.85 {
-                        columnSplitRatio = ratio
-                    }
+                    let effectiveMinW = min(200, max(50, total / 2))
+                    let minRatio = effectiveMinW / total
+                    let maxRatio = (total - effectiveMinW) / total
+                    columnSplitRatio = max(minRatio, min(maxRatio, ratio))
                 }
             }
         } else if sv === masterSplitView {
@@ -4973,9 +4982,10 @@ extension ReaderTabViewController: NSSplitViewDelegate {
         if splitView === masterSplitView && subview === rightDrawer {
             return true
         }
-        if splitView === self.splitView {
-            return true
-        }
+        return false
+    }
+
+    func splitView(_ splitView: NSSplitView, shouldCollapseSubview subview: NSView, forDoubleClickOnDividerAt dividerIndex: Int) -> Bool {
         return false
     }
 
@@ -4991,7 +5001,8 @@ extension ReaderTabViewController: NSSplitViewDelegate {
             if visibleCount <= 1 {
                 return 0
             }
-            return 200
+            let total = splitView.bounds.width - splitView.dividerThickness
+            return min(200, max(50, total / 2))
         }
         return proposedMinimumPosition
     }
@@ -5008,7 +5019,9 @@ extension ReaderTabViewController: NSSplitViewDelegate {
             if visibleCount <= 1 {
                 return splitView.bounds.width
             }
-            return max(200, splitView.bounds.width - 200 - splitView.dividerThickness)
+            let total = splitView.bounds.width - splitView.dividerThickness
+            let effectiveMin = min(200, max(50, total / 2))
+            return max(effectiveMin, splitView.bounds.width - effectiveMin - splitView.dividerThickness)
         }
         return proposedMaximumPosition
     }
