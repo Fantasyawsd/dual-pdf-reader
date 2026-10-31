@@ -302,9 +302,29 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     let syncScrollBtn = ModernHoverButton()
     private let resetAlignBtn = ModernHoverButton()
 
-    private let prevPageBtn = ModernHoverButton()
-    private let pageJumpBtn = ModernHoverButton()
-    private let nextPageBtn = ModernHoverButton()
+    // 双栏各自独立的页码步进、跳转与缩放控制
+    private let leftColLabel = NSTextField(labelWithString: "左栏")
+    let leftPrevPageBtn = ModernHoverButton()
+    let leftPageJumpBtn = ModernHoverButton()
+    let leftNextPageBtn = ModernHoverButton()
+    let leftZoomOutBtn = ModernHoverButton()
+    let leftZoomFitBtn = ModernHoverButton()
+    let leftZoomInBtn = ModernHoverButton()
+    private let leftControlsContainer = NSStackView()
+
+    private let rightColLabel = NSTextField(labelWithString: "右栏")
+    let rightPrevPageBtn = ModernHoverButton()
+    let rightPageJumpBtn = ModernHoverButton()
+    let rightNextPageBtn = ModernHoverButton()
+    let rightZoomOutBtn = ModernHoverButton()
+    let rightZoomFitBtn = ModernHoverButton()
+    let rightZoomInBtn = ModernHoverButton()
+    private let rightControlsContainer = NSStackView()
+    private var dualColumnControlsSep: NSView?
+
+    var prevPageBtn: ModernHoverButton { leftPrevPageBtn }
+    var pageJumpBtn: ModernHoverButton { leftPageJumpBtn }
+    var nextPageBtn: ModernHoverButton { leftNextPageBtn }
 
     private let searchField = NSSearchField()
     private let searchMatchLabel = NSTextField(labelWithString: "")
@@ -547,52 +567,103 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         resetAlignBtn.action = #selector(resetSyncAlignmentAction)
         resetAlignBtn.isHidden = abs(pageRatioOffset) < 0.005
 
-        // --- Group B (Center): 页码步进/跳转 & 缩放控制 ---
-        prevPageBtn.bezelStyle = .texturedRounded
-        prevPageBtn.controlSize = .small
-        prevPageBtn.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "上一页")?.withSymbolConfiguration(barSubIconConfig)
-        prevPageBtn.toolTip = "上一页"
-        prevPageBtn.target = self
-        prevPageBtn.action = #selector(prevPageAction)
+        // --- Group B (Center): 双栏各自独立的页码步进/跳转 & 缩放控制 ---
+        func configureColumnControls(
+            label: NSTextField, labelTitle: String,
+            prevBtn: ModernHoverButton, pageBtn: ModernHoverButton, nextBtn: ModernHoverButton,
+            zoomOut: ModernHoverButton, zoomFit: ModernHoverButton, zoomIn: ModernHoverButton,
+            container: NSStackView,
+            prevAction: Selector, nextAction: Selector, pageAction: Selector,
+            zoomOutAction: Selector, zoomFitAction: Selector, zoomInAction: Selector
+        ) {
+            label.stringValue = labelTitle
+            label.font = .systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = .secondaryLabelColor
 
-        pageJumpBtn.bezelStyle = .texturedRounded
-        pageJumpBtn.controlSize = .small
-        pageJumpBtn.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
-        pageJumpBtn.title = "1 / 1"
-        pageJumpBtn.toolTip = "点击输入页码快速跳转"
-        pageJumpBtn.target = self
-        pageJumpBtn.action = #selector(promptPageJumpAction)
+            prevBtn.bezelStyle = .texturedRounded
+            prevBtn.controlSize = .small
+            prevBtn.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "上一页")?.withSymbolConfiguration(barSubIconConfig)
+            prevBtn.toolTip = "\(labelTitle)上一页"
+            prevBtn.target = self
+            prevBtn.action = prevAction
 
-        nextPageBtn.bezelStyle = .texturedRounded
-        nextPageBtn.controlSize = .small
-        nextPageBtn.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "下一页")?.withSymbolConfiguration(barSubIconConfig)
-        nextPageBtn.toolTip = "下一页"
-        nextPageBtn.target = self
-        nextPageBtn.action = #selector(nextPageAction)
+            pageBtn.bezelStyle = .texturedRounded
+            pageBtn.controlSize = .small
+            pageBtn.font = .monospacedDigitSystemFont(ofSize: 12.5, weight: .medium)
+            pageBtn.title = "1 / 1"
+            pageBtn.toolTip = "点击跳转\(labelTitle)指定页码"
+            pageBtn.target = self
+            pageBtn.action = pageAction
 
-        let zoomOutBtn = ModernHoverButton()
-        zoomOutBtn.bezelStyle = .texturedRounded
-        zoomOutBtn.controlSize = .small
-        zoomOutBtn.image = NSImage(systemSymbolName: "minus", accessibilityDescription: "缩小")?.withSymbolConfiguration(barSubIconConfig)
-        zoomOutBtn.toolTip = "缩小页面 (⌘-)"
-        zoomOutBtn.target = self
-        zoomOutBtn.action = #selector(zoomOutBothAction)
+            nextBtn.bezelStyle = .texturedRounded
+            nextBtn.controlSize = .small
+            nextBtn.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "下一页")?.withSymbolConfiguration(barSubIconConfig)
+            nextBtn.toolTip = "\(labelTitle)下一页"
+            nextBtn.target = self
+            nextBtn.action = nextAction
 
-        let zoomFitBtn = ModernHoverButton()
-        zoomFitBtn.bezelStyle = .texturedRounded
-        zoomFitBtn.controlSize = .small
-        zoomFitBtn.title = "自适应"
-        zoomFitBtn.toolTip = "自适应列宽 (⌘0)"
-        zoomFitBtn.target = self
-        zoomFitBtn.action = #selector(zoomFitBothAction)
+            zoomOut.bezelStyle = .texturedRounded
+            zoomOut.controlSize = .small
+            zoomOut.image = NSImage(systemSymbolName: "minus", accessibilityDescription: "缩小")?.withSymbolConfiguration(barSubIconConfig)
+            zoomOut.toolTip = "缩小\(labelTitle)页面"
+            zoomOut.target = self
+            zoomOut.action = zoomOutAction
 
-        let zoomInBtn = ModernHoverButton()
-        zoomInBtn.bezelStyle = .texturedRounded
-        zoomInBtn.controlSize = .small
-        zoomInBtn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "放大")?.withSymbolConfiguration(barSubIconConfig)
-        zoomInBtn.toolTip = "放大页面 (⌘+)"
-        zoomInBtn.target = self
-        zoomInBtn.action = #selector(zoomInBothAction)
+            zoomFit.bezelStyle = .texturedRounded
+            zoomFit.controlSize = .small
+            zoomFit.title = "自适应"
+            zoomFit.toolTip = "\(labelTitle)自适应列宽"
+            zoomFit.target = self
+            zoomFit.action = zoomFitAction
+
+            zoomIn.bezelStyle = .texturedRounded
+            zoomIn.controlSize = .small
+            zoomIn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "放大")?.withSymbolConfiguration(barSubIconConfig)
+            zoomIn.toolTip = "放大\(labelTitle)页面"
+            zoomIn.target = self
+            zoomIn.action = zoomInAction
+
+            container.subviews.forEach { $0.removeFromSuperview() }
+            container.orientation = .horizontal
+            container.spacing = 4
+            container.alignment = .centerY
+            container.translatesAutoresizingMaskIntoConstraints = false
+
+            container.addArrangedSubview(label)
+            container.addArrangedSubview(prevBtn)
+            container.addArrangedSubview(pageBtn)
+            container.addArrangedSubview(nextBtn)
+            container.addArrangedSubview(makeToolbarSeparator())
+            container.addArrangedSubview(zoomOut)
+            container.addArrangedSubview(zoomFit)
+            container.addArrangedSubview(zoomIn)
+        }
+
+        configureColumnControls(
+            label: leftColLabel, labelTitle: "左栏",
+            prevBtn: leftPrevPageBtn, pageBtn: leftPageJumpBtn, nextBtn: leftNextPageBtn,
+            zoomOut: leftZoomOutBtn, zoomFit: leftZoomFitBtn, zoomIn: leftZoomInBtn,
+            container: leftControlsContainer,
+            prevAction: #selector(leftPrevPageAction),
+            nextAction: #selector(leftNextPageAction),
+            pageAction: #selector(leftPromptPageJumpAction),
+            zoomOutAction: #selector(leftZoomOutAction),
+            zoomFitAction: #selector(leftZoomFitAction),
+            zoomInAction: #selector(leftZoomInAction)
+        )
+
+        configureColumnControls(
+            label: rightColLabel, labelTitle: "右栏",
+            prevBtn: rightPrevPageBtn, pageBtn: rightPageJumpBtn, nextBtn: rightNextPageBtn,
+            zoomOut: rightZoomOutBtn, zoomFit: rightZoomFitBtn, zoomIn: rightZoomInBtn,
+            container: rightControlsContainer,
+            prevAction: #selector(rightPrevPageAction),
+            nextAction: #selector(rightNextPageAction),
+            pageAction: #selector(rightPromptPageJumpAction),
+            zoomOutAction: #selector(rightZoomOutAction),
+            zoomFitAction: #selector(rightZoomFitAction),
+            zoomInAction: #selector(rightZoomInAction)
+        )
 
         // --- Group C (Right): Zotero 7 原生排版 (页内搜索 / 侧边栏图标) ---
         searchField.placeholderString = "页内查找 (⌘F)…"
@@ -687,17 +758,16 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         leftBarStack.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(leftBarStack)
 
+        let colSep = makeToolbarSeparator()
+        self.dualColumnControlsSep = colSep
+
         let centerBarStack = NSStackView(views: [
-            prevPageBtn,
-            pageJumpBtn,
-            nextPageBtn,
-            makeToolbarSeparator(),
-            zoomOutBtn,
-            zoomFitBtn,
-            zoomInBtn
+            leftControlsContainer,
+            colSep,
+            rightControlsContainer
         ])
         centerBarStack.orientation = .horizontal
-        centerBarStack.spacing = 6
+        centerBarStack.spacing = 8
         centerBarStack.alignment = .centerY
         centerBarStack.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(centerBarStack)
@@ -3141,27 +3211,43 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     private func updatePageIndicatorAndSaveProgress() {
-        let activePDF = primaryActiveColumn().pdfView
-        guard let doc = activePDF.document else {
-            pageJumpBtn.title = "0 / 0"
-            prevPageBtn.isEnabled = false
-            nextPageBtn.isEnabled = false
-            return
+        // 更新左栏页码
+        if let leftDoc = leftCol.pdfView.document {
+            let leftTotal = leftDoc.pageCount
+            let leftIdx = leftCol.pdfView.currentPage.map { leftDoc.index(for: $0) } ?? 0
+            leftPageJumpBtn.title = "\(leftIdx + 1) / \(leftTotal) 页"
+            leftPrevPageBtn.isEnabled = (leftIdx > 0)
+            leftNextPageBtn.isEnabled = (leftIdx + 1 < leftTotal)
+        } else {
+            leftPageJumpBtn.title = "- / -"
+            leftPrevPageBtn.isEnabled = false
+            leftNextPageBtn.isEnabled = false
         }
-        let total = doc.pageCount
-        let currentIdx = activePDF.currentPage.map { doc.index(for: $0) } ?? 0
-        pageJumpBtn.title = "\(currentIdx + 1) / \(total) 页"
-        prevPageBtn.isEnabled = (currentIdx > 0)
-        nextPageBtn.isEnabled = (currentIdx + 1 < total)
+
+        // 更新右栏页码
+        if let rightDoc = rightCol.pdfView.document {
+            let rightTotal = rightDoc.pageCount
+            let rightIdx = rightCol.pdfView.currentPage.map { rightDoc.index(for: $0) } ?? 0
+            rightPageJumpBtn.title = "\(rightIdx + 1) / \(rightTotal) 页"
+            rightPrevPageBtn.isEnabled = (rightIdx > 0)
+            rightNextPageBtn.isEnabled = (rightIdx + 1 < rightTotal)
+        } else {
+            rightPageJumpBtn.title = "- / -"
+            rightPrevPageBtn.isEnabled = false
+            rightNextPageBtn.isEnabled = false
+        }
 
         // 同步高亮右侧目录当前所在章节
-        if let matchRow = outlineItems.lastIndex(where: { $0.pageIndex <= currentIdx }) {
-            isUpdatingOutlineSelection = true
-            outlineTableView.selectRowIndexes(IndexSet(integer: matchRow), byExtendingSelection: false)
-            outlineTableView.scrollRowToVisible(matchRow)
-            isUpdatingOutlineSelection = false
+        let activePDF = primaryActiveColumn().pdfView
+        if let doc = activePDF.document {
+            let currentIdx = activePDF.currentPage.map { doc.index(for: $0) } ?? 0
+            if let matchRow = outlineItems.lastIndex(where: { $0.pageIndex <= currentIdx }) {
+                isUpdatingOutlineSelection = true
+                outlineTableView.selectRowIndexes(IndexSet(integer: matchRow), byExtendingSelection: false)
+                outlineTableView.scrollRowToVisible(matchRow)
+                isUpdatingOutlineSelection = false
+            }
         }
-
     }
 
     private func scheduleReadingPositionSave(from column: CleanPDFColumnView) {
@@ -4080,6 +4166,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             dualColumnSeparator?.isHidden = true
             syncScrollBtn.isHidden = true
             resetAlignBtn.isHidden = true
+            leftControlsContainer.isHidden = false
+            rightControlsContainer.isHidden = true
+            dualColumnControlsSep?.isHidden = true
+            leftColLabel.isHidden = true
         case 1:
             leftCol.isHidden = true
             rightCol.isHidden = false
@@ -4087,6 +4177,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             dualColumnSeparator?.isHidden = true
             syncScrollBtn.isHidden = true
             resetAlignBtn.isHidden = true
+            leftControlsContainer.isHidden = true
+            rightControlsContainer.isHidden = false
+            dualColumnControlsSep?.isHidden = true
+            rightColLabel.isHidden = true
         default:
             leftCol.isHidden = false
             rightCol.isHidden = false
@@ -4095,6 +4189,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             dualColumnSeparator?.isHidden = false
             syncScrollBtn.isHidden = false
             resetAlignBtn.isHidden = abs(pageRatioOffset) < 0.005
+            leftControlsContainer.isHidden = false
+            rightControlsContainer.isHidden = false
+            dualColumnControlsSep?.isHidden = false
+            leftColLabel.isHidden = false
+            rightColLabel.isHidden = false
             applyColumnSplitRatio()
         }
         splitView.adjustSubviews()
@@ -4172,31 +4271,82 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         syncScroll(from: active, to: opp)
     }
 
-    @objc func prevPageAction() {
-        let activePDF = primaryActiveColumn().pdfView
-        guard let doc = activePDF.document else { return }
-        let cur = activePDF.currentPage.map { doc.index(for: $0) } ?? 0
-        if cur > 0 {
-            goToPageIndex(cur - 1, recordHistory: false)
+    // --- 左栏独立操作 ---
+    @objc func leftPrevPageAction() {
+        guard let doc = leftCol.pdfView.document else { return }
+        let cur = leftCol.pdfView.currentPage.map { doc.index(for: $0) } ?? 0
+        if cur > 0 { goToColumnPageIndex(leftCol, pageIndex: cur - 1, recordHistory: false) }
+    }
+
+    @objc func leftNextPageAction() {
+        guard let doc = leftCol.pdfView.document else { return }
+        let cur = leftCol.pdfView.currentPage.map { doc.index(for: $0) } ?? 0
+        if cur + 1 < doc.pageCount { goToColumnPageIndex(leftCol, pageIndex: cur + 1, recordHistory: false) }
+    }
+
+    @objc func leftPromptPageJumpAction() {
+        promptPageJump(for: leftCol)
+    }
+
+    @objc func leftZoomInAction() {
+        zoomColumn(leftCol, factor: 1.15)
+    }
+
+    @objc func leftZoomOutAction() {
+        zoomColumn(leftCol, factor: 1.0 / 1.15)
+    }
+
+    @objc func leftZoomFitAction() {
+        leftCol.pdfView.autoScales = true
+        if isScrollSyncEnabled { rightCol.pdfView.autoScales = true }
+    }
+
+    // --- 右栏独立操作 ---
+    @objc func rightPrevPageAction() {
+        guard let doc = rightCol.pdfView.document else { return }
+        let cur = rightCol.pdfView.currentPage.map { doc.index(for: $0) } ?? 0
+        if cur > 0 { goToColumnPageIndex(rightCol, pageIndex: cur - 1, recordHistory: false) }
+    }
+
+    @objc func rightNextPageAction() {
+        guard let doc = rightCol.pdfView.document else { return }
+        let cur = rightCol.pdfView.currentPage.map { doc.index(for: $0) } ?? 0
+        if cur + 1 < doc.pageCount { goToColumnPageIndex(rightCol, pageIndex: cur + 1, recordHistory: false) }
+    }
+
+    @objc func rightPromptPageJumpAction() {
+        promptPageJump(for: rightCol)
+    }
+
+    @objc func rightZoomInAction() {
+        zoomColumn(rightCol, factor: 1.15)
+    }
+
+    @objc func rightZoomOutAction() {
+        zoomColumn(rightCol, factor: 1.0 / 1.15)
+    }
+
+    @objc func rightZoomFitAction() {
+        rightCol.pdfView.autoScales = true
+        if isScrollSyncEnabled { leftCol.pdfView.autoScales = true }
+    }
+
+    private func zoomColumn(_ column: CleanPDFColumnView, factor: CGFloat) {
+        column.pdfView.autoScales = false
+        column.pdfView.scaleFactor = max(0.25, min(column.pdfView.scaleFactor * factor, 5.0))
+        if isScrollSyncEnabled {
+            let opp = (column === leftCol) ? rightCol : leftCol
+            opp.pdfView.autoScales = false
+            opp.pdfView.scaleFactor = max(0.25, min(opp.pdfView.scaleFactor * factor, 5.0))
         }
     }
 
-    @objc func nextPageAction() {
-        let activePDF = primaryActiveColumn().pdfView
-        guard let doc = activePDF.document else { return }
-        let cur = activePDF.currentPage.map { doc.index(for: $0) } ?? 0
-        if cur + 1 < doc.pageCount {
-            goToPageIndex(cur + 1, recordHistory: false)
-        }
-    }
-
-    @objc private func promptPageJumpAction() {
-        let activePDF = primaryActiveColumn().pdfView
-        guard let doc = activePDF.document, doc.pageCount > 0 else { return }
-        let cur = (activePDF.currentPage.map { doc.index(for: $0) } ?? 0) + 1
-
+    private func promptPageJump(for column: CleanPDFColumnView) {
+        guard let doc = column.pdfView.document, doc.pageCount > 0 else { return }
+        let cur = (column.pdfView.currentPage.map { doc.index(for: $0) } ?? 0) + 1
+        let colName = (column === leftCol) ? "左栏" : "右栏"
         let alert = NSAlert()
-        alert.messageText = "跳转到指定页码"
+        alert.messageText = "跳转到\(colName)指定页码"
         alert.informativeText = "请输入目标页码 (1 – \(doc.pageCount))："
         alert.addButton(withTitle: "跳转")
         alert.addButton(withTitle: "取消")
@@ -4208,7 +4358,26 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         if alert.runModal() == .alertFirstButtonReturn,
            let targetPage = Int(input.stringValue.trimmingCharacters(in: .whitespaces)),
            targetPage >= 1, targetPage <= doc.pageCount {
-            goToPageIndex(targetPage - 1, recordHistory: true)
+            goToColumnPageIndex(column, pageIndex: targetPage - 1, recordHistory: true)
+        }
+    }
+
+    // --- 兼容旧版入口 ---
+    @objc func prevPageAction() { leftPrevPageAction() }
+    @objc func nextPageAction() { leftNextPageAction() }
+    @objc private func promptPageJumpAction() { leftPromptPageJumpAction() }
+
+    private func goToColumnPageIndex(_ column: CleanPDFColumnView, pageIndex: Int, recordHistory: Bool) {
+        if isScrollSyncEnabled {
+            goToPageIndex(pageIndex, recordHistory: recordHistory)
+        } else {
+            if recordHistory {
+                pushJumpRecord(from: column, label: "页码跳转前")
+            }
+            if let doc = column.pdfView.document, pageIndex >= 0, pageIndex < doc.pageCount, let p = doc.page(at: pageIndex) {
+                column.pdfView.go(to: p)
+            }
+            updatePageIndicatorAndSaveProgress()
         }
     }
 
