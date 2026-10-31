@@ -698,6 +698,30 @@ check(testReader.rightCol.frame.width > 800, "Single-column mode 1 ('仅译文')
 testReader.setDisplayMode(2)
 testReader.view.layoutSubtreeIfNeeded()
 check(!testReader.isSwapButtonHidden && !testReader.syncScrollBtn.isHidden, "Dual-column mode restores swap button and sync button")
+check(testReader.leftCol.frame.width > 200 && testReader.rightCol.frame.width > 200, "Dual-column mode restores both columns")
+
+// Verify single-column zoom-in followed by restoring dual-column mode
+testReader.setDisplayMode(0)
+testReader.leftZoomInAction()
+testReader.leftZoomInAction()
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.leftCol.frame.width > 800 && testReader.rightCol.frame.width == 0, "Single column 0 with zoom occupies full width")
+
+testReader.setDisplayMode(2)
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.leftCol.frame.width > 200 && testReader.rightCol.frame.width > 200, "Restoring dual column from zoomed single column recovers both columns")
+check(abs(testReader.leftCol.frame.width - testReader.rightCol.frame.width) <= 4.0, "Dual column restored with equal split from zoomed mode 0")
+
+testReader.setDisplayMode(1)
+testReader.rightZoomInAction()
+testReader.rightZoomInAction()
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.rightCol.frame.width > 800 && testReader.leftCol.frame.width == 0, "Single column 1 with zoom occupies full width")
+
+testReader.setDisplayMode(2)
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.leftCol.frame.width > 200 && testReader.rightCol.frame.width > 200, "Restoring dual column from zoomed translated column recovers both columns")
+check(abs(testReader.leftCol.frame.width - testReader.rightCol.frame.width) <= 4.0, "Dual column restored with equal split from zoomed mode 1")
 
 // Sync button appearance toggle (lit vs unlit)
 testReader.syncScrollBtn.state = .on

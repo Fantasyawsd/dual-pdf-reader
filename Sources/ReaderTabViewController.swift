@@ -24,19 +24,45 @@ final class FlippedStackView: NSStackView {
 
 final class DualPDFSplitView: NSSplitView {
     var onDividerDoubleClicked: (() -> Void)?
+    var splitRatioProvider: (() -> CGFloat)?
+    var onSplitRatioChanged: ((CGFloat) -> Void)?
 
     override var dividerThickness: CGFloat {
         let visibleCount = subviews.filter { !$0.isHidden }.count
         return visibleCount > 1 ? 1.0 : 0.0
     }
 
+    override func setPosition(_ position: CGFloat, ofDividerAt dividerIndex: Int) {
+        guard dividerIndex == 0 else {
+            super.setPosition(position, ofDividerAt: dividerIndex)
+            return
+        }
+        let total = max(1, bounds.width - dividerThickness)
+        let ratio = max(0.15, min(0.85, position / total))
+        onSplitRatioChanged?(ratio)
+        adjustSubviews()
+    }
+
     override func adjustSubviews() {
+        guard bounds.width > 0, bounds.height > 0 else {
+            super.adjustSubviews()
+            return
+        }
         let visibleSubviews = subviews.filter { !$0.isHidden }
         if visibleSubviews.count == 1, let singleView = visibleSubviews.first {
             singleView.frame = bounds
             for v in subviews where v.isHidden {
                 v.frame = NSRect(x: bounds.width, y: 0, width: 0, height: bounds.height)
             }
+            return
+        }
+        if subviews.count == 2 && !subviews[0].isHidden && !subviews[1].isHidden {
+            let ratio = splitRatioProvider?() ?? 0.5
+            let total = max(0, bounds.width - dividerThickness)
+            let w0 = max(100, min(total - 100, round(total * ratio)))
+            let w1 = max(0, total - w0)
+            subviews[0].frame = NSRect(x: 0, y: 0, width: w0, height: bounds.height)
+            subviews[1].frame = NSRect(x: w0 + dividerThickness, y: 0, width: w1, height: bounds.height)
             return
         }
         super.adjustSubviews()
@@ -889,6 +915,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         splitView.addArrangedSubview(rightCol)
         pdfCanvasContainer.addSubview(splitView)
 
+        splitView.splitRatioProvider = { [weak self] in
+            self?.columnSplitRatio ?? 0.5
+        }
+        splitView.onSplitRatioChanged = { [weak self] newRatio in
+            self?.columnSplitRatio = newRatio
+        }
         splitView.onDividerDoubleClicked = { [weak self] in
             guard let self = self else { return }
             self.columnSplitRatio = 0.5
@@ -4221,10 +4253,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
         splitView.adjustSubviews()
         if segment == 0 {
+            leftCol.pdfView.autoScales = true
             leftCol.pdfView.layoutDocumentView()
         } else if segment == 1 {
+            rightCol.pdfView.autoScales = true
             rightCol.pdfView.layoutDocumentView()
         } else {
+            leftCol.pdfView.autoScales = true
+            rightCol.pdfView.autoScales = true
             leftCol.pdfView.layoutDocumentView()
             rightCol.pdfView.layoutDocumentView()
         }
