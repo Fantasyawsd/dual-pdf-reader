@@ -1,47 +1,5 @@
 import PDFKit
 
-/// 采用 CoreGraphics 正片叠底 (Multiply) 模式绘制的高亮标注。
-/// 彻底解决普通 Alpha 混合模式下黑色文字发灰发暗、对比度受损、遮挡文字的缺陷。
-/// 在正片叠底模式下：黑色文字 (0.0) 乘以任何高亮色结果恒为 0.0（保持 100% 绝对纯黑锐利），
-/// 白色纸面 (1.0) 呈现饱和通透的荧光底色。
-final class MultiplyHighlightAnnotation: PDFAnnotation {
-    var hasCommentBadge: Bool = false
-    var badgeColor: NSColor = .systemYellow
-
-    override func draw(with box: PDFDisplayBox, in context: CGContext) {
-        context.saveGState()
-
-        // 1. 正片叠底模式绘制高亮色块
-        context.setBlendMode(.multiply)
-        context.setFillColor(color.cgColor)
-
-        let cornerRadius: CGFloat = min(2.0, bounds.height * 0.15)
-        let highlightPath = CGPath(roundedRect: bounds, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
-        context.addPath(highlightPath)
-        context.fillPath()
-
-        // 2. 若有随手笔记或外链，在末端绘制非侵入式微型便签角标，绝不横向划破文字
-        if hasCommentBadge {
-            context.setBlendMode(.normal)
-            let badgeSize: CGFloat = 8.0
-            let badgeRect = CGRect(
-                x: bounds.maxX - badgeSize * 0.7,
-                y: bounds.maxY - badgeSize * 0.7,
-                width: badgeSize,
-                height: badgeSize
-            )
-
-            context.setFillColor(NSColor.white.cgColor)
-            context.fillEllipse(in: badgeRect)
-
-            context.setFillColor(badgeColor.cgColor)
-            context.fillEllipse(in: badgeRect.insetBy(dx: 1.0, dy: 1.0))
-        }
-
-        context.restoreGState()
-    }
-}
-
 enum PDFSelectionAnnotationFactory {
     static func make(selection: PDFSelection, document: PDFDocument, side: PDFSide,
                      pdfDocumentId: String? = nil,
@@ -92,25 +50,49 @@ final class PDFAnnotationRenderer {
         }
         for (id, model) in models where state.models[id] != model {
             var rendered: [PDFAnnotation] = []
-            let hasNoteOrLink = !model.markdownNote.isEmpty || model.linkedURL != nil
             let allRegions = model.pageRegions
-            for (regionIdx, region) in allRegions.enumerated() {
+            for region in allRegions {
                 guard region.pageIndex >= 0, region.pageIndex < document.pageCount,
-                      let page = document.page(at: region.pageIndex) else { continue }
-                for (rectIdx, rect) in region.rects.enumerated() {
-                    let isLast = (regionIdx == allRegions.count - 1 && rectIdx == region.rects.count - 1)
-                    let highlight = MultiplyHighlightAnnotation(bounds: rect.cgRect, forType: .highlight, withProperties: nil)
-                    highlight.color = model.color.nsColor
-                    highlight.userName = "DualPDF_CustomAnnot"
-                    highlight.hasCommentBadge = isLast && hasNoteOrLink
-                    highlight.badgeColor = model.color.solidColor
+                      let page = document.page(at: region.pageIndex),
+                      !region.rects.isEmpty else { continue }
 
-                    var tooltip = model.markdownNote
-                    if let link = model.linkedURL { tooltip += (tooltip.isEmpty ? "" : "\n") + "🔗 \(model.linkedTitle ?? link)" }
-                    highlight.contents = tooltip
-                    page.addAnnotation(highlight)
-                    rendered.append(highlight)
+                // 计算该页所有选区行的高亮总包围盒（Union Bounds）
+                let allRects = region.rects.map(\.cgRect)
+                var unionBounds = allRects[0]
+                for r in allRects.dropFirst() {
+                    unionBounds = unionBounds.union(r)
                 }
+
+                // 核心：构建 PDF 标准四边形点集（quadrilateralPoints）
+                // 坐标以 unionBounds.origin 为基准（相对坐标），每个文本行对应 4 个点（Z字型顺序：左上、右上、左下、右下）
+                // 这样多行选区仅生成一个统一的 PDFAnnotation 对象，彻底杜绝“每行单独标注”与视觉破碎；
+                // 且带有 quadrilateralPoints 的 Highlight 会触发 PDFKit 原生正片叠底通道，黑色正文 100% 锐利保真！
+                var quadPoints: [NSValue] = []
+                for lineRect in allRects {
+                    let rx = lineRect.origin.x - unionBounds.origin.x
+                    let ry = lineRect.origin.y - unionBounds.origin.y
+                    let w = lineRect.width
+                    let h = lineRect.height
+
+                    quadPoints.append(NSValue(point: NSPoint(x: rx, y: ry + h)))
+                    quadPoints.append(NSValue(point: NSPoint(x: rx + w, y: ry + h)))
+                    quadPoints.append(NSValue(point: NSPoint(x: rx, y: ry)))
+                    quadPoints.append(NSValue(point: NSPoint(x: rx + w, y: ry)))
+                }
+
+                let highlight = PDFAnnotation(bounds: unionBounds, forType: .highlight, withProperties: nil)
+                highlight.quadrilateralPoints = quadPoints
+                highlight.color = model.color.nsColor
+                highlight.userName = "DualPDF_CustomAnnot"
+
+                var tooltip = model.markdownNote
+                if let link = model.linkedURL {
+                    tooltip += (tooltip.isEmpty ? "" : "\n") + "🔗 \(model.linkedTitle ?? link)"
+                }
+                highlight.contents = tooltip
+
+                page.addAnnotation(highlight)
+                rendered.append(highlight)
             }
             state.rendered[id] = rendered
         }
