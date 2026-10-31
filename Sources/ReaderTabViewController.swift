@@ -22,6 +22,55 @@ final class FlippedStackView: NSStackView {
     override var isFlipped: Bool { true }
 }
 
+final class ModernCardView: NSView {
+    override var isFlipped: Bool { true }
+    override var wantsUpdateLayer: Bool { true }
+
+    private var hostedView: NSView?
+    private let padding: NSEdgeInsets
+
+    var contentView: NSView? {
+        get { hostedView }
+        set {
+            hostedView?.removeFromSuperview()
+            hostedView = newValue
+            guard let view = newValue else { return }
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: topAnchor, constant: padding.top),
+                view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padding.left),
+                view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -padding.right),
+                view.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -padding.bottom)
+            ])
+        }
+    }
+
+    init(padding: NSEdgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)) {
+        self.padding = padding
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.borderWidth = 0.5
+        updateColors()
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func updateColors() {
+        layer?.backgroundColor = ZoteroTheme.cardBg.cgColor
+        layer?.borderColor = ZoteroTheme.cardBorder.cgColor
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        updateColors()
+    }
+}
+
 final class ZoteroRightDrawerView: NSView {
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
@@ -972,16 +1021,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     // MARK: - Sidebar Helper Components
-    private func makeSidebarCardView(padding: NSEdgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)) -> NSBox {
-        let box = NSBox()
-        box.boxType = .custom
-        box.borderWidth = 1.0
-        box.borderColor = ZoteroTheme.cardBorder
-        box.fillColor = ZoteroTheme.cardBg
-        box.cornerRadius = 7
-        box.contentViewMargins = NSSize(width: padding.left, height: padding.top)
-        box.translatesAutoresizingMaskIntoConstraints = false
-        return box
+    private func makeSidebarCardView(padding: NSEdgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)) -> ModernCardView {
+        return ModernCardView(padding: padding)
     }
 
     private func makeCompactActionButton(title: String, symbol: String? = nil, action: Selector, tint: NSColor = .controlAccentColor) -> NSButton {
@@ -1099,10 +1140,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         secHeader.addArrangedSubview(settingsBtn)
 
         sidebarTransModeSeg.segmentCount = 4
-        sidebarTransModeSeg.setLabel("学术精读", forSegment: 0)
-        sidebarTransModeSeg.setLabel("术语解析", forSegment: 1)
-        sidebarTransModeSeg.setLabel("要点提炼", forSegment: 2)
-        sidebarTransModeSeg.setLabel("英文润色", forSegment: 3)
+        sidebarTransModeSeg.setLabel("精读", forSegment: 0)
+        sidebarTransModeSeg.setLabel("解析", forSegment: 1)
+        sidebarTransModeSeg.setLabel("提炼", forSegment: 2)
+        sidebarTransModeSeg.setLabel("润色", forSegment: 3)
+        sidebarTransModeSeg.setToolTip("学术精读", forSegment: 0)
+        sidebarTransModeSeg.setToolTip("术语解析与推导", forSegment: 1)
+        sidebarTransModeSeg.setToolTip("要点提炼", forSegment: 2)
+        sidebarTransModeSeg.setToolTip("英文润色", forSegment: 3)
         sidebarTransModeSeg.selectedSegment = 0
         sidebarTransModeSeg.controlSize = .small
         sidebarTransModeSeg.segmentDistribution = .fillEqually
@@ -1231,7 +1276,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         sidebarTransResultWebView.setValue(false, forKey: "drawsBackground")
         sidebarTransResultWebView.translatesAutoresizingMaskIntoConstraints = false
-        sidebarTransResultWebView.heightAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
 
         resultCardStack.addArrangedSubview(resultHeaderRow)
         resultCardStack.addArrangedSubview(sidebarTransResultWebView)
@@ -1249,12 +1293,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             statusRow.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
             sourceCard.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
             resultCard.widthAnchor.constraint(equalTo: tabTranslationContainer.widthAnchor),
-            sourceCardStack.widthAnchor.constraint(equalTo: sourceCard.widthAnchor, constant: -20),
             sourceHeaderRow.widthAnchor.constraint(equalTo: sourceCardStack.widthAnchor),
             sourceScroll.widthAnchor.constraint(equalTo: sourceCardStack.widthAnchor),
-            resultCardStack.widthAnchor.constraint(equalTo: resultCard.widthAnchor, constant: -20),
             resultHeaderRow.widthAnchor.constraint(equalTo: resultCardStack.widthAnchor),
-            sidebarTransResultWebView.widthAnchor.constraint(equalTo: resultCardStack.widthAnchor)
+            sidebarTransResultWebView.widthAnchor.constraint(equalTo: resultCardStack.widthAnchor),
+            sidebarTransResultWebView.heightAnchor.constraint(greaterThanOrEqualToConstant: 200)
         ])
 
         refreshTranslationTabUI()
@@ -1411,15 +1454,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             tabTagsContainer.widthAnchor.constraint(equalTo: parentStack.widthAnchor, constant: -28),
             secHeader.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
             tagsCard.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
-            tagsCardStack.widthAnchor.constraint(equalTo: tagsCard.widthAnchor, constant: -20),
             tagsChipsStack.widthAnchor.constraint(equalTo: tagsCardStack.widthAnchor),
 
             addTagCard.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
-            addTagStack.widthAnchor.constraint(equalTo: addTagCard.widthAnchor, constant: -20),
             inputRow.widthAnchor.constraint(equalTo: addTagStack.widthAnchor),
 
             suggestCard.widthAnchor.constraint(equalTo: tabTagsContainer.widthAnchor),
-            suggestStack.widthAnchor.constraint(equalTo: suggestCard.widthAnchor, constant: -20),
             suggestedTagsStack.widthAnchor.constraint(equalTo: suggestStack.widthAnchor)
         ])
 
@@ -1772,7 +1812,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         origStack.addArrangedSubview(origBtnRow)
         attachmentsListStack.addArrangedSubview(origCard)
         origCard.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
-        origStack.widthAnchor.constraint(equalTo: origCard.widthAnchor, constant: -20).isActive = true
 
         // 2) 中文译版 PDF 卡片
         let transCard = makeSidebarCardView()
@@ -1839,7 +1878,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         transStack.addArrangedSubview(transBtnRow)
         attachmentsListStack.addArrangedSubview(transCard)
         transCard.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
-        transStack.widthAnchor.constraint(equalTo: transCard.widthAnchor, constant: -20).isActive = true
 
         // --- Section 2: 附加文件列表 (Local files) ---
         let localResources = p.resources.filter { $0.isLocalFile }
@@ -1930,7 +1968,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
                 attachmentsListStack.addArrangedSubview(card)
                 card.widthAnchor.constraint(equalTo: attachmentsListStack.widthAnchor).isActive = true
-                cStack.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -20).isActive = true
             }
         }
     }
@@ -2189,7 +2226,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         arxivStack.addArrangedSubview(arxivBtnRow)
         linksCardsStack.addArrangedSubview(arxivCard)
         arxivCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
-        arxivStack.widthAnchor.constraint(equalTo: arxivCard.widthAnchor, constant: -20).isActive = true
 
         // 2) 幻觉翻译卡片
         if !aid.isEmpty {
@@ -2243,7 +2279,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             hjfyStack.addArrangedSubview(hjfyBtnRow)
             linksCardsStack.addArrangedSubview(hjfyCard)
             hjfyCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
-            hjfyStack.widthAnchor.constraint(equalTo: hjfyCard.widthAnchor, constant: -20).isActive = true
 
             // 3) DOI 官方出版链接
             let doiCard = makeSidebarCardView()
@@ -2289,7 +2324,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
             linksCardsStack.addArrangedSubview(doiCard)
             doiCard.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
-            doiStack.widthAnchor.constraint(equalTo: doiCard.widthAnchor, constant: -20).isActive = true
         }
 
         // --- Section 2: 自定义外部链接 ---
@@ -2372,7 +2406,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
                 linksCardsStack.addArrangedSubview(card)
                 card.widthAnchor.constraint(equalTo: linksCardsStack.widthAnchor).isActive = true
-                cStack.widthAnchor.constraint(equalTo: card.widthAnchor, constant: -20).isActive = true
             }
         }
 
@@ -2414,7 +2447,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         removeId: String,
         removeAction: Selector
     ) -> NSView {
-        let card = makeSidebarCardView()
+        let card = makeSidebarCardView(padding: NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10))
         let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
         icon.contentTintColor = .controlAccentColor
         icon.symbolConfiguration = .init(pointSize: 13, weight: .medium)
@@ -2453,15 +2486,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
         card.contentView = row
-
-        NSLayoutConstraint.activate([
-            card.heightAnchor.constraint(equalToConstant: 46),
-            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
-            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
-            row.centerYAnchor.constraint(equalTo: card.centerYAnchor)
-        ])
+        card.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         return card
     }
 
