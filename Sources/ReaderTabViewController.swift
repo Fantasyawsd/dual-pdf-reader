@@ -22,6 +22,30 @@ final class FlippedStackView: NSStackView {
     override var isFlipped: Bool { true }
 }
 
+final class DualPDFSplitView: NSSplitView {
+    var onDividerDoubleClicked: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            let point = convert(event.locationInWindow, from: nil)
+            if subviews.count >= 2 {
+                let divX = subviews[0].frame.maxX
+                let dividerHitZone = NSRect(
+                    x: divX - 8,
+                    y: 0,
+                    width: max(dividerThickness, 6) + 16,
+                    height: bounds.height
+                )
+                if dividerHitZone.contains(point) {
+                    onDividerDoubleClicked?()
+                    return
+                }
+            }
+        }
+        super.mouseDown(with: event)
+    }
+}
+
 final class ModernCardView: NSView {
     override var isFlipped: Bool { true }
     override var wantsUpdateLayer: Bool { true }
@@ -257,14 +281,18 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     let leftCol = CleanPDFColumnView(side: .original)
     let rightCol = CleanPDFColumnView(side: .translated)
-    private let splitView = NSSplitView()
+    private let splitView = DualPDFSplitView()
+    private var columnSplitRatio: CGFloat = 0.5
 
     // 极简现代化顶栏控件
     private let topBar = NSVisualEffectView()
     private let leftSidebarToggleBtn = NSButton()
     private let modeSeg = NSSegmentedControl(labels: ["仅原文", "仅译文", "双栏对照"], trackingMode: .selectOne, target: nil, action: nil)
+    private let swapBtn = NSButton()
+    var isSwapButtonHidden: Bool { swapBtn.isHidden }
+    func setColumnSplitRatioForTesting(_ ratio: CGFloat) { columnSplitRatio = ratio }
+    private var dualColumnSeparator: NSView?
     let syncScrollBtn = NSButton()
-    private let syncZoomBtn = NSButton()
     private let resetAlignBtn = NSButton()
 
     private let prevPageBtn = NSButton()
@@ -355,7 +383,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // 同步滚动、对齐微调偏移与缩放状态
     private var isScrollSyncEnabled = true
-    private var isZoomSyncEnabled = true
     private var isSyncingScroll = false
     private var isSyncingZoom = false
     private var isLoadingDocuments = false
@@ -481,7 +508,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         modeSeg.translatesAutoresizingMaskIntoConstraints = false
         modeSeg.widthAnchor.constraint(equalToConstant: 226).isActive = true
 
-        let swapBtn = NSButton()
         swapBtn.bezelStyle = .texturedRounded
         swapBtn.controlSize = .small
         swapBtn.image = NSImage(systemSymbolName: "arrow.left.arrow.right", accessibilityDescription: "左右互换")?.withSymbolConfiguration(barSubIconConfig)
@@ -489,25 +515,18 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         swapBtn.target = self
         swapBtn.action = #selector(swapColumnsAction)
 
-        syncScrollBtn.bezelStyle = .texturedRounded
+        syncScrollBtn.bezelStyle = .inline
+        syncScrollBtn.isBordered = false
         syncScrollBtn.controlSize = .small
         syncScrollBtn.setButtonType(.pushOnPushOff)
         syncScrollBtn.state = .on
-        syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "同步滚动")?.withSymbolConfiguration(barSubIconConfig)
-        syncScrollBtn.title = " 同步"
         syncScrollBtn.imagePosition = .imageLeading
-        syncScrollBtn.toolTip = "开启/关闭双栏同步滚动 (⇧⌘S)\n小技巧：按住 ⌥ Option 键滚动任意一栏可微调双栏段落对齐差"
         syncScrollBtn.target = self
         syncScrollBtn.action = #selector(toggleSyncScrollAction)
-
-        syncZoomBtn.bezelStyle = .texturedRounded
-        syncZoomBtn.controlSize = .small
-        syncZoomBtn.setButtonType(.pushOnPushOff)
-        syncZoomBtn.state = .on
-        syncZoomBtn.image = NSImage(systemSymbolName: "plus.magnifyingglass", accessibilityDescription: "同步缩放")?.withSymbolConfiguration(barSubIconConfig)
-        syncZoomBtn.toolTip = "双栏同步缩放开关"
-        syncZoomBtn.target = self
-        syncZoomBtn.action = #selector(toggleSyncZoomAction)
+        syncScrollBtn.translatesAutoresizingMaskIntoConstraints = false
+        syncScrollBtn.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        syncScrollBtn.widthAnchor.constraint(greaterThanOrEqualToConstant: 58).isActive = true
+        updateSyncButtonStyle()
 
         resetAlignBtn.bezelStyle = .inline
         resetAlignBtn.controlSize = .small
@@ -620,14 +639,16 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let rightSpacer = NSView()
         rightSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
+        let dualSep = makeToolbarSeparator()
+        self.dualColumnSeparator = dualSep
+
         let barStack = NSStackView(views: [
             leftSidebarToggleBtn,
             makeToolbarSeparator(),
             modeSeg,
             swapBtn,
-            makeToolbarSeparator(),
+            dualSep,
             syncScrollBtn,
-            syncZoomBtn,
             resetAlignBtn,
             leftSpacer,
             prevPageBtn,
@@ -723,30 +744,30 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         splitView.isVertical = true
         splitView.dividerStyle = .thin
+        splitView.delegate = self
         splitView.translatesAutoresizingMaskIntoConstraints = false
         splitView.addArrangedSubview(leftCol)
         splitView.addArrangedSubview(rightCol)
         pdfCanvasContainer.addSubview(splitView)
 
-        let equalColWidths = leftCol.widthAnchor.constraint(equalTo: rightCol.widthAnchor)
-        equalColWidths.priority = .defaultLow
+        splitView.onDividerDoubleClicked = { [weak self] in
+            guard let self = self else { return }
+            self.columnSplitRatio = 0.5
+            self.applyColumnSplitRatio()
+        }
 
         NSLayoutConstraint.activate([
             splitView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
             splitView.leadingAnchor.constraint(equalTo: pdfCanvasContainer.leadingAnchor),
             splitView.trailingAnchor.constraint(equalTo: pdfCanvasContainer.trailingAnchor),
-            splitView.bottomAnchor.constraint(equalTo: pdfCanvasContainer.bottomAnchor),
-
-            leftCol.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
-            rightCol.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
-            equalColWidths
+            splitView.bottomAnchor.constraint(equalTo: pdfCanvasContainer.bottomAnchor)
         ])
 
         setupLeftOverlaySidebar(in: pdfCanvasContainer)
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self, !self.isClosed else { return }
-            self.splitView.setPosition(self.splitView.bounds.width / 2.0, ofDividerAt: 0)
+            self.applyColumnSplitRatio()
         }
     }
 
@@ -3023,7 +3044,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     @objc private func pdfScaleChanged(_ note: Notification) {
-        guard isZoomSyncEnabled, !isSyncingZoom,
+        guard isScrollSyncEnabled, !isSyncingZoom,
               let srcPDFView = note.object as? PDFView else { return }
         let dstPDFView = (srcPDFView === leftCol.pdfView) ? rightCol.pdfView : leftCol.pdfView
         guard abs(dstPDFView.scaleFactor - srcPDFView.scaleFactor) > 0.002 else { return }
@@ -3181,7 +3202,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             let leftW = leftCol.frame.width
             let rightW = rightCol.frame.width
             if leftW < 50 || rightW < 50 {
-                splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
+                applyColumnSplitRatio()
             }
         }
         if leftCol.pdfView.autoScales {
@@ -3966,18 +3987,41 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         applyDisplayMode(modeSeg.selectedSegment)
     }
 
+    func applyColumnSplitRatio() {
+        guard (modeSeg.selectedSegment == 2 || modeSeg.selectedSegment == 3),
+              !leftCol.isHidden, !rightCol.isHidden,
+              splitView.bounds.width > 200 else { return }
+        let total = splitView.bounds.width - splitView.dividerThickness
+        guard total > 100 else { return }
+        let targetPos = round(total * columnSplitRatio)
+        splitView.setPosition(targetPos, ofDividerAt: 0)
+    }
+
     private func applyDisplayMode(_ segment: Int) {
         switch segment {
         case 0:
             leftCol.isHidden = false
             rightCol.isHidden = true
+            swapBtn.isHidden = true
+            dualColumnSeparator?.isHidden = true
+            syncScrollBtn.isHidden = true
+            resetAlignBtn.isHidden = true
         case 1:
             leftCol.isHidden = true
             rightCol.isHidden = false
+            swapBtn.isHidden = true
+            dualColumnSeparator?.isHidden = true
+            syncScrollBtn.isHidden = true
+            resetAlignBtn.isHidden = true
         default:
             leftCol.isHidden = false
             rightCol.isHidden = false
-            splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
+            swapBtn.isHidden = false
+            swapBtn.isEnabled = true
+            dualColumnSeparator?.isHidden = false
+            syncScrollBtn.isHidden = false
+            resetAlignBtn.isHidden = abs(pageRatioOffset) < 0.005
+            applyColumnSplitRatio()
         }
         splitView.adjustSubviews()
         updatePageIndicatorAndSaveProgress()
@@ -3987,6 +4031,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     @objc func swapColumnsAction() {
+        guard modeSeg.selectedSegment == 2 else { return }
         isSwapped.toggle()
         splitView.removeArrangedSubview(leftCol)
         splitView.removeArrangedSubview(rightCol)
@@ -3998,15 +4043,46 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             splitView.addArrangedSubview(rightCol)
         }
         updateBannerPositions()
-        splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
+        applyColumnSplitRatio()
+    }
+
+    func updateSyncButtonStyle() {
+        let isSync = (syncScrollBtn.state == .on)
+        syncScrollBtn.wantsLayer = true
+        syncScrollBtn.layer?.cornerRadius = 6
+        syncScrollBtn.layer?.borderWidth = 0.5
+        if isSync {
+            syncScrollBtn.contentTintColor = .controlAccentColor
+            syncScrollBtn.layer?.backgroundColor = ZoteroTheme.activeRailItemBg.cgColor
+            syncScrollBtn.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.35).cgColor
+            syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "双栏同步中")?
+                .withSymbolConfiguration(.init(pointSize: 11.5, weight: .semibold))
+            syncScrollBtn.title = " 同步"
+            syncScrollBtn.toolTip = "双栏同步滚动已开启 (点击关闭)\n小技巧：按住 ⌥ Option 键滚动任意一栏可微调双栏段落对齐差"
+        } else {
+            syncScrollBtn.contentTintColor = .secondaryLabelColor
+            syncScrollBtn.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.08).cgColor
+            syncScrollBtn.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
+            syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "独立滚动")?
+                .withSymbolConfiguration(.init(pointSize: 11.5, weight: .regular))
+            syncScrollBtn.title = " 独立"
+            syncScrollBtn.toolTip = "双栏独立滚动 (同步已关闭，点击开启同步)"
+        }
     }
 
     @objc func toggleSyncScrollAction() {
         isScrollSyncEnabled = (syncScrollBtn.state == .on)
+        updateSyncButtonStyle()
         if isScrollSyncEnabled {
             let active = primaryActiveColumn()
             let opp = (active === leftCol) ? rightCol : leftCol
             syncScroll(from: active, to: opp)
+            if active.pdfView.document != nil, opp.pdfView.document != nil {
+                opp.pdfView.autoScales = active.pdfView.autoScales
+                if !active.pdfView.autoScales {
+                    opp.pdfView.scaleFactor = active.pdfView.scaleFactor
+                }
+            }
         }
     }
 
@@ -4020,10 +4096,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let active = primaryActiveColumn()
         let opp = (active === leftCol) ? rightCol : leftCol
         syncScroll(from: active, to: opp)
-    }
-
-    @objc private func toggleSyncZoomAction() {
-        isZoomSyncEnabled = (syncZoomBtn.state == .on)
     }
 
     @objc func prevPageAction() {
@@ -4130,11 +4202,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         pdfCanvasContainer.layoutSubtreeIfNeeded()
         if (modeSeg.selectedSegment == 2 || modeSeg.selectedSegment == 3) && !leftCol.isHidden && !rightCol.isHidden {
             splitView.adjustSubviews()
-            splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
+            applyColumnSplitRatio()
         }
         DispatchQueue.main.async { [weak self] in
             guard let self = self, !self.isClosed else { return }
-            self.splitView.setPosition(self.splitView.bounds.width / 2.0, ofDividerAt: 0)
+            self.applyColumnSplitRatio()
             self.leftCol.pdfView.autoScales = true
             self.rightCol.pdfView.autoScales = true
         }
@@ -4512,14 +4584,25 @@ extension ReaderTabViewController: NSTableViewDataSource, NSTableViewDelegate {
     }
 }
 
-// MARK: - NSSplitViewDelegate (Keep Master / Child Split In Perfect 50/50 Balance)
+// MARK: - NSSplitViewDelegate (Keep Master / Child Split In Proportional Balance & Allow Free Dragging)
 extension ReaderTabViewController: NSSplitViewDelegate {
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard let sv = notification.object as? NSSplitView else { return }
-        if sv === masterSplitView || sv === splitView {
+        if sv === splitView {
+            if !leftCol.isHidden && !rightCol.isHidden && splitView.bounds.width > 200 {
+                let total = splitView.bounds.width - splitView.dividerThickness
+                if total > 100 {
+                    let firstWidth = splitView.subviews.first?.bounds.width ?? (splitView.bounds.width / 2.0)
+                    let ratio = firstWidth / total
+                    if ratio >= 0.15 && ratio <= 0.85 {
+                        columnSplitRatio = ratio
+                    }
+                }
+            }
+        } else if sv === masterSplitView {
             if (modeSeg.selectedSegment == 2 || modeSeg.selectedSegment == 3) && !leftCol.isHidden && !rightCol.isHidden {
                 pdfCanvasContainer.layoutSubtreeIfNeeded()
-                splitView.setPosition(splitView.bounds.width / 2.0, ofDividerAt: 0)
+                applyColumnSplitRatio()
             }
         }
     }
@@ -4538,6 +4621,8 @@ extension ReaderTabViewController: NSSplitViewDelegate {
             } else {
                 return masterSplitView.bounds.width
             }
+        } else if splitView === self.splitView {
+            return 200
         }
         return proposedMinimumPosition
     }
@@ -4549,6 +4634,8 @@ extension ReaderTabViewController: NSSplitViewDelegate {
             } else {
                 return masterSplitView.bounds.width
             }
+        } else if splitView === self.splitView {
+            return max(200, splitView.bounds.width - 200 - splitView.dividerThickness)
         }
         return proposedMaximumPosition
     }

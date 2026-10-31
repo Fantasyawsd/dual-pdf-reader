@@ -667,6 +667,38 @@ let dualLeftAfter = testReader.leftCol.frame.width
 let dualRightAfter = testReader.rightCol.frame.width
 check(abs(dualLeftAfter - dualRightAfter) <= 2.0 && abs(dualLeftAfter - dualLeftBefore) <= 2.0, "Dual PDF columns restore to full width 50/50 when right drawer is closed")
 
+// Custom ratio preservation on divider drag
+testReader.setColumnSplitRatioForTesting(0.65)
+testReader.applyColumnSplitRatio()
+testReader.view.layoutSubtreeIfNeeded()
+let ratioBeforeDrawer = testReader.leftCol.frame.width / (testReader.leftCol.frame.width + testReader.rightCol.frame.width)
+check(abs(ratioBeforeDrawer - 0.65) < 0.05, "Dragging divider shifts columns to custom proportion")
+testReader.toggleRightDrawerAction()
+testReader.view.layoutSubtreeIfNeeded()
+let ratioWithDrawer = testReader.leftCol.frame.width / (testReader.leftCol.frame.width + testReader.rightCol.frame.width)
+check(abs(ratioWithDrawer - 0.65) < 0.05, "Drawer toggle preserves custom column ratio instead of snapping to 50/50")
+testReader.toggleRightDrawerAction()
+testReader.view.layoutSubtreeIfNeeded()
+testReader.setColumnSplitRatioForTesting(0.5)
+testReader.applyColumnSplitRatio()
+
+// Single-column mode hides dual-column exclusive controls
+testReader.setDisplayMode(0)
+check(testReader.leftCol.isHidden == false && testReader.rightCol.isHidden == true, "Mode 0 shows left column only")
+check(testReader.isSwapButtonHidden && testReader.syncScrollBtn.isHidden, "Single-column mode hides swap button and sync button")
+testReader.setDisplayMode(2)
+check(!testReader.isSwapButtonHidden && !testReader.syncScrollBtn.isHidden, "Dual-column mode restores swap button and sync button")
+
+// Sync button appearance toggle (lit vs unlit)
+testReader.syncScrollBtn.state = .on
+testReader.updateSyncButtonStyle()
+check(testReader.syncScrollBtn.title.contains("同步") && testReader.syncScrollBtn.contentTintColor == .controlAccentColor, "Sync button lit in active state")
+testReader.syncScrollBtn.state = .off
+testReader.updateSyncButtonStyle()
+check(testReader.syncScrollBtn.title.contains("独立") && testReader.syncScrollBtn.contentTintColor == .secondaryLabelColor, "Sync button unlit in inactive state")
+testReader.syncScrollBtn.state = .on
+testReader.updateSyncButtonStyle()
+
 // (F) Standalone window controller
 let standaloneCtrl = StandaloneReaderWindowController(paperId: createdItem.id, store: store)
 check(standaloneCtrl.window != nil && standaloneCtrl.window?.title == createdItem.title, "Standalone reader window initializes with paper title")
