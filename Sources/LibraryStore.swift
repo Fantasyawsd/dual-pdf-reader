@@ -208,7 +208,7 @@ final class LibraryStore {
         if old.originalFilename != paper.originalFilename || old.translatedFilename != paper.translatedFilename || old.additionalPDFs != paper.additionalPDFs { fields.insert(.pdf) }
         if old.annotations != paper.annotations || old.noteDocuments != paper.noteDocuments { fields.insert(.annotations) }
         if old.resources != paper.resources || old.relatedPapers != paper.relatedPapers { fields.insert(.resources) }
-        if old.lastReadPage != paper.lastReadPage || old.lastOpenedAt != paper.lastOpenedAt || old.readingPosition != paper.readingPosition { fields.insert(.reading) }
+        if old.lastReadPage != paper.lastReadPage || old.lastOpenedAt != paper.lastOpenedAt || old.readingPosition != paper.readingPosition || old.readerState != paper.readerState || old.syncOffsetDelta != paper.syncOffsetDelta { fields.insert(.reading) }
         return fields
     }
 

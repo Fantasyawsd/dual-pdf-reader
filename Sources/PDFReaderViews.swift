@@ -247,6 +247,7 @@ final class ModernSurfaceCardView: NSView {
 
 // MARK: - Custom PDFView with Selection Popover, Link Jump Interception & Drag-Drop
 final class InteractivePDFView: PDFView {
+    var onInteraction: (() -> Void)?
     var side: PDFSide = .original
     var activePDFDocumentId: String = PDFSide.original.rawValue
     var onTextSelectedForPopover: ((PDFSelection, NSRect) -> Void)?
@@ -281,6 +282,7 @@ final class InteractivePDFView: PDFView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        onInteraction?()
         let viewPoint = convert(event.locationInWindow, from: nil)
         if let page = page(for: viewPoint, nearest: false),
            let doc = document {

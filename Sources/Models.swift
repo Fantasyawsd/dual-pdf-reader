@@ -256,6 +256,7 @@ struct PaperItem: Codable, Identifiable, Equatable {
 
     // Optional for compatibility with existing meta.json files.
     var readingPosition: ReadingPosition? = nil
+    var readerState: ReaderState? = nil
     var additionalPDFs: [PaperPDFDocument]? = nil
     var noteDocuments: [PaperNoteDocument]? = nil
     var customSortIndex: Int? = nil
@@ -308,6 +309,25 @@ struct PaperItem: Codable, Identifiable, Equatable {
 struct ReadingPosition: Codable, Equatable {
     var side: PDFSide
     var continuousPage: Double
+    var pdfDocumentId: String? = nil
+}
+
+struct PDFColumnReadingState: Codable, Equatable {
+    var pdfDocumentId: String
+    var continuousPage: Double
+    var autoScales: Bool = true
+    var scaleFactor: Double = 1
+    var horizontalScrollFraction: Double? = nil
+}
+
+/// Optional on PaperItem so metadata written by previous versions still decodes.
+struct ReaderState: Codable, Equatable {
+    var leftColumn: PDFColumnReadingState
+    var rightColumn: PDFColumnReadingState
+    var syncEnabled: Bool
+    var displayMode: Int
+    var swapped: Bool
+    var splitRatio: Double
 }
 
 // MARK: - Navigation History Entry (for Reference Jump & Back)

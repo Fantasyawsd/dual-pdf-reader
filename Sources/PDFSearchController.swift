@@ -50,6 +50,7 @@ final class PDFSearchController {
 
     func search(_ query: String, columns: [CleanPDFColumnView], completion: @escaping ([Match]) -> Void) {
         cancel()
+        columns.forEach { $0.pdfView.highlightedSelections = nil }
         sessions = columns.compactMap { column in
             column.pdfView.document.map { Session(column: column, document: $0) }
         }
@@ -58,7 +59,8 @@ final class PDFSearchController {
             session.onFinish = { [weak self] in
                 guard let self = self, self.sessions.allSatisfy(\.isFinished) else { return }
                 let matches: [Match] = self.sessions.flatMap { session -> [Match] in
-                    guard let column = session.column else { return [] }
+                    guard let column = session.column, column.pdfView.document === session.document,
+                          !column.isHidden else { return [] }
                     column.pdfView.highlightedSelections = session.matches
                     return session.matches.map { (col: column, selection: $0) }
                 }

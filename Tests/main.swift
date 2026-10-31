@@ -160,10 +160,21 @@ let encoder = JSONEncoder()
 encoder.dateEncodingStrategy = .iso8601
 var legacy = try JSONSerialization.jsonObject(with: encoder.encode(fixture())) as! [String: Any]
 legacy.removeValue(forKey: "readingPosition")
+legacy.removeValue(forKey: "readerState")
 let decoder = JSONDecoder()
 decoder.dateDecodingStrategy = .iso8601
 let oldPaper = try decoder.decode(PaperItem.self, from: JSONSerialization.data(withJSONObject: legacy))
 check(oldPaper.readingPosition == nil, "Existing metadata decodes without new reading position")
+check(oldPaper.readerState == nil, "Existing metadata decodes without per-column reader state")
+let legacyPosition = Data("{\"side\":\"translated\",\"continuousPage\":3.25}".utf8)
+check(try decoder.decode(ReadingPosition.self, from: legacyPosition).pdfDocumentId == nil,
+      "Legacy reading position remains compatible without a PDF identifier")
+let savedReaderState = ReaderState(
+    leftColumn: PDFColumnReadingState(pdfDocumentId: "appendix", continuousPage: 3.4, autoScales: false, scaleFactor: 1.6),
+    rightColumn: PDFColumnReadingState(pdfDocumentId: "original", continuousPage: 1.5),
+    syncEnabled: false, displayMode: 1, swapped: true, splitRatio: 0.8)
+check(try decoder.decode(ReaderState.self, from: encoder.encode(savedReaderState)) == savedReaderState,
+      "Per-column documents, positions, zoom and layout state round-trip")
 
 let document = PDFDocument(url: original)!
 let firstPage = document.page(at: 0)!
@@ -205,6 +216,13 @@ searchResults = nil
 check(waitUntil { searchResults != nil }, "Replacement search completes after cancelling previous query")
 check(!staleSearchCompleted && searchResults?.count == 2, "Cancelled search cannot publish stale results")
 search.cancel()
+searchResults = nil
+search.search("alpha", columns: [column]) { searchResults = $0 }
+column.pdfView.document = PDFDocument(url: replacement)
+check(waitUntil { searchResults != nil }, "Search finishes after the column changes its document")
+check(searchResults?.isEmpty == true && (column.pdfView.highlightedSelections?.isEmpty ?? true),
+      "Search cannot publish selections belonging to a replaced document")
+column.pdfView.document = document
 
 let cache = PDFSummaryCache()
 var ready = false

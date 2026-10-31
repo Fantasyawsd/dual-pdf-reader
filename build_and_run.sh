@@ -28,6 +28,7 @@ if [[ "$MODE" == "--test" || "$MODE" == "--ui-test" ]]; then
     else
         swiftc "${TEST_SOURCES[@]}" Tests/LegacyUITests.swift Tests/UI/main.swift -target "$TARGET" "${FRAMEWORKS[@]}" -o "$BUILD_DIR/UITests"
         "$BUILD_DIR/UITests"
+        Tests/BugAudit/run.sh
     fi
     exit 0
 fi
