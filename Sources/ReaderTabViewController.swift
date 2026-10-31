@@ -120,12 +120,13 @@ final class ModernTagChipView: NSView {
         lbl.translatesAutoresizingMaskIntoConstraints = false
         self.label = lbl
 
-        let btn = NSButton()
-        btn.bezelStyle = .inline
-        btn.isBordered = false
+        let btn = ModernHoverButton()
         btn.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "删除标签")?
             .withSymbolConfiguration(.init(pointSize: 11.0, weight: .medium))
-        btn.contentTintColor = .secondaryLabelColor
+        btn.normalTintColor = .secondaryLabelColor
+        btn.hoverTintColor = .systemRed
+        btn.hoverBgColor = NSColor.systemRed.withAlphaComponent(0.15)
+        btn.cornerRadius = 6
         btn.identifier = NSUserInterfaceItemIdentifier(tag)
         btn.translatesAutoresizingMaskIntoConstraints = false
         self.delBtn = btn
@@ -215,7 +216,7 @@ final class TagFlowView: NSView {
     override func layout() {
         super.layout()
         let currentWidth = bounds.width
-        if currentWidth > 20 && abs(currentWidth - lastLayoutWidth) > 1.0 {
+        if currentWidth > 20 {
             recalculateLayout(forWidth: currentWidth)
         }
     }
@@ -223,9 +224,11 @@ final class TagFlowView: NSView {
     private func recalculateLayout(forWidth width: CGFloat) {
         lastLayoutWidth = width
         guard !items.isEmpty else {
-            calculatedHeight = 0
-            heightConstraint?.constant = 0
-            invalidateIntrinsicContentSize()
+            if calculatedHeight != 0 {
+                calculatedHeight = 0
+                heightConstraint?.constant = 0
+                invalidateIntrinsicContentSize()
+            }
             return
         }
 
@@ -234,8 +237,8 @@ final class TagFlowView: NSView {
         var rowHeight: CGFloat = 0
 
         for item in items {
-            let size = item.fittingSize
-            let itemWidth = min(width, ceil(size.width))
+            let size = item.intrinsicContentSize.width > 0 ? item.intrinsicContentSize : item.fittingSize
+            let itemWidth = min(width, max(20, ceil(size.width)))
             let itemHeight = max(22, ceil(size.height))
 
             if currentX + itemWidth > width && currentX > 0 {
@@ -249,9 +252,12 @@ final class TagFlowView: NSView {
             rowHeight = max(rowHeight, itemHeight)
         }
 
-        calculatedHeight = currentY + rowHeight
-        heightConstraint?.constant = calculatedHeight
-        invalidateIntrinsicContentSize()
+        let newHeight = currentY + rowHeight
+        if abs(calculatedHeight - newHeight) > 0.5 {
+            calculatedHeight = newHeight
+            heightConstraint?.constant = newHeight
+            invalidateIntrinsicContentSize()
+        }
     }
 }
 
@@ -286,29 +292,29 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // 极简现代化顶栏控件
     private let topBar = NSVisualEffectView()
-    private let outlineToggleBtn = NSButton()
+    private let outlineToggleBtn = ModernHoverButton()
     var leftSidebarToggleBtn: NSButton { outlineToggleBtn }
     private let modeSeg = NSSegmentedControl(labels: ["仅原文", "仅译文", "双栏对照"], trackingMode: .selectOne, target: nil, action: nil)
-    private let swapBtn = NSButton()
+    private let swapBtn = ModernHoverButton()
     var isSwapButtonHidden: Bool { swapBtn.isHidden }
     func setColumnSplitRatioForTesting(_ ratio: CGFloat) { columnSplitRatio = ratio }
     private var dualColumnSeparator: NSView?
-    let syncScrollBtn = NSButton()
-    private let resetAlignBtn = NSButton()
+    let syncScrollBtn = ModernHoverButton()
+    private let resetAlignBtn = ModernHoverButton()
 
-    private let prevPageBtn = NSButton()
-    private let pageJumpBtn = NSButton()
-    private let nextPageBtn = NSButton()
+    private let prevPageBtn = ModernHoverButton()
+    private let pageJumpBtn = ModernHoverButton()
+    private let nextPageBtn = ModernHoverButton()
 
     private let searchField = NSSearchField()
     private let searchMatchLabel = NSTextField(labelWithString: "")
     private let searchNavSeg = NSSegmentedControl()
-    private let drawerToggleBtn = NSButton()
+    private let drawerToggleBtn = ModernHoverButton()
 
     // 左侧浮动覆盖式边栏（大纲目录与页面预览，无碰撞直接覆盖）
     private let leftOverlaySidebar = NSVisualEffectView()
     private let leftOverlaySeg = NSSegmentedControl(labels: ["大纲", "缩略图"], trackingMode: .selectOne, target: nil, action: nil)
-    private let leftOverlayCloseBtn = NSButton()
+    private let leftOverlayCloseBtn = ModernHoverButton()
     private let thumbnailsContainer = NSView()
     private let pdfThumbnailView = PDFThumbnailView()
     private var isLeftOverlayOpen = false
@@ -333,7 +339,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let sidebarPaperTitleLabel = NSTextField(labelWithString: "")
 
     private let workbenchRailView = NSView()
-    private var workbenchRailButtons: [NSButton] = []
+    private var workbenchRailButtons: [ModernHoverButton] = []
 
     private let workbenchContentScrollView = NSScrollView()
     let tabInfoContainer = FlippedStackView()
@@ -344,7 +350,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     let tabLinksContainer = FlippedStackView()
 
     private let metadataFieldsStack = FlippedStackView()
-    private let searchToggleBtn = NSButton()
+    private let searchToggleBtn = ModernHoverButton()
     private let linksStackView = FlippedStackView()
 
     // 侧边栏划词翻译与学术解析 (Tab 2)
@@ -562,7 +568,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         nextPageBtn.target = self
         nextPageBtn.action = #selector(nextPageAction)
 
-        let zoomOutBtn = NSButton()
+        let zoomOutBtn = ModernHoverButton()
         zoomOutBtn.bezelStyle = .texturedRounded
         zoomOutBtn.controlSize = .small
         zoomOutBtn.image = NSImage(systemSymbolName: "minus", accessibilityDescription: "缩小")?.withSymbolConfiguration(barSubIconConfig)
@@ -570,7 +576,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         zoomOutBtn.target = self
         zoomOutBtn.action = #selector(zoomOutBothAction)
 
-        let zoomFitBtn = NSButton()
+        let zoomFitBtn = ModernHoverButton()
         zoomFitBtn.bezelStyle = .texturedRounded
         zoomFitBtn.controlSize = .small
         zoomFitBtn.title = "自适应"
@@ -578,7 +584,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         zoomFitBtn.target = self
         zoomFitBtn.action = #selector(zoomFitBothAction)
 
-        let zoomInBtn = NSButton()
+        let zoomInBtn = ModernHoverButton()
         zoomInBtn.bezelStyle = .texturedRounded
         zoomInBtn.controlSize = .small
         zoomInBtn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "放大")?.withSymbolConfiguration(barSubIconConfig)
@@ -995,12 +1001,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         ]
 
         for def in tabDefs {
-            let btn = NSButton()
-            btn.bezelStyle = .inline
-            btn.isBordered = false
+            let btn = ModernHoverButton()
             btn.image = NSImage(systemSymbolName: def.icon, accessibilityDescription: def.tooltip)?
                 .withSymbolConfiguration(.init(pointSize: 15.0, weight: .medium))
-            btn.contentTintColor = (def.tag == currentWorkbenchTab) ? .controlAccentColor : .secondaryLabelColor
+            btn.normalTintColor = .secondaryLabelColor
+            btn.hoverTintColor = .controlAccentColor
+            btn.activeTintColor = .controlAccentColor
+            btn.hoverBgColor = ZoteroTheme.activeRailItemBg.withAlphaComponent(0.08)
+            btn.activeBgColor = ZoteroTheme.activeRailItemBg
+            btn.cornerRadius = 6
             btn.toolTip = def.tooltip
             btn.tag = def.tag
             btn.target = self
@@ -1008,6 +1017,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             btn.translatesAutoresizingMaskIntoConstraints = false
             btn.widthAnchor.constraint(equalToConstant: 32).isActive = true
             btn.heightAnchor.constraint(equalToConstant: 32).isActive = true
+            btn.isSelectedTab = (def.tag == currentWorkbenchTab)
             railStack.addArrangedSubview(btn)
             workbenchRailButtons.append(btn)
         }
@@ -1021,11 +1031,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         sidebarNoteView.flushPendingSave()
         currentWorkbenchTab = index
         for btn in workbenchRailButtons {
-            let isActive = (btn.tag == index)
-            btn.contentTintColor = isActive ? .controlAccentColor : .secondaryLabelColor
-            btn.wantsLayer = true
-            btn.layer?.backgroundColor = isActive ? ZoteroTheme.activeRailItemBg.cgColor : NSColor.clear.cgColor
-            btn.layer?.cornerRadius = 6
+            btn.isSelectedTab = (btn.tag == index)
         }
 
         tabInfoContainer.isHidden = (index != 0)
@@ -1207,17 +1213,18 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         return ModernCardView(padding: padding)
     }
 
-    private func makeCompactActionButton(title: String, symbol: String? = nil, action: Selector, tint: NSColor = .controlAccentColor) -> NSButton {
-        let btn = NSButton()
-        btn.bezelStyle = .inline
-        btn.isBordered = false
+    private func makeCompactActionButton(title: String, symbol: String? = nil, action: Selector, tint: NSColor = .controlAccentColor) -> ModernHoverButton {
+        let btn = ModernHoverButton()
         btn.title = title
         if let symbol = symbol {
             btn.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
                 .withSymbolConfiguration(.init(pointSize: 11.0, weight: .medium))
             btn.imagePosition = .imageLeading
         }
-        btn.contentTintColor = tint
+        btn.normalTintColor = tint
+        btn.hoverTintColor = tint
+        btn.hoverBgColor = tint.withAlphaComponent(0.12)
+        btn.cornerRadius = 5
         btn.font = .systemFont(ofSize: 11.5, weight: .medium)
         btn.target = self
         btn.action = action
@@ -2249,12 +2256,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             suggestedTagsFlowView.setViews([emptyLbl])
         } else {
             let buttons = availableTags.prefix(12).map { tag -> NSButton in
-                let btn = NSButton(title: "＋ \(tag)", target: self, action: #selector(addSuggestedTagFromBtn(_:)))
-                btn.bezelStyle = .inline
-                btn.isBordered = false
-                btn.contentTintColor = .controlAccentColor
+                let btn = ModernHoverButton(title: "＋ \(tag)")
                 btn.font = .systemFont(ofSize: 11.5, weight: .medium)
+                btn.normalTintColor = .controlAccentColor
+                btn.hoverTintColor = .controlAccentColor
+                btn.hoverBgColor = NSColor.controlAccentColor.withAlphaComponent(0.12)
+                btn.cornerRadius = 4
                 btn.identifier = NSUserInterfaceItemIdentifier(tag)
+                btn.target = self
+                btn.action = #selector(addSuggestedTagFromBtn(_:))
                 return btn
             }
             suggestedTagsFlowView.setViews(buttons)
@@ -3318,29 +3328,40 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         container.addArrangedSubview(makeToolbarSeparator())
 
-        let quoteToNoteBtn = NSButton(title: "引用笔记", image: NSImage(systemSymbolName: "arrow.turn.down.right", accessibilityDescription: "引用笔记") ?? NSImage(), target: self, action: #selector(popoverQuoteToNoteClicked))
+        let quoteToNoteBtn = ModernHoverButton(title: "引用笔记", image: NSImage(systemSymbolName: "arrow.turn.down.right", accessibilityDescription: "引用笔记") ?? NSImage(), target: self, action: #selector(popoverQuoteToNoteClicked), cornerRadius: 5)
         quoteToNoteBtn.imagePosition = .imageLeading
         quoteToNoteBtn.bezelStyle = .texturedRounded
         quoteToNoteBtn.controlSize = .small
-        quoteToNoteBtn.contentTintColor = .controlAccentColor
+        quoteToNoteBtn.normalTintColor = .controlAccentColor
+        quoteToNoteBtn.hoverTintColor = .controlAccentColor
+        quoteToNoteBtn.hoverBgColor = NSColor.controlAccentColor.withAlphaComponent(0.12)
         container.addArrangedSubview(quoteToNoteBtn)
 
-        let translateBtn = NSButton(title: "翻译", image: NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: "翻译") ?? NSImage(), target: self, action: #selector(popoverLLMTranslateClicked))
+        let translateBtn = ModernHoverButton(title: "翻译", image: NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: "翻译") ?? NSImage(), target: self, action: #selector(popoverLLMTranslateClicked), cornerRadius: 5)
         translateBtn.imagePosition = .imageLeading
         translateBtn.bezelStyle = .texturedRounded
         translateBtn.controlSize = .small
+        translateBtn.normalTintColor = .labelColor
+        translateBtn.hoverTintColor = .controlAccentColor
+        translateBtn.hoverBgColor = NSColor.controlAccentColor.withAlphaComponent(0.10)
         container.addArrangedSubview(translateBtn)
 
-        let noteBtn = NSButton(title: "批注", image: NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: "批注") ?? NSImage(), target: self, action: #selector(popoverAddNoteClicked))
+        let noteBtn = ModernHoverButton(title: "批注", image: NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: "批注") ?? NSImage(), target: self, action: #selector(popoverAddNoteClicked), cornerRadius: 5)
         noteBtn.imagePosition = .imageLeading
         noteBtn.bezelStyle = .texturedRounded
         noteBtn.controlSize = .small
+        noteBtn.normalTintColor = .labelColor
+        noteBtn.hoverTintColor = .controlAccentColor
+        noteBtn.hoverBgColor = NSColor.controlAccentColor.withAlphaComponent(0.10)
         container.addArrangedSubview(noteBtn)
 
-        let copyBtn = NSButton(title: "复制", image: NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "复制") ?? NSImage(), target: self, action: #selector(popoverCopyClicked))
+        let copyBtn = ModernHoverButton(title: "复制", image: NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "复制") ?? NSImage(), target: self, action: #selector(popoverCopyClicked), cornerRadius: 5)
         copyBtn.imagePosition = .imageLeading
         copyBtn.bezelStyle = .texturedRounded
         copyBtn.controlSize = .small
+        copyBtn.normalTintColor = .labelColor
+        copyBtn.hoverTintColor = .controlAccentColor
+        copyBtn.hoverBgColor = NSColor.controlAccentColor.withAlphaComponent(0.10)
         container.addArrangedSubview(copyBtn)
 
         vc.view = container

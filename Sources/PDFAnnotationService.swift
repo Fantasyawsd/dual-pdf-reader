@@ -64,20 +64,25 @@ final class PDFAnnotationRenderer {
                 }
 
                 // 核心：构建 PDF 标准四边形点集（quadrilateralPoints）
-                // 坐标以 unionBounds.origin 为基准（相对坐标），每个文本行对应 4 个点（Z字型顺序：左上、右上、左下、右下）
-                // 这样多行选区仅生成一个统一的 PDFAnnotation 对象，彻底杜绝“每行单独标注”与视觉破碎；
-                // 且带有 quadrilateralPoints 的 Highlight 会触发 PDFKit 原生正片叠底通道，黑色正文 100% 锐利保真！
+                // Apple PDFKit 官方规范：quadrilateralPoints 必须使用页面坐标系（page-space coordinates）！
+                // 每个文本行对应 4 个点，严格按 Z 字型顺序排列：
+                // 1. 左上角: (minX, maxY)
+                // 2. 右上角: (maxX, maxY)
+                // 3. 左下角: (minX, minY)
+                // 4. 右下角: (maxX, minY)
+                // 多行选区生成一个统揽整段的单一 PDFAnnotation 对象，彻底消除“每行单独标注”；
+                // 并且具备 quadrilateralPoints 的 Highlight 会触发 PDFKit 原生正片叠底混色通道，黑色正文 100% 锐利高保真，绝不遮挡字迹！
                 var quadPoints: [NSValue] = []
                 for lineRect in allRects {
-                    let rx = lineRect.origin.x - unionBounds.origin.x
-                    let ry = lineRect.origin.y - unionBounds.origin.y
-                    let w = lineRect.width
-                    let h = lineRect.height
+                    let p1 = NSPoint(x: lineRect.minX, y: lineRect.maxY)
+                    let p2 = NSPoint(x: lineRect.maxX, y: lineRect.maxY)
+                    let p3 = NSPoint(x: lineRect.minX, y: lineRect.minY)
+                    let p4 = NSPoint(x: lineRect.maxX, y: lineRect.minY)
 
-                    quadPoints.append(NSValue(point: NSPoint(x: rx, y: ry + h)))
-                    quadPoints.append(NSValue(point: NSPoint(x: rx + w, y: ry + h)))
-                    quadPoints.append(NSValue(point: NSPoint(x: rx, y: ry)))
-                    quadPoints.append(NSValue(point: NSPoint(x: rx + w, y: ry)))
+                    quadPoints.append(NSValue(point: p1))
+                    quadPoints.append(NSValue(point: p2))
+                    quadPoints.append(NSValue(point: p3))
+                    quadPoints.append(NSValue(point: p4))
                 }
 
                 let highlight = PDFAnnotation(bounds: unionBounds, forType: .highlight, withProperties: nil)

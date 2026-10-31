@@ -3,6 +3,131 @@ import PDFKit
 import WebKit
 import UniformTypeIdentifiers
 
+// MARK: - Modern macOS Native Hover Button
+class ModernHoverButton: NSButton {
+    var hoverBgColor: NSColor = NSColor.textColor.withAlphaComponent(0.08)
+    var normalBgColor: NSColor = .clear
+    var activeBgColor: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.14)
+    var hoverTintColor: NSColor?
+    var normalTintColor: NSColor? = .secondaryLabelColor
+    var activeTintColor: NSColor = .controlAccentColor
+    var cornerRadius: CGFloat = 6.0
+    var isPill: Bool = false
+    var showsPointingHand: Bool = true
+    var isToggleButton: Bool = false
+
+    var isSelectedTab: Bool = false {
+        didSet { updateColors() }
+    }
+
+    override var state: NSControl.StateValue {
+        didSet { updateColors() }
+    }
+
+    private(set) var isHovered: Bool = false
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    convenience init(
+        title: String = "",
+        image: NSImage? = nil,
+        target: AnyObject? = nil,
+        action: Selector? = nil,
+        cornerRadius: CGFloat = 6.0,
+        isPill: Bool = false
+    ) {
+        self.init(frame: .zero)
+        self.title = title
+        self.image = image
+        self.target = target
+        self.action = action
+        self.cornerRadius = cornerRadius
+        self.isPill = isPill
+        setup()
+    }
+
+    private func setup() {
+        wantsLayer = true
+        isBordered = false
+        bezelStyle = .inline
+        layer?.cornerRadius = cornerRadius
+        layer?.masksToBounds = true
+        updateColors()
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        updateColors()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        guard isEnabled else { return }
+        isHovered = true
+        updateColors()
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        isHovered = false
+        updateColors()
+        needsDisplay = true
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if showsPointingHand && isEnabled {
+            addCursorRect(bounds, cursor: .pointingHand)
+        }
+    }
+
+    func setHoveredForTest(_ h: Bool) {
+        isHovered = h
+        updateColors()
+    }
+
+    func updateColors() {
+        guard wantsLayer else { return }
+        layer?.cornerRadius = isPill ? bounds.height / 2.0 : cornerRadius
+
+        let isActive = isSelectedTab || (isToggleButton && state == .on)
+        if isActive {
+            layer?.backgroundColor = activeBgColor.cgColor
+            contentTintColor = activeTintColor
+        } else if isHovered && isEnabled {
+            layer?.backgroundColor = hoverBgColor.cgColor
+            contentTintColor = hoverTintColor ?? (contentTintColor == .secondaryLabelColor ? .labelColor : contentTintColor)
+        } else {
+            layer?.backgroundColor = normalBgColor.cgColor
+            if let nTint = normalTintColor {
+                contentTintColor = nTint
+            }
+        }
+    }
+}
+
 // MARK: - Custom Native Circular Color Swatch Button (Replaces Emoji Circles)
 final class HighlightSwatchButton: NSButton {
     let highlightColor: HighlightColor
@@ -31,6 +156,11 @@ final class HighlightSwatchButton: NSButton {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 
     override func updateTrackingAreas() {
@@ -400,7 +530,7 @@ final class CleanPDFColumnView: NSView {
 
     // 浮动“返回”胶囊按钮（跳转时显示，左栏发起的在左侧，右栏发起的在右侧，仅直接显示“返回”）
     let backJumpBanner = NSVisualEffectView()
-    let backJumpButton = NSButton()
+    let backJumpButton = ModernHoverButton()
     var onBackJumpClicked: (() -> Void)?
     private var bannerHorizontalConstraint: NSLayoutConstraint?
 
