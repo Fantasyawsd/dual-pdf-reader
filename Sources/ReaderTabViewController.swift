@@ -25,7 +25,29 @@ final class FlippedStackView: NSStackView {
 final class DualPDFSplitView: NSSplitView {
     var onDividerDoubleClicked: (() -> Void)?
 
+    override var dividerThickness: CGFloat {
+        let visibleCount = subviews.filter { !$0.isHidden }.count
+        return visibleCount > 1 ? 1.0 : 0.0
+    }
+
+    override func adjustSubviews() {
+        let visibleSubviews = subviews.filter { !$0.isHidden }
+        if visibleSubviews.count == 1, let singleView = visibleSubviews.first {
+            singleView.frame = bounds
+            for v in subviews where v.isHidden {
+                v.frame = NSRect(x: bounds.width, y: 0, width: 0, height: bounds.height)
+            }
+            return
+        }
+        super.adjustSubviews()
+    }
+
     override func mouseDown(with event: NSEvent) {
+        let visibleCount = subviews.filter { !$0.isHidden }.count
+        guard visibleCount > 1 else {
+            super.mouseDown(with: event)
+            return
+        }
         if event.clickCount == 2 {
             let point = convert(event.locationInWindow, from: nil)
             if subviews.count >= 2 {
@@ -4198,6 +4220,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             applyColumnSplitRatio()
         }
         splitView.adjustSubviews()
+        if segment == 0 {
+            leftCol.pdfView.layoutDocumentView()
+        } else if segment == 1 {
+            rightCol.pdfView.layoutDocumentView()
+        } else {
+            leftCol.pdfView.layoutDocumentView()
+            rightCol.pdfView.layoutDocumentView()
+        }
         updatePageIndicatorAndSaveProgress()
         if !searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             performInPDFSearch()
@@ -4859,8 +4889,18 @@ extension ReaderTabViewController: NSSplitViewDelegate {
         }
     }
 
+    func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {
+        if splitView === self.splitView {
+            return leftCol.isHidden || rightCol.isHidden
+        }
+        return false
+    }
+
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
         if splitView === masterSplitView && subview === rightDrawer {
+            return true
+        }
+        if splitView === self.splitView {
             return true
         }
         return false
@@ -4874,6 +4914,11 @@ extension ReaderTabViewController: NSSplitViewDelegate {
                 return masterSplitView.bounds.width
             }
         } else if splitView === self.splitView {
+            if leftCol.isHidden {
+                return 0
+            } else if rightCol.isHidden {
+                return splitView.bounds.width
+            }
             return 200
         }
         return proposedMinimumPosition
@@ -4887,6 +4932,11 @@ extension ReaderTabViewController: NSSplitViewDelegate {
                 return masterSplitView.bounds.width
             }
         } else if splitView === self.splitView {
+            if leftCol.isHidden {
+                return 0
+            } else if rightCol.isHidden {
+                return splitView.bounds.width
+            }
             return max(200, splitView.bounds.width - 200 - splitView.dividerThickness)
         }
         return proposedMaximumPosition

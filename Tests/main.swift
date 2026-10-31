@@ -683,11 +683,20 @@ testReader.view.layoutSubtreeIfNeeded()
 testReader.setColumnSplitRatioForTesting(0.5)
 testReader.applyColumnSplitRatio()
 
-// Single-column mode hides dual-column exclusive controls
+// Single-column mode hides dual-column exclusive controls and expands to full canvas width
 testReader.setDisplayMode(0)
+testReader.view.layoutSubtreeIfNeeded()
 check(testReader.leftCol.isHidden == false && testReader.rightCol.isHidden == true, "Mode 0 shows left column only")
+check(testReader.leftCol.frame.width > 800, "Single-column mode 0 ('仅原文') expands left column to full canvas width")
 check(testReader.isSwapButtonHidden && testReader.syncScrollBtn.isHidden, "Single-column mode hides swap button and sync button")
+
+testReader.setDisplayMode(1)
+testReader.view.layoutSubtreeIfNeeded()
+check(testReader.leftCol.isHidden == true && testReader.rightCol.isHidden == false, "Mode 1 shows right column only")
+check(testReader.rightCol.frame.width > 800, "Single-column mode 1 ('仅译文') expands right column to full canvas width")
+
 testReader.setDisplayMode(2)
+testReader.view.layoutSubtreeIfNeeded()
 check(!testReader.isSwapButtonHidden && !testReader.syncScrollBtn.isHidden, "Dual-column mode restores swap button and sync button")
 
 // Sync button appearance toggle (lit vs unlit)
