@@ -309,6 +309,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let searchField = NSSearchField()
     private let searchMatchLabel = NSTextField(labelWithString: "")
     private let searchNavSeg = NSSegmentedControl()
+    private let searchCloseBtn = ModernHoverButton()
+    private let searchContainer = NSStackView()
     private let drawerToggleBtn = ModernHoverButton()
 
     // 左侧浮动覆盖式边栏（大纲目录与页面预览，无碰撞直接覆盖）
@@ -592,15 +594,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         zoomInBtn.target = self
         zoomInBtn.action = #selector(zoomInBothAction)
 
-        // --- Group C (Right): Zotero 7 原生排版 (页内搜索图标 / 侧边栏图标) ---
+        // --- Group C (Right): Zotero 7 原生排版 (页内搜索 / 侧边栏图标) ---
         searchField.placeholderString = "页内查找 (⌘F)…"
         searchField.controlSize = .small
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchFieldReturnPressed)
         searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.widthAnchor.constraint(equalToConstant: 140).isActive = true
-        searchField.isHidden = true
+        searchField.widthAnchor.constraint(equalToConstant: 145).isActive = true
 
         searchMatchLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         searchMatchLabel.textColor = .secondaryLabelColor
@@ -616,6 +617,32 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         searchNavSeg.target = self
         searchNavSeg.action = #selector(searchNavClicked)
         searchNavSeg.isHidden = true
+
+        searchCloseBtn.bezelStyle = .inline
+        searchCloseBtn.isBordered = false
+        searchCloseBtn.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "关闭搜索")?
+            .withSymbolConfiguration(.init(pointSize: 12.0, weight: .medium))
+        searchCloseBtn.normalTintColor = .secondaryLabelColor
+        searchCloseBtn.hoverTintColor = .labelColor
+        searchCloseBtn.hoverBgColor = NSColor.textColor.withAlphaComponent(0.08)
+        searchCloseBtn.cornerRadius = 4
+        searchCloseBtn.toolTip = "关闭搜索 (Esc)"
+        searchCloseBtn.target = self
+        searchCloseBtn.action = #selector(closeSearchAction)
+        searchCloseBtn.translatesAutoresizingMaskIntoConstraints = false
+        searchCloseBtn.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        searchCloseBtn.heightAnchor.constraint(equalToConstant: 20).isActive = true
+
+        searchContainer.subviews.forEach { $0.removeFromSuperview() }
+        searchContainer.orientation = .horizontal
+        searchContainer.spacing = 6
+        searchContainer.alignment = .centerY
+        searchContainer.translatesAutoresizingMaskIntoConstraints = false
+        searchContainer.isHidden = true
+        searchContainer.addArrangedSubview(searchField)
+        searchContainer.addArrangedSubview(searchMatchLabel)
+        searchContainer.addArrangedSubview(searchNavSeg)
+        searchContainer.addArrangedSubview(searchCloseBtn)
 
         searchToggleBtn.bezelStyle = .texturedRounded
         searchToggleBtn.controlSize = .small
@@ -641,43 +668,50 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         drawerToggleBtn.target = self
         drawerToggleBtn.action = #selector(toggleRightDrawerAction)
 
-        let leftSpacer = NSView()
-        leftSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let rightSpacer = NSView()
-        rightSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
         let dualSep = makeToolbarSeparator()
         self.dualColumnSeparator = dualSep
 
-        let barStack = NSStackView(views: [
+        // --- 3 个自平衡分区（左对齐组、绝对中心组、右对齐组） ---
+        let leftBarStack = NSStackView(views: [
             outlineToggleBtn,
             makeToolbarSeparator(),
             modeSeg,
             swapBtn,
             dualSep,
             syncScrollBtn,
-            resetAlignBtn,
-            leftSpacer,
+            resetAlignBtn
+        ])
+        leftBarStack.orientation = .horizontal
+        leftBarStack.spacing = 6
+        leftBarStack.alignment = .centerY
+        leftBarStack.translatesAutoresizingMaskIntoConstraints = false
+        topBar.addSubview(leftBarStack)
+
+        let centerBarStack = NSStackView(views: [
             prevPageBtn,
             pageJumpBtn,
             nextPageBtn,
             makeToolbarSeparator(),
             zoomOutBtn,
             zoomFitBtn,
-            zoomInBtn,
-            rightSpacer,
-            searchMatchLabel,
-            searchNavSeg,
-            searchField,
+            zoomInBtn
+        ])
+        centerBarStack.orientation = .horizontal
+        centerBarStack.spacing = 6
+        centerBarStack.alignment = .centerY
+        centerBarStack.translatesAutoresizingMaskIntoConstraints = false
+        topBar.addSubview(centerBarStack)
+
+        let rightBarStack = NSStackView(views: [
+            searchContainer,
             searchToggleBtn,
             drawerToggleBtn
         ])
-        barStack.orientation = .horizontal
-        barStack.spacing = 6
-        barStack.alignment = .centerY
-        barStack.edgeInsets = NSEdgeInsets(top: 4, left: 12, bottom: 4, right: 12)
-        barStack.translatesAutoresizingMaskIntoConstraints = false
-        topBar.addSubview(barStack)
+        rightBarStack.orientation = .horizontal
+        rightBarStack.spacing = 6
+        rightBarStack.alignment = .centerY
+        rightBarStack.translatesAutoresizingMaskIntoConstraints = false
+        topBar.addSubview(rightBarStack)
 
         let sep = NSBox()
         sep.boxType = .separator
@@ -686,24 +720,29 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         container.addSubview(topBar)
 
-        let equalSpacerConstraint = leftSpacer.widthAnchor.constraint(equalTo: rightSpacer.widthAnchor)
-        equalSpacerConstraint.priority = NSLayoutConstraint.Priority(240)
-
         NSLayoutConstraint.activate([
             topBar.topAnchor.constraint(equalTo: container.topAnchor),
             topBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             topBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             topBar.heightAnchor.constraint(equalToConstant: 42),
 
-            barStack.topAnchor.constraint(equalTo: topBar.topAnchor),
-            barStack.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
-            barStack.leadingAnchor.constraint(equalTo: topBar.leadingAnchor),
-            barStack.trailingAnchor.constraint(equalTo: topBar.trailingAnchor),
+            // 左侧组：贴紧左边界 12pt
+            leftBarStack.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 12),
+            leftBarStack.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            leftBarStack.trailingAnchor.constraint(lessThanOrEqualTo: centerBarStack.leadingAnchor, constant: -12),
+
+            // 中间组：绝对居中于窗口 / 顶栏（精准正对双栏分界线）
+            centerBarStack.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
+            centerBarStack.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+
+            // 右侧组：贴紧右边界 12pt，不挤压中间控制区
+            rightBarStack.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -12),
+            rightBarStack.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            rightBarStack.leadingAnchor.constraint(greaterThanOrEqualTo: centerBarStack.trailingAnchor, constant: 12),
 
             sep.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
             sep.leadingAnchor.constraint(equalTo: topBar.leadingAnchor),
-            sep.trailingAnchor.constraint(equalTo: topBar.trailingAnchor),
-            equalSpacerConstraint
+            sep.trailingAnchor.constraint(equalTo: topBar.trailingAnchor)
         ])
     }
 
@@ -894,19 +933,32 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     @objc private func toggleSearchFieldAction() {
-        let shouldShow = searchField.isHidden
-        searchField.isHidden = !shouldShow
-        searchNavSeg.isHidden = !shouldShow
-        searchMatchLabel.isHidden = !shouldShow || currentSearchMatches.isEmpty
-        searchToggleBtn.state = shouldShow ? .on : .off
-        if shouldShow {
-            searchField.becomeFirstResponder()
+        if searchContainer.isHidden {
+            openSearchAction()
         } else {
-            currentSearchMatches.removeAll()
-            leftCol.pdfView.clearSelection()
-            rightCol.pdfView.clearSelection()
-            searchField.stringValue = ""
+            closeSearchAction()
         }
+    }
+
+    private func openSearchAction() {
+        searchContainer.isHidden = false
+        searchToggleBtn.isHidden = true
+        searchToggleBtn.state = .on
+        view.window?.makeFirstResponder(searchField)
+    }
+
+    @objc private func closeSearchAction() {
+        searchContainer.isHidden = true
+        searchToggleBtn.isHidden = false
+        searchToggleBtn.state = .off
+        currentSearchMatches.removeAll()
+        leftCol.pdfView.clearSelection()
+        rightCol.pdfView.clearSelection()
+        searchField.stringValue = ""
+        searchNavSeg.isHidden = true
+        searchMatchLabel.isHidden = true
+        searchMatchLabel.stringValue = ""
+        view.window?.makeFirstResponder(leftCol.pdfView)
     }
 
     private func setupRightDrawerContents() {
@@ -4503,6 +4555,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     // MARK: - 10. In-PDF Search & Match Navigation
     func controlTextDidChange(_ obj: Notification) {
         performInPDFSearch()
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            closeSearchAction()
+            return true
+        }
+        return false
     }
 
     private func performInPDFSearch() {
