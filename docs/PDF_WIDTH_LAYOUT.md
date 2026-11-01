@@ -2,6 +2,8 @@
 
 日期：2026-11-01。任务分支：`codex/reader-fit-width-layout`。
 
+后续修正：两栏手动缩放已拆分为独立操作，滚动同步只同步阅读位置。下文的“按同一倍数同步缩放”为本轮历史行为，当前行为见 [INDEPENDENT_COLUMN_ZOOM.md](INDEPENDENT_COLUMN_ZOOM.md)。
+
 从本地 `main`（`7db9b4e`）创建独立 worktree，再纳入前一轮视口事务重构（本分支提交 `1ee6ce4`）。本轮落实用户试用后的要求：拖动中间分隔线时 PDF 实时缩放并保持居中；右侧栏打开时压缩整个 PDF 画布，两栏继续按原比例分配空间。
 
 ## 原因与改动

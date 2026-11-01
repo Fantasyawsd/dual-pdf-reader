@@ -117,15 +117,29 @@ func runReaderCoreTests(root: URL) throws {
             "Focus-only clicks never realign either PDF (sync=\(synchronized))")
 
         // The native menu and trackpad paths use the same transaction as buttons.
+        let otherScale = reader.rightCol.pdfView.scaleFactor
+        let otherFitsWidth = reader.rightCol.viewportLayout.fitsWidth
         reader.leftCol.pdfView.onZoomCommand?(false, 1.6)
-        check(abs(reader.leftCol.pdfView.scaleFactor - 1.6) < 0.001 && samePosition(reader.leftCol, left),
-            "Context-menu zoom preserves the reading anchor (sync=\(synchronized))")
+        check(abs(reader.leftCol.pdfView.scaleFactor - 1.6) < 0.001 && samePosition(reader.leftCol, left) &&
+              abs(reader.rightCol.pdfView.scaleFactor - otherScale) < 0.001 &&
+              reader.rightCol.viewportLayout.fitsWidth == otherFitsWidth && samePosition(reader.rightCol, right),
+            "Context-menu zoom preserves both anchors and the other column's zoom (sync=\(synchronized))")
         reader.leftCol.pdfView.onMagnificationWillChange?()
         reader.leftCol.pdfView.autoScales = false
         reader.leftCol.pdfView.scaleFactor = 1.85
         reader.leftCol.pdfView.onMagnificationDidChange?()
-        check(samePosition(reader.leftCol, left) && samePosition(reader.rightCol, right),
-            "Trackpad zoom preserves both reading anchors (sync=\(synchronized))")
+        settle()
+        check(abs(reader.leftCol.pdfView.scaleFactor - 1.85) < 0.001 &&
+              abs(reader.rightCol.pdfView.scaleFactor - otherScale) < 0.001 &&
+              reader.rightCol.viewportLayout.fitsWidth == otherFitsWidth &&
+              samePosition(reader.leftCol, left) && samePosition(reader.rightCol, right),
+            "Trackpad zoom preserves both anchors and the other column's zoom (sync=\(synchronized))")
+        reader.leftCol.pdfView.scaleFactor = 1.7
+        settle()
+        check(abs(reader.leftCol.pdfView.scaleFactor - 1.7) < 0.001 &&
+              abs(reader.rightCol.pdfView.scaleFactor - otherScale) < 0.001 &&
+              samePosition(reader.leftCol, left) && samePosition(reader.rightCol, right),
+            "Native PDFKit scale notifications remain local to their column (sync=\(synchronized))")
 
         // Layout cannot move an unsynchronized reference pane, even with sync on.
         sync(reader, true)

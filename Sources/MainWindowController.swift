@@ -420,9 +420,9 @@ final class MultiTabMainWindowController: NSWindowController {
     @objc func configureLLMTranslationShortcut() { LLMTranslationService.shared.presentSettingsModal(from: window) }
     @objc func readerSwapColumnsShortcut() { activeReaderVC?.swapColumnsAction() }
     @objc func readerResetAlignmentShortcut() { activeReaderVC?.resetSyncAlignmentAction() }
-    @objc func readerZoomInShortcut() { activeReaderVC?.zoomInBothAction() }
-    @objc func readerZoomOutShortcut() { activeReaderVC?.zoomOutBothAction() }
-    @objc func readerZoomFitShortcut() { activeReaderVC?.zoomFitBothAction() }
+    @objc func readerZoomInShortcut() { activeReaderVC?.zoomInActiveColumnAction() }
+    @objc func readerZoomOutShortcut() { activeReaderVC?.zoomOutActiveColumnAction() }
+    @objc func readerZoomFitShortcut() { activeReaderVC?.zoomFitActiveColumnAction() }
     @objc func readerToggleDrawerShortcut() { activeReaderVC?.toggleRightDrawerAction() }
 
     private func embedViewControllerView(_ subview: NSView) {
