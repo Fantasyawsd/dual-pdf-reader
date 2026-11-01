@@ -113,11 +113,60 @@ func runPDFWidthLayoutTests(root: URL) throws {
     reader.toggleSyncScrollAction()
     let leftFit = reader.leftCol.pdfView.scaleFactor
     let rightFit = reader.rightCol.pdfView.scaleFactor
+    let rightPagesBeforeZoom = pages(reader.rightCol)
     reader.leftZoomInAction()
     check(abs(reader.leftCol.pdfView.scaleFactor / leftFit - 1.15) < 0.001 &&
-          abs(reader.rightCol.pdfView.scaleFactor / rightFit - 1.15) < 0.001 &&
+          abs(reader.rightCol.pdfView.scaleFactor - rightFit) < 0.001 && fitted(reader.rightCol) &&
+          zip(rightPagesBeforeZoom, pages(reader.rightCol)).allSatisfy { abs($0.minY - $1.minY) < 0.01 } &&
           centered(reader.leftCol) && centered(reader.rightCol),
-        "Manual synchronized zoom uses each PDF's own fit scale and remains centered")
+        "Left zoom keeps the right PDF's scale, fit mode and position with scroll sync enabled")
+    reader.rightZoomOutAction()
+    check(abs(reader.rightCol.pdfView.scaleFactor * 1.15 - rightFit) < 0.001 &&
+          abs(reader.leftCol.pdfView.scaleFactor / leftFit - 1.15) < 0.001 &&
+          centered(reader.leftCol) && centered(reader.rightCol),
+        "Right zoom remains independent and both PDFs stay centered")
+    reader.leftZoomFitAction()
+    check(fitted(reader.leftCol) && !reader.rightCol.viewportLayout.fitsWidth &&
+          abs(reader.rightCol.pdfView.scaleFactor * 1.15 - rightFit) < 0.001,
+        "Left fit preserves the right PDF's manual zoom")
+
+    reader.syncScrollBtn.state = .off
+    reader.toggleSyncScrollAction()
+    reader.syncScrollBtn.state = .on
+    reader.toggleSyncScrollAction()
+    check(fitted(reader.leftCol) && !reader.rightCol.viewportLayout.fitsWidth &&
+          abs(reader.rightCol.pdfView.scaleFactor * 1.15 - rightFit) < 0.001,
+        "Enabling scroll sync preserves each column's zoom mode and scale")
+
+    for synchronized in [false, true] {
+        reader.syncScrollBtn.state = synchronized ? .on : .off
+        reader.toggleSyncScrollAction()
+        reader.leftZoomInAction()
+        let leftScale = reader.leftCol.pdfView.scaleFactor
+        let rightScale = reader.rightCol.pdfView.scaleFactor
+        reader.rightCol.pdfView.onInteraction?()
+        reader.zoomInActiveColumnAction()
+        check(abs(reader.rightCol.pdfView.scaleFactor / rightScale - 1.15) < 0.001 &&
+              abs(reader.leftCol.pdfView.scaleFactor - leftScale) < 0.001,
+            "Keyboard zoom targets the focused right column (sync=\(synchronized))")
+        reader.zoomOutActiveColumnAction()
+        check(abs(reader.rightCol.pdfView.scaleFactor - rightScale) < 0.001 &&
+              abs(reader.leftCol.pdfView.scaleFactor - leftScale) < 0.001,
+            "Keyboard zoom out leaves the other column unchanged (sync=\(synchronized))")
+        reader.zoomFitActiveColumnAction()
+        check(fitted(reader.rightCol) && !reader.leftCol.viewportLayout.fitsWidth &&
+              abs(reader.leftCol.pdfView.scaleFactor - leftScale) < 0.001,
+            "Keyboard fit targets only the focused column (sync=\(synchronized))")
+    }
+
+    reader.swapColumnsAction()
+    let swappedLeftScale = reader.rightCol.pdfView.scaleFactor
+    let swappedRightScale = reader.leftCol.pdfView.scaleFactor
+    reader.leftZoomInAction()
+    check(abs(reader.rightCol.pdfView.scaleFactor / swappedLeftScale - 1.15) < 0.001 &&
+          abs(reader.leftCol.pdfView.scaleFactor - swappedRightScale) < 0.001,
+        "After swapping columns, the left toolbar zoom targets only the visually left PDF")
+    reader.swapColumnsAction()
     reader.dualSplitView.setPosition(reader.dualSplitView.bounds.width * 0.7, ofDividerAt: 0)
     reader.rightCol.pdfView.onInteraction?()
     check(fitted(reader.leftCol) && fitted(reader.rightCol), "Divider resizing resumes width fit after manual zoom")

@@ -87,30 +87,31 @@ func readerFor(_ paper: PaperItem) -> ReaderTabViewController {
     return reader
 }
 
-// 缩放：通知同步与按钮的显式同步是否重复应用倍率。
+// 缩放独立于滚动同步，按钮和快捷键只影响目标栏。
 do {
     let reader = readerFor(newPaper("zoom"))
     defer { reader.prepareForClose() }
     setSync(reader, false)
     for col in [reader.leftCol, reader.rightCol] {
-        col.pdfView.autoScales = false
-        col.pdfView.scaleFactor = 1
+        col.pdfView.onZoomCommand?(false, 1)
     }
     setSync(reader, true)
     let leftBaseline = reader.leftCol.pdfView.scaleFactor
     let rightBaseline = reader.rightCol.pdfView.scaleFactor
     reader.leftZoomInAction()
-    check(abs(reader.leftCol.pdfView.scaleFactor / leftBaseline - 1.15) < 0.001 && abs(reader.rightCol.pdfView.scaleFactor / rightBaseline - 1.15) < 0.001,
-        "A01", "两栏各自倍率只乘一次1.15；实际 L=\(reader.leftCol.pdfView.scaleFactor), R=\(reader.rightCol.pdfView.scaleFactor)")
+    check(abs(reader.leftCol.pdfView.scaleFactor / leftBaseline - 1.15) < 0.001 && abs(reader.rightCol.pdfView.scaleFactor - rightBaseline) < 0.001,
+        "A01", "左栏倍率乘1.15，右栏保持原倍率；实际 L=\(reader.leftCol.pdfView.scaleFactor), R=\(reader.rightCol.pdfView.scaleFactor)")
     setSync(reader, false)
-    for col in [reader.leftCol, reader.rightCol] { col.pdfView.scaleFactor = 1 }
+    for col in [reader.leftCol, reader.rightCol] { col.pdfView.onZoomCommand?(false, 1) }
     setSync(reader, true)
     let keyboardLeftBaseline = reader.leftCol.pdfView.scaleFactor
     let keyboardRightBaseline = reader.rightCol.pdfView.scaleFactor
-    reader.zoomInBothAction()
-    check(abs(reader.leftCol.pdfView.scaleFactor / keyboardLeftBaseline - 1.15) < 0.001,
-        "A01-keyboard", "全局放大一次预期 1.15；实际 \(reader.leftCol.pdfView.scaleFactor)")
-    reader.zoomOutBothAction()
+    reader.leftCol.pdfView.onInteraction?()
+    reader.zoomInActiveColumnAction()
+    check(abs(reader.leftCol.pdfView.scaleFactor / keyboardLeftBaseline - 1.15) < 0.001 &&
+        abs(reader.rightCol.pdfView.scaleFactor - keyboardRightBaseline) < 0.001,
+        "A01-keyboard", "快捷键只放大当前左栏，右栏倍率不变")
+    reader.zoomOutActiveColumnAction()
     check(abs(reader.leftCol.pdfView.scaleFactor - keyboardLeftBaseline) < 0.001 && abs(reader.rightCol.pdfView.scaleFactor - keyboardRightBaseline) < 0.001,
         "A01-out", "放大后缩小恢复各栏原倍率；实际 L=\(reader.leftCol.pdfView.scaleFactor) R=\(reader.rightCol.pdfView.scaleFactor)")
 }
@@ -553,7 +554,8 @@ do {
             "L14-interaction-\(synchronized)", "真实拖拽、空白点击、侧栏及缩放后，L \(anchors[0])→\(position(reader.leftCol))，R \(anchors[1])→\(position(reader.rightCol))")
     }
     reader.resetSyncAlignmentAction()
-    reader.zoomFitBothAction()
+    reader.leftZoomFitAction()
+    reader.rightZoomFitAction()
     setSync(reader, true)
     go(reader, reader.rightCol, 14.3) // 原文只有12页；译文16页。
     let longDocumentAnchor = position(reader.rightCol)

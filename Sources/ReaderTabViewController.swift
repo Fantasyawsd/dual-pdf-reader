@@ -3412,12 +3412,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     private func adoptZoom(from source: CleanPDFColumnView) {
-        let fitted = source.viewportLayout.fittingScale(in: source.pdfView) ?? source.pdfView.scaleFactor
-        let multiplier = source.pdfView.scaleFactor / max(0.001, fitted)
-        for column in [leftCol, rightCol] where !column.isHidden && (column === source || isScrollSyncEnabled) {
-            viewportCoordinator.setZoom(in: column, autoScales: source.pdfView.autoScales,
-                scaleFactor: (column.viewportLayout.fittingScale(in: column.pdfView) ?? fitted) * multiplier)
-        }
+        viewportCoordinator.setZoom(in: source, autoScales: source.pdfView.autoScales,
+            scaleFactor: source.pdfView.scaleFactor)
     }
 
     @objc private func pdfPageChanged(_ note: Notification) {
@@ -4573,9 +4569,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         if isScrollSyncEnabled {
             let active = primaryActiveColumn()
             let opp = (active === leftCol) ? rightCol : leftCol
-            if !active.isHidden, !opp.isHidden, active.pdfView.document != nil, opp.pdfView.document != nil {
-                setZoom(active, autoScales: active.viewportLayout.fitsWidth, scaleFactor: active.pdfView.scaleFactor)
-            }
             syncScroll(from: active, to: opp)
         }
         persistReaderState(from: primaryActiveColumn())
@@ -4598,13 +4591,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     @objc func leftPromptPageJumpAction() { promptPageJump(for: toolbarLeftColumn) }
     @objc func leftZoomInAction() { zoomColumn(toolbarLeftColumn, factor: 1.15) }
     @objc func leftZoomOutAction() { zoomColumn(toolbarLeftColumn, factor: 1 / 1.15) }
-    @objc func leftZoomFitAction() { fitColumns(startingWith: toolbarLeftColumn) }
+    @objc func leftZoomFitAction() { fitColumn(toolbarLeftColumn) }
     @objc func rightPrevPageAction() { stepPage(in: toolbarRightColumn, delta: -1) }
     @objc func rightNextPageAction() { stepPage(in: toolbarRightColumn, delta: 1) }
     @objc func rightPromptPageJumpAction() { promptPageJump(for: toolbarRightColumn) }
     @objc func rightZoomInAction() { zoomColumn(toolbarRightColumn, factor: 1.15) }
     @objc func rightZoomOutAction() { zoomColumn(toolbarRightColumn, factor: 1 / 1.15) }
-    @objc func rightZoomFitAction() { fitColumns(startingWith: toolbarRightColumn) }
+    @objc func rightZoomFitAction() { fitColumn(toolbarRightColumn) }
 
     private func stepPage(in column: CleanPDFColumnView, delta: Int) {
         finishPendingLayout()
@@ -4624,17 +4617,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         finishPendingLayout()
         guard !isClosed, !column.isHidden, column.pdfView.document != nil else { return }
         beginLayoutChange()
-        let fitted = column.viewportLayout.fittingScale(in: column.pdfView) ?? column.pdfView.scaleFactor
-        let multiplier = scaleFactor.map { $0 / max(0.001, fitted) }
-        for col in [leftCol, rightCol] where !col.isHidden && (col === column || isScrollSyncEnabled) {
-            let scale = multiplier.map { (col.viewportLayout.fittingScale(in: col.pdfView) ?? fitted) * $0 }
-            viewportCoordinator.setZoom(in: col, autoScales: autoScales, scaleFactor: scale)
-        }
+        viewportCoordinator.setZoom(in: column, autoScales: autoScales, scaleFactor: scaleFactor)
         lastReadingColumn = column
         finishPendingLayout()
     }
 
-    private func fitColumns(startingWith column: CleanPDFColumnView) {
+    private func fitColumn(_ column: CleanPDFColumnView) {
         setZoom(column, autoScales: true)
     }
 
@@ -4692,24 +4680,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         goToColumnPageIndex(primaryActiveColumn(), pageIndex: pageIndex, recordHistory: recordHistory)
     }
 
-    @objc func zoomInBothAction() { zoomVisibleColumns(by: 1.15) }
-    @objc func zoomOutBothAction() { zoomVisibleColumns(by: 1 / 1.15) }
-
-    private func zoomVisibleColumns(by factor: CGFloat) {
-        if isScrollSyncEnabled { zoomColumn(primaryActiveColumn(), factor: factor) }
-        else {
-            for col in [leftCol, rightCol] where !col.isHidden { zoomColumn(col, factor: factor) }
-        }
-    }
-
-    @objc func zoomFitBothAction() {
-        finishPendingLayout()
-        beginLayoutChange()
-        for col in [leftCol, rightCol] where !col.isHidden {
-            if var state = viewportStates[col.side.rawValue] { state.autoScales = true; viewportStates[col.side.rawValue] = state }
-        }
-        finishPendingLayout()
-    }
+    @objc func zoomInActiveColumnAction() { zoomColumn(primaryActiveColumn(), factor: 1.15) }
+    @objc func zoomOutActiveColumnAction() { zoomColumn(primaryActiveColumn(), factor: 1 / 1.15) }
+    @objc func zoomFitActiveColumnAction() { fitColumn(primaryActiveColumn()) }
 
     @objc func toggleRightDrawerAction() {
         sidebarNoteView.flushPendingSave()

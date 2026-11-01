@@ -190,9 +190,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(resetAlignItem)
 
         viewMenu.addItem(NSMenuItem.separator())
-        viewMenu.addItem(withTitle: "放大页面", action: #selector(MultiTabMainWindowController.readerZoomInShortcut), keyEquivalent: "=")
-        viewMenu.addItem(withTitle: "缩小页面", action: #selector(MultiTabMainWindowController.readerZoomOutShortcut), keyEquivalent: "-")
-        viewMenu.addItem(withTitle: "自适应页面宽度", action: #selector(MultiTabMainWindowController.readerZoomFitShortcut), keyEquivalent: "0")
+        viewMenu.addItem(withTitle: "放大当前栏页面", action: #selector(MultiTabMainWindowController.readerZoomInShortcut), keyEquivalent: "=")
+        viewMenu.addItem(withTitle: "缩小当前栏页面", action: #selector(MultiTabMainWindowController.readerZoomOutShortcut), keyEquivalent: "-")
+        viewMenu.addItem(withTitle: "当前栏自适应宽度", action: #selector(MultiTabMainWindowController.readerZoomFitShortcut), keyEquivalent: "0")
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(withTitle: "展开/收起右侧目录与笔记抽屉", action: #selector(MultiTabMainWindowController.readerToggleDrawerShortcut), keyEquivalent: "i")
 
