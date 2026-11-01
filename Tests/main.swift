@@ -705,15 +705,17 @@ testReader.applyColumnSplitRatio()
 check(!testReader.canCollapseColumn(testReader.leftCol), "Left column in splitView cannot collapse on drag")
 check(!testReader.canCollapseColumn(testReader.rightCol), "Right column in splitView cannot collapse on drag")
 
-// Clamping to minimum size (cannot drag paper to disappear)
+// Relative limits keep both panes visible while preserving proportional compression.
 testReader.dualSplitView.setPosition(10, ofDividerAt: 0)
 testReader.view.layoutSubtreeIfNeeded()
-check(testReader.leftCol.frame.width >= 199, "Dragging divider too far left clamps left column to minimum size")
+check(abs(testReader.leftCol.frame.width / (testReader.dualSplitView.bounds.width - testReader.dualSplitView.dividerThickness) - 0.05) < 0.002,
+      "Dragging divider too far left clamps at five percent of the PDF canvas")
 check(testReader.rightCol.frame.width >= 199, "Dragging divider too far left keeps right column visible")
 
 testReader.dualSplitView.setPosition(testReader.dualSplitView.bounds.width - 10, ofDividerAt: 0)
 testReader.view.layoutSubtreeIfNeeded()
-check(testReader.rightCol.frame.width >= 199, "Dragging divider too far right clamps right column to minimum size")
+check(abs(testReader.rightCol.frame.width / (testReader.dualSplitView.bounds.width - testReader.dualSplitView.dividerThickness) - 0.05) < 0.002,
+      "Dragging divider too far right clamps at five percent of the PDF canvas")
 check(testReader.leftCol.frame.width >= 199, "Dragging divider too far right keeps left column visible")
 
 testReader.setColumnSplitRatioForTesting(0.5)
@@ -919,5 +921,6 @@ do {
 }
 
 try runReaderCoreTests(root: root)
+try runPDFWidthLayoutTests(root: root)
 print("\nRegression tests: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)

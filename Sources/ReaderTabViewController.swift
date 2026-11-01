@@ -3402,6 +3402,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         guard viewportCoordinator.acceptsEvents, !isClosed, !view.isHiddenOrHasHiddenAncestor,
               let pdfView = note.object as? PDFView,
               let source = [leftCol, rightCol].first(where: { $0.pdfView === pdfView }), !source.isHidden else { return }
+        if !pdfView.autoScales, let state = viewportStates[source.side.rawValue],
+           abs(state.scaleFactor - Double(pdfView.scaleFactor)) < 0.000_001 { return }
         // PDFKit may deliver scale notifications after its bounds have changed.
         // Keep the last stable reading anchor and adopt only the requested zoom.
         viewportCoordinator.beginLayout(capture: false)
@@ -3410,9 +3412,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     private func adoptZoom(from source: CleanPDFColumnView) {
+        let fitted = source.viewportLayout.fittingScale(in: source.pdfView) ?? source.pdfView.scaleFactor
+        let multiplier = source.pdfView.scaleFactor / max(0.001, fitted)
         for column in [leftCol, rightCol] where !column.isHidden && (column === source || isScrollSyncEnabled) {
             viewportCoordinator.setZoom(in: column, autoScales: source.pdfView.autoScales,
-                scaleFactor: source.pdfView.scaleFactor)
+                scaleFactor: (column.viewportLayout.fittingScale(in: column.pdfView) ?? fitted) * multiplier)
         }
     }
 
@@ -3695,7 +3699,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             ReaderTabViewController.stripLinkAnnotationBorders(in: doc)
             col.applyContentSource(.pdf(id: effectivePDFId), paper: paper, hasPDFDocument: true)
             col.pdfView.document = doc
-            col.pdfView.autoScales = viewportStates[col.side.rawValue]?.autoScales ?? true
+            col.pdfView.autoScales = false
         } else {
             col.pdfView.document = nil
             col.applyContentSource(.pdf(id: effectivePDFId), paper: paper, hasPDFDocument: false)
@@ -4570,7 +4574,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             let active = primaryActiveColumn()
             let opp = (active === leftCol) ? rightCol : leftCol
             if !active.isHidden, !opp.isHidden, active.pdfView.document != nil, opp.pdfView.document != nil {
-                setZoom(active, autoScales: active.pdfView.autoScales, scaleFactor: active.pdfView.scaleFactor)
+                setZoom(active, autoScales: active.viewportLayout.fitsWidth, scaleFactor: active.pdfView.scaleFactor)
             }
             syncScroll(from: active, to: opp)
         }
@@ -4612,7 +4616,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private func zoomColumn(_ column: CleanPDFColumnView, factor: CGFloat) {
         finishPendingLayout()
         guard !column.isHidden, column.pdfView.document != nil else { return }
-        let scale = max(0.25, min(column.pdfView.scaleFactor * factor, 5))
+        let scale = max(0.001, min(column.pdfView.scaleFactor * factor, 64))
         setZoom(column, autoScales: false, scaleFactor: scale)
     }
 
@@ -4620,8 +4624,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         finishPendingLayout()
         guard !isClosed, !column.isHidden, column.pdfView.document != nil else { return }
         beginLayoutChange()
+        let fitted = column.viewportLayout.fittingScale(in: column.pdfView) ?? column.pdfView.scaleFactor
+        let multiplier = scaleFactor.map { $0 / max(0.001, fitted) }
         for col in [leftCol, rightCol] where !col.isHidden && (col === column || isScrollSyncEnabled) {
-            viewportCoordinator.setZoom(in: col, autoScales: autoScales, scaleFactor: scaleFactor)
+            let scale = multiplier.map { (col.viewportLayout.fittingScale(in: col.pdfView) ?? fitted) * $0 }
+            viewportCoordinator.setZoom(in: col, autoScales: autoScales, scaleFactor: scale)
         }
         lastReadingColumn = column
         finishPendingLayout()
@@ -5139,6 +5146,11 @@ extension ReaderTabViewController: NSTableViewDataSource, NSTableViewDelegate {
 extension ReaderTabViewController: NSSplitViewDelegate {
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard let split = notification.object as? NSSplitView else { return }
+        if split === self.splitView, self.splitView.isTrackingDivider, !isRestoringLayout,
+           !leftCol.isHidden, !rightCol.isHidden {
+            let total = max(1, split.bounds.width - split.dividerThickness)
+            columnSplitRatio = min(0.95, max(0.05, (split.subviews.first?.frame.width ?? total / 2) / total))
+        }
         if split === masterSplitView {
             updateDrawerVisibility()
             if isDrawerOpen, !masterSplitView.isTrackingDivider, rightDrawer.frame.width < 280,
@@ -5181,7 +5193,7 @@ extension ReaderTabViewController: NSSplitViewDelegate {
                 return 0
             }
             let total = splitView.bounds.width - splitView.dividerThickness
-            return min(200, max(0, total / 2))
+            return max(0, total * 0.05)
         }
         return proposedMinimumPosition
     }
@@ -5199,8 +5211,7 @@ extension ReaderTabViewController: NSSplitViewDelegate {
                 return splitView.bounds.width
             }
             let total = splitView.bounds.width - splitView.dividerThickness
-            let effectiveMin = min(200, max(0, total / 2))
-            return max(effectiveMin, splitView.bounds.width - effectiveMin - splitView.dividerThickness)
+            return max(0, total * 0.95)
         }
         return proposedMaximumPosition
     }

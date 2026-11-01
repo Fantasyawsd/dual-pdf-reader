@@ -12,6 +12,7 @@ final class PDFViewportCoordinator {
     private var completion: DispatchWorkItem?
     private var observedBounds: [String: NSRect] = [:]
     private var restoredBounds: [String: NSRect] = [:]
+    private var layoutWidths: [String: CGFloat] = [:]
     private var history: [String: [String: PDFColumnReadingState]] = [:]
     private struct DocumentPair: Hashable {
         let left: String
@@ -61,8 +62,9 @@ final class PDFViewportCoordinator {
     }
 
     func capture(_ column: CleanPDFColumnView) {
-        guard isActive, !column.isHiddenOrHasHiddenAncestor,
-              var state = PDFScrollSynchronizer.capture(in: column) else { return }
+        guard isActive, !column.isHiddenOrHasHiddenAncestor else { return }
+        performUpdate { PDFViewportLayout.centerHorizontally(in: column) }
+        guard var state = PDFScrollSynchronizer.capture(in: column) else { return }
         let slot = column.side.rawValue
         let bounds = column.internalScrollView()?.contentView.bounds
         if let restored = restoredBounds[slot], let bounds = bounds, sameBounds(restored, bounds),
@@ -115,8 +117,9 @@ final class PDFViewportCoordinator {
     /// Returns true only for a changed scroll origin at a stable viewport size.
     /// Delayed bounds echoes from restoration are consumed without synchronizing.
     func receivedScroll(in column: CleanPDFColumnView) -> Bool {
-        guard acceptsEvents, !column.isHiddenOrHasHiddenAncestor,
-              let bounds = column.internalScrollView()?.contentView.bounds else { return false }
+        guard acceptsEvents, !column.isHiddenOrHasHiddenAncestor else { return false }
+        performUpdate { PDFViewportLayout.centerHorizontally(in: column) }
+        guard let bounds = column.internalScrollView()?.contentView.bounds else { return false }
         let old = observedBounds[column.side.rawValue]
         observedBounds[column.side.rawValue] = bounds
         if let old = old, abs(old.width - bounds.width) > 0.001 || abs(old.height - bounds.height) > 0.001 {
@@ -133,7 +136,7 @@ final class PDFViewportCoordinator {
         let slot = column.side.rawValue
         guard var state = states[slot], state.pdfDocumentId == column.activePDFDocumentId else { return }
         state.autoScales = autoScales
-        if let scale = scaleFactor, scale.isFinite { state.scaleFactor = Double(min(5, max(0.25, scale))) }
+        if let scale = scaleFactor, scale.isFinite { state.scaleFactor = Double(min(64, max(0.001, scale))) }
         states[slot] = state
     }
 
@@ -143,18 +146,34 @@ final class PDFViewportCoordinator {
         defer { phase = .layout }
         performUpdate {
             layoutViews?()
-            for column in columns where !column.isHidden && column.pdfView.bounds.width > 0 {
-                guard let state = states[column.side.rawValue], state.pdfDocumentId == column.activePDFDocumentId else { continue }
+            for column in columns {
+                let slot = column.side.rawValue
+                guard !column.isHidden, column.pdfView.bounds.width > 0 else {
+                    layoutWidths[slot] = nil
+                    continue
+                }
+                guard var state = states[slot], state.pdfDocumentId == column.activePDFDocumentId else { continue }
+                let width = column.pdfView.bounds.width
+                if layoutWidths[slot].map({ abs($0 - width) > 0.01 }) ?? true {
+                    state.autoScales = true
+                    state.horizontalScrollFraction = 0.5
+                    states[slot] = state
+                }
+                layoutWidths[slot] = width
                 if PDFScrollSynchronizer.restore(state, in: column) {
-                    restoredBounds[column.side.rawValue] = column.internalScrollView()?.contentView.bounds
+                    restoredBounds[slot] = column.internalScrollView()?.contentView.bounds
                 }
             }
         }
     }
 
     func scheduleCompletion() {
-        guard phase == .layout, isTrackingGeometry?() != true else { return }
+        guard phase == .layout else { return }
         invalidateCompletion()
+        if isTrackingGeometry?() == true {
+            restore()
+            return
+        }
         let ticket = revision
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.phase == .layout, self.revision == ticket else { return }
