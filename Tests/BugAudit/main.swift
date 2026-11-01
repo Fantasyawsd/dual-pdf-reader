@@ -40,6 +40,17 @@ func pageIndex(_ col: CleanPDFColumnView) -> Int {
 func position(_ col: CleanPDFColumnView) -> Double {
     PDFScrollSynchronizer.continuousPosition(in: col) ?? -100
 }
+func isWidthFitted(_ column: CleanPDFColumnView) -> Bool {
+    guard let document = column.pdfView.document, let clip = column.internalScrollView()?.contentView else { return false }
+    let viewport = clip.convert(clip.bounds, to: column.pdfView)
+    let rects = (0..<document.pageCount).compactMap { index -> NSRect? in
+        guard let page = document.page(at: index) else { return nil }
+        return column.pdfView.convert(page.bounds(for: column.pdfView.displayBox), from: page)
+    }
+    let expectedWidth = viewport.width - 2 * min(8, viewport.width * 0.1)
+    return column.viewportLayout.fitsWidth && abs((rects.map(\.width).max() ?? 0) - expectedWidth) < 1 &&
+        rects.allSatisfy { abs($0.midX - viewport.midX) < 0.75 }
+}
 func setSync(_ reader: ReaderTabViewController, _ enabled: Bool) {
     reader.syncScrollBtn.state = enabled ? .on : .off
     reader.toggleSyncScrollAction()
@@ -86,18 +97,22 @@ do {
         col.pdfView.scaleFactor = 1
     }
     setSync(reader, true)
+    let leftBaseline = reader.leftCol.pdfView.scaleFactor
+    let rightBaseline = reader.rightCol.pdfView.scaleFactor
     reader.leftZoomInAction()
-    check(abs(reader.leftCol.pdfView.scaleFactor - 1.15) < 0.001 && abs(reader.rightCol.pdfView.scaleFactor - 1.15) < 0.001,
-        "A01", "左栏放大一次预期 1.15；实际 L=\(reader.leftCol.pdfView.scaleFactor), R=\(reader.rightCol.pdfView.scaleFactor)")
+    check(abs(reader.leftCol.pdfView.scaleFactor / leftBaseline - 1.15) < 0.001 && abs(reader.rightCol.pdfView.scaleFactor / rightBaseline - 1.15) < 0.001,
+        "A01", "两栏各自倍率只乘一次1.15；实际 L=\(reader.leftCol.pdfView.scaleFactor), R=\(reader.rightCol.pdfView.scaleFactor)")
     setSync(reader, false)
     for col in [reader.leftCol, reader.rightCol] { col.pdfView.scaleFactor = 1 }
     setSync(reader, true)
+    let keyboardLeftBaseline = reader.leftCol.pdfView.scaleFactor
+    let keyboardRightBaseline = reader.rightCol.pdfView.scaleFactor
     reader.zoomInBothAction()
-    check(abs(reader.leftCol.pdfView.scaleFactor - 1.15) < 0.001,
+    check(abs(reader.leftCol.pdfView.scaleFactor / keyboardLeftBaseline - 1.15) < 0.001,
         "A01-keyboard", "全局放大一次预期 1.15；实际 \(reader.leftCol.pdfView.scaleFactor)")
     reader.zoomOutBothAction()
-    check(abs(reader.leftCol.pdfView.scaleFactor - 1) < 0.001 && abs(reader.rightCol.pdfView.scaleFactor - 1) < 0.001,
-        "A01-out", "放大后缩小应恢复100%；实际 L=\(reader.leftCol.pdfView.scaleFactor) R=\(reader.rightCol.pdfView.scaleFactor)")
+    check(abs(reader.leftCol.pdfView.scaleFactor - keyboardLeftBaseline) < 0.001 && abs(reader.rightCol.pdfView.scaleFactor - keyboardRightBaseline) < 0.001,
+        "A01-out", "放大后缩小恢复各栏原倍率；实际 L=\(reader.leftCol.pdfView.scaleFactor) R=\(reader.rightCol.pdfView.scaleFactor)")
 }
 
 // 校准后，下一页必须以被点击栏的页号为依据。
@@ -324,7 +339,6 @@ do {
     go(reader, reader.rightCol, 7.4)
     let originalPosition = position(reader.leftCol)
     let originalRightPosition = position(reader.rightCol)
-    let originalScale = reader.leftCol.pdfView.scaleFactor
     snapshot("manual-zoom", mode: 2)
     reader.setDisplayMode(0)
     snapshot("single-original", mode: 0)
@@ -336,8 +350,8 @@ do {
         "L01", "双→单→缩放→双，左栏页内位置前=\(originalPosition)，后=\(position(reader.leftCol))")
     check(abs(position(reader.rightCol) - originalRightPosition) < 0.03,
         "L06", "独立模式双→单→缩放→双，隐藏右栏页内位置前=\(originalRightPosition)，后=\(position(reader.rightCol))")
-    check(!reader.leftCol.pdfView.autoScales && abs(reader.leftCol.pdfView.scaleFactor - originalScale * 1.15) < 0.01,
-        "L02", "手动缩放经过单双栏切换，原倍率=\(originalScale)，现倍率=\(reader.leftCol.pdfView.scaleFactor)，auto=\(reader.leftCol.pdfView.autoScales)")
+    check(isWidthFitted(reader.leftCol) && isWidthFitted(reader.rightCol),
+        "L02", "单双栏切换后两栏按各自新宽度适配，并保持页面居中")
     // 非对称分栏和右侧栏开合、缩窗之间的组合。
     reader.setColumnSplitRatioForTesting(0.8)
     reader.applyColumnSplitRatio()
@@ -459,7 +473,7 @@ do {
     window.setContentSize(NSSize(width: 1440, height: 880))
     alignment("large-window")
 
-    // 用户手动放大后，侧栏开关不应自行切回自适应。
+    // 新交互要求：侧栏改变可用宽度后，恢复按栏宽适配和居中。
     setSync(reader, false)
     reader.setDisplayMode(2)
     layout()
@@ -469,8 +483,8 @@ do {
     reader.rightCol.pdfView.scaleFactor = 1.3
     reader.toggleRightDrawerAction()
     layout()
-    check(!reader.leftCol.pdfView.autoScales && abs(reader.leftCol.pdfView.scaleFactor - 1.6) < 0.001 && !reader.rightCol.pdfView.autoScales,
-        "L11", "手动倍率 L=1.6 R=1.3，开关右侧栏后 L=\(reader.leftCol.pdfView.scaleFactor) R=\(reader.rightCol.pdfView.scaleFactor)，auto=\(reader.leftCol.pdfView.autoScales)/\(reader.rightCol.pdfView.autoScales)")
+    check(isWidthFitted(reader.leftCol) && isWidthFitted(reader.rightCol),
+        "L11", "手动倍率 L=1.6 R=1.3，开关右侧栏后按新栏宽居中适配，L=\(reader.leftCol.pdfView.scaleFactor) R=\(reader.rightCol.pdfView.scaleFactor)")
 
     // 模拟 AppKit 的鼠标跟踪事件，覆盖 NSSplitView 的实际拖拽路径。
     func drainMouseTrackingEvents() {
@@ -637,13 +651,13 @@ do {
     let reopened = readerFor(store.paper(withId: paper.id)!)
     defer { reopened.prepareForClose() }
     check(reopened.leftCol.isHidden && reopened.rightCol.activePDFDocumentId == appendix.id &&
-        abs(reopened.rightCol.pdfView.scaleFactor - 1.4) < 0.001 && !reopened.rightCol.pdfView.autoScales &&
+        isWidthFitted(reopened.rightCol) &&
         abs(position(reopened.rightCol) - 5.4) < 0.03,
-        "R01-visible", "重开仅译文槽位恢复附录、140%手动缩放和阅读位置")
+        "R01-visible", "重开仅译文槽位恢复附录和阅读位置，并按当前宽度居中适配")
     reopened.setDisplayMode(2)
     settle()
-    check(abs(position(reopened.leftCol) - 2.4) < 0.03 && abs(reopened.leftCol.pdfView.scaleFactor - 1.8) < 0.001,
-        "R01-hidden", "重开后再显示双栏，原隐藏原文恢复独立位置与180%倍率")
+    check(abs(position(reopened.leftCol) - 2.4) < 0.03 && isWidthFitted(reopened.leftCol),
+        "R01-hidden", "重开后再显示双栏，原隐藏原文恢复独立位置并按新宽度适配")
 }
 
 // 缺少一侧 PDF、横向页与旋转页，覆盖相同面板操作的边界场景。

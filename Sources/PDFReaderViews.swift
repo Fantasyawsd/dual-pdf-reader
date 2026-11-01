@@ -552,6 +552,7 @@ final class CleanPDFColumnView: NSView {
     }
 
     let pdfView = InteractivePDFView()
+    let viewportLayout = PDFViewportLayout()
     private let emptyPlaceholder = NSView()
     private let dropCard = ModernSurfaceCardView()
     private let cornerBadge = NSVisualEffectView()
@@ -590,7 +591,9 @@ final class CleanPDFColumnView: NSView {
     }
 
     private func setupUI() {
-        pdfView.autoScales = true
+        pdfView.autoScales = false
+        pdfView.minScaleFactor = 0.001
+        pdfView.maxScaleFactor = 64
         pdfView.displayMode = .singlePageContinuous
         pdfView.displaysPageBreaks = true
         // 极窄双栏间距设计：大幅缩减左右边距，消除双栏间过大空隙，使左右栏排版紧凑舒适

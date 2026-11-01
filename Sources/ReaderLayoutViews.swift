@@ -76,10 +76,7 @@ final class DualPDFSplitView: ReaderGeometrySplitView {
         }
         guard position.isFinite, bounds.width > dividerThickness, subviews.filter({ !$0.isHidden }).count == 2 else { return }
         let total = bounds.width - dividerThickness
-        let effectiveMinW = min(200, max(0, total / 2))
-        let minRatio = effectiveMinW / total
-        let maxRatio = (total - effectiveMinW) / total
-        let ratio = max(minRatio, min(maxRatio, position / total))
+        let ratio = max(0.05, min(0.95, position / total))
         onSplitRatioChanged?(ratio)
         adjustSubviews()
     }
@@ -108,10 +105,9 @@ final class DualPDFSplitView: ReaderGeometrySplitView {
         }
         if subviews.count == 2 && !subviews[0].isHidden && !subviews[1].isHidden {
             let requestedRatio = splitRatioProvider?() ?? 0.5
-            let ratio = requestedRatio.isFinite ? min(1, max(0, requestedRatio)) : 0.5
+            let ratio = requestedRatio.isFinite ? min(0.95, max(0.05, requestedRatio)) : 0.5
             let total = max(0, bounds.width - dividerThickness)
-            let effectiveMinW = min(200, max(0, total / 2))
-            let w0 = max(effectiveMinW, min(total - effectiveMinW, round(total * ratio)))
+            let w0 = min(total, max(0, round(total * ratio)))
             let w1 = max(0, total - w0)
             subviews[0].frame = NSRect(x: 0, y: 0, width: w0, height: bounds.height)
             subviews[1].frame = NSRect(x: w0 + dividerThickness, y: 0, width: w1, height: bounds.height)
