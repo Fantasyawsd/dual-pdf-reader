@@ -112,12 +112,13 @@ do {
     // 左栏最后产生真实滚动，故 primaryActiveColumn 为左栏。
     reader.leftCol.pdfView.go(to: reader.leftCol.pdfView.document!.page(at: 3)!)
     let before = pageIndex(reader.rightCol)
+    let visiblePageBefore = Int(floor(position(reader.rightCol)))
     let leftBefore = pageIndex(reader.leftCol)
     let offset = reader.pageRatioOffset
     reader.rightNextPageAction()
     settle()
-    // PDFKit 的 currentPage 通知可晚于 bounds 更新；同步准确性使用连续位置。
-    check(pageIndex(reader.rightCol) == before + 1 && abs(position(reader.rightCol) - position(reader.leftCol) - offset) < 0.03,
+    // PDFKit 的 currentPage 可滞后；导航和工具栏使用视口实际所在页。
+    check(Int(floor(position(reader.rightCol))) == visiblePageBefore + 1 && abs(position(reader.rightCol) - position(reader.leftCol) - offset) < 0.03,
         "A02", "offset=\(offset)，主栏=\(reader.primaryActiveColumn().side.rawValue)，右栏下一页前 L=\(leftBefore) R=\(before)，后 L=\(pageIndex(reader.leftCol)) R=\(pageIndex(reader.rightCol))")
 }
 
@@ -472,7 +473,11 @@ do {
         "L11", "手动倍率 L=1.6 R=1.3，开关右侧栏后 L=\(reader.leftCol.pdfView.scaleFactor) R=\(reader.rightCol.pdfView.scaleFactor)，auto=\(reader.leftCol.pdfView.autoScales)/\(reader.rightCol.pdfView.autoScales)")
 
     // 模拟 AppKit 的鼠标跟踪事件，覆盖 NSSplitView 的实际拖拽路径。
+    func drainMouseTrackingEvents() {
+        while NSApp.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: Date(), inMode: .eventTracking, dequeue: true) != nil {}
+    }
     func drag(_ split: NSSplitView, delta: CGFloat) {
+        drainMouseTrackingEvents()
         let start = split.convert(NSPoint(x: split.subviews[0].frame.maxX + split.dividerThickness / 2, y: split.bounds.midY), to: nil)
         let end = NSPoint(x: start.x + delta, y: start.y)
         let now = ProcessInfo.processInfo.systemUptime
@@ -485,6 +490,17 @@ do {
         split.mouseDown(with: event(.leftMouseDown, start, now))
         layout()
     }
+    func clickBlank(_ column: CleanPDFColumnView) {
+        let point = column.pdfView.convert(NSPoint(x: column.pdfView.bounds.maxX - 4, y: 4), to: nil)
+        let now = ProcessInfo.processInfo.systemUptime
+        let down = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: now,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 10, clickCount: 1, pressure: 1)!
+        let up = NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: now + 0.01,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 11, clickCount: 1, pressure: 0)!
+        NSApp.postEvent(up, atStart: false)
+        column.pdfView.mouseDown(with: down)
+        drainMouseTrackingEvents()
+    }
     reader.setColumnSplitRatioForTesting(0.5)
     reader.applyColumnSplitRatio()
     layout()
@@ -494,6 +510,45 @@ do {
     check(abs(dividerAfter - dividerBefore - 100) < 3,
         "L12", "鼠标实际拖动内分隔线100pt，前=\(dividerBefore)，后=\(dividerAfter)")
     snapshot("actual-divider-drag", mode: 2)
+
+    // 用户报告的路径：中间分隔线拖动后，空白点击、侧栏、缩放均不得移位。
+    for synchronized in [false, true] {
+        setSync(reader, false)
+        go(reader, reader.leftCol, 4.35)
+        go(reader, reader.rightCol, 7.65)
+        reader.recordOptionScrollCalibrationOffset()
+        setSync(reader, synchronized)
+        let anchors = [position(reader.leftCol), position(reader.rightCol)]
+        func anchorsUnchanged() -> Bool {
+            abs(position(reader.leftCol) - anchors[0]) < 0.03 && abs(position(reader.rightCol) - anchors[1]) < 0.03
+        }
+        drag(reader.dualSplitView, delta: synchronized ? -65 : 65)
+        var stable = anchorsUnchanged()
+        for column in [reader.leftCol, reader.rightCol] {
+            // The bottom-right margin contains no text or link in this fixture.
+            clickBlank(column)
+            stable = stable && anchorsUnchanged()
+        }
+        reader.toggleRightDrawerAction()
+        stable = stable && anchorsUnchanged()
+        reader.leftZoomInAction()
+        stable = stable && anchorsUnchanged()
+        reader.leftZoomOutAction()
+        layout()
+        check(stable && anchorsUnchanged(),
+            "L14-interaction-\(synchronized)", "真实拖拽、空白点击、侧栏及缩放后，L \(anchors[0])→\(position(reader.leftCol))，R \(anchors[1])→\(position(reader.rightCol))")
+    }
+    reader.resetSyncAlignmentAction()
+    reader.zoomFitBothAction()
+    setSync(reader, true)
+    go(reader, reader.rightCol, 14.3) // 原文只有12页；译文16页。
+    let longDocumentAnchor = position(reader.rightCol)
+    drag(reader.dualSplitView, delta: -40)
+    clickBlank(reader.leftCol)
+    reader.toggleRightDrawerAction()
+    layout()
+    check(abs(position(reader.rightCol) - longDocumentAnchor) < 0.03,
+        "L15-clamped-focus", "短栏到达页尾后，拖分隔线、点短栏空白、开侧栏：长栏 \(longDocumentAnchor)→\(position(reader.rightCol))")
     reader.setDisplayMode(0)
     snapshot("actual-divider-single", mode: 0)
     reader.leftZoomInAction()

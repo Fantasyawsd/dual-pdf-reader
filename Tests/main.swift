@@ -918,5 +918,6 @@ do {
     check(false, "P0-2 transient library tests threw \(error)")
 }
 
+try runReaderCoreTests(root: root)
 print("\nRegression tests: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)
