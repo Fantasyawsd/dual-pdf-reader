@@ -899,5 +899,6 @@ do {
     }
 }
 
+try runReaderCoreTests(root: root)
 print("\nRegression tests: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)

@@ -248,6 +248,10 @@ final class ModernSurfaceCardView: NSView {
 // MARK: - Custom PDFView with Selection Popover, Link Jump Interception & Drag-Drop
 final class InteractivePDFView: PDFView {
     var onInteraction: (() -> Void)?
+    var onMagnificationWillChange: (() -> Void)?
+    var onMagnificationDidChange: (() -> Void)?
+    var onPageStep: ((Int) -> Void)?
+    var onZoomCommand: ((Bool, CGFloat?) -> Void)?
     var side: PDFSide = .original
     var activePDFDocumentId: String = PDFSide.original.rawValue
     var onTextSelectedForPopover: ((PDFSelection, NSRect) -> Void)?
@@ -274,11 +278,24 @@ final class InteractivePDFView: PDFView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        onInteraction?()
         let isOptionHeld = event.modifierFlags.contains(.option)
         super.scrollWheel(with: event)
         if isOptionHeld {
             onOptionScrollPerformed?()
         }
+    }
+
+    override func magnify(with event: NSEvent) {
+        onInteraction?()
+        onMagnificationWillChange?()
+        super.magnify(with: event)
+        onMagnificationDidChange?()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        onInteraction?()
+        super.keyDown(with: event)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -372,6 +389,7 @@ final class InteractivePDFView: PDFView {
 
     // MARK: - Native macOS Context Menu
     override func menu(for event: NSEvent) -> NSMenu? {
+        onInteraction?()
         let menu = NSMenu(title: "PDF Context Menu")
 
         if let sel = currentSelection,
@@ -492,28 +510,28 @@ final class InteractivePDFView: PDFView {
     }
 
     @objc private func contextMenuPrevPageAction() {
-        goToPreviousPage(nil)
+        if let action = onPageStep { action(-1) } else { goToPreviousPage(nil) }
     }
 
     @objc private func contextMenuNextPageAction() {
-        goToNextPage(nil)
+        if let action = onPageStep { action(1) } else { goToNextPage(nil) }
     }
 
     @objc private func contextMenuFitPageAction() {
-        autoScales = true
+        if let action = onZoomCommand { action(true, nil) } else { autoScales = true }
     }
 
     @objc private func contextMenuActualSizeAction() {
-        autoScales = false
-        scaleFactor = 1.0
+        if let action = onZoomCommand { action(false, 1) }
+        else { autoScales = false; scaleFactor = 1 }
     }
 
     @objc private func contextMenuZoomInAction() {
-        zoomIn(nil)
+        if let action = onZoomCommand { action(false, scaleFactor * 1.15) } else { zoomIn(nil) }
     }
 
     @objc private func contextMenuZoomOutAction() {
-        zoomOut(nil)
+        if let action = onZoomCommand { action(false, scaleFactor / 1.15) } else { zoomOut(nil) }
     }
 
     @objc private func contextMenuSwapAction() {
@@ -858,6 +876,7 @@ final class CleanPDFColumnView: NSView {
             return nil
         }
         let found = findSV(in: pdfView)
+        found?.contentView.postsBoundsChangedNotifications = true
         cachedScrollView = found
         return found
     }

@@ -320,6 +320,12 @@ struct PDFColumnReadingState: Codable, Equatable {
     var horizontalScrollFraction: Double? = nil
 }
 
+struct PDFSyncAlignment: Codable, Equatable {
+    var leftPDFId: String
+    var rightPDFId: String
+    var pageOffset: Double
+}
+
 /// Optional on PaperItem so metadata written by previous versions still decodes.
 struct ReaderState: Codable, Equatable {
     var leftColumn: PDFColumnReadingState
@@ -328,6 +334,7 @@ struct ReaderState: Codable, Equatable {
     var displayMode: Int
     var swapped: Bool
     var splitRatio: Double
+    var alignments: [PDFSyncAlignment]? = nil
 }
 
 // MARK: - Navigation History Entry (for Reference Jump & Back)
