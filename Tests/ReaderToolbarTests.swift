@@ -60,6 +60,12 @@ func runReaderToolbarTests(root: URL) throws {
               toolbar.visibleToolTips.contains("页内搜索") &&
               toolbar.visibleToolTips.contains("随手笔记"),
               "\(column.side.rawValue) primary toolbar exposes the required controls")
+        let visibleToolbarButtons = descendants(toolbar).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        let visibleModeTabs = descendants(toolbar).compactMap { $0 as? ColumnModeTabView }
+        check(!visibleToolbarButtons.isEmpty &&
+              visibleToolbarButtons.allSatisfy { !($0.toolTip ?? "").isEmpty } &&
+              visibleModeTabs.allSatisfy { !($0.toolTip ?? "").isEmpty },
+              "every visible toolbar control exposes a hover tooltip")
         check(toolbar.secondaryHeightForTesting == 0 && !toolbar.hasSecondaryRow,
               "\(column.side.rawValue) 阅读 mode collapses the secondary toolbar to zero height")
 

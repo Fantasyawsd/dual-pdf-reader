@@ -124,6 +124,10 @@ final class ColumnModeTabView: NSView {
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
 
+        let tabToolTip = "切换到\(mode.title)模式"
+        toolTip = tabToolTip
+        label.toolTip = tabToolTip
+
         underline.wantsLayer = true
         underline.translatesAutoresizingMaskIntoConstraints = false
         addSubview(underline)
@@ -190,6 +194,7 @@ final class ColumnColorSwatchButton: NSButton {
     let swatchColor: NSColor
     var isSelectedSwatch = false { didSet { needsDisplay = true } }
     private var isHovered = false { didSet { needsDisplay = true } }
+    private var hoverTrackingArea: NSTrackingArea?
 
     init(color: NSColor) {
         self.swatchColor = color
@@ -208,8 +213,10 @@ final class ColumnColorSwatchButton: NSButton {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverTrackingArea = area
     }
 
     override func mouseEntered(with event: NSEvent) { isHovered = true }
@@ -300,6 +307,7 @@ final class ColumnPageCapsuleView: NSVisualEffectView, NSTextFieldDelegate {
         totalLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         totalLabel.textColor = .secondaryLabelColor
         totalLabel.alignment = .left
+        totalLabel.toolTip = "总页数"
         totalLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let row = NSStackView(views: [previousButton, pageField, totalLabel, nextButton])
@@ -736,11 +744,13 @@ final class ColumnToolbarView: NSVisualEffectView {
             .systemYellow, .systemGreen, .systemBlue, .systemPink,
             .systemRed, .systemOrange, .systemPurple, .systemTeal
         ]
+        let colorNames = ["琥珀黄", "翠竹绿", "晴空蓝", "珊瑚粉", "朱砂红", "暖橙色", "薰衣紫", "青绿色"]
         for row in 0..<2 {
             var rowButtons: [ColumnColorSwatchButton] = []
             for column in 0..<4 {
                 let color = colors[row * 4 + column]
                 let swatch = ColumnColorSwatchButton(color: color)
+                swatch.toolTip = colorNames[row * 4 + column]
                 swatch.isSelectedSwatch = colorsEqual(selectedColor, color)
                 swatch.target = self
                 swatch.action = #selector(paletteSwatchClicked(_:))

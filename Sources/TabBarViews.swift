@@ -417,6 +417,7 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
             updateTabBackground()
         }
     }
+    private var hoverTrackingArea: NSTrackingArea?
 
     override var mouseDownCanMoveWindow: Bool { false }
     override var wantsUpdateLayer: Bool { true }
@@ -630,7 +631,7 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach { removeTrackingArea($0) }
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
         var options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways, .inVisibleRect]
         if let win = window {
             let mouseInWin = win.mouseLocationOutsideOfEventStream
@@ -643,12 +644,14 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
                 isHovered = inside
             }
         }
-        addTrackingArea(NSTrackingArea(
+        let area = NSTrackingArea(
             rect: bounds,
             options: options,
             owner: self,
             userInfo: nil
-        ))
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
     }
 
     override func mouseEntered(with event: NSEvent) { isHovered = true }
