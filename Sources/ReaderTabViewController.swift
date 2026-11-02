@@ -830,7 +830,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         transientStatusLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         let rightBarStack = toolbarRightStack
-        // P0-2: 保留「未入库」状态与「存入文献库」；搜索默认收起，由 ⌘F / 栏内搜索展开。
+        // P0-2: 保留「未入库」与「存入文献库」；搜索默认收起；右侧边栏开关始终在最右侧。
         [
             transientStatusLabel,
             saveToLibraryBtn,
