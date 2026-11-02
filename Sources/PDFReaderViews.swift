@@ -2,6 +2,7 @@ import Cocoa
 import PDFKit
 import WebKit
 import UniformTypeIdentifiers
+import QuartzCore
 
 // MARK: - Modern macOS Native Hover Button
 class ModernHoverButton: NSButton {
@@ -292,6 +293,15 @@ final class InteractivePDFView: PDFView {
     var onMagnificationDidChange: (() -> Void)?
     var onPageStep: ((Int) -> Void)?
     var onZoomCommand: ((Bool, CGFloat?) -> Void)?
+    var onCommandScrollZoom: ((CGFloat) -> Void)?
+    var onMarkupStateChanged: (() -> Void)?
+    var markupTool: PDFMarkupTool = .pointer {
+        didSet {
+            window?.invalidateCursorRects(for: self)
+            needsDisplay = true
+        }
+    }
+    var markupColor: NSColor = NSColor.systemYellow
     var side: PDFSide = .original
     var activePDFDocumentId: String = PDFSide.original.rawValue
     var onTextSelectedForPopover: ((PDFSelection, NSRect) -> Void)?
@@ -308,6 +318,28 @@ final class InteractivePDFView: PDFView {
 
     var storedAnnotations: [PaperAnnotation] = []
 
+    // Column-local markup undo history. Each PDF view owns its own stack so
+    // undo/redo in one pane never touches the other pane.
+    private struct MarkupEdit {
+        let page: PDFPage
+        let annotation: PDFAnnotation
+        let isAddition: Bool
+    }
+    private var markupUndoStack: [MarkupEdit] = []
+    private var markupRedoStack: [MarkupEdit] = []
+    private var gestureStartPagePoint: NSPoint?
+    private var gesturePage: PDFPage?
+    private var gestureAnnotation: PDFAnnotation?
+    private var gestureInkPath: NSBezierPath?
+    private var erasedAnnotationIDs: Set<ObjectIdentifier> = []
+    private var handDragStart: NSPoint?
+    private var handDragOrigin: NSPoint?
+
+    var canUndoMarkup: Bool { !markupUndoStack.isEmpty }
+    var canRedoMarkup: Bool { !markupRedoStack.isEmpty }
+    var markupUndoCount: Int { markupUndoStack.count }
+    var markupRedoCount: Int { markupRedoStack.count }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         registerForDraggedTypes([.fileURL])
@@ -320,6 +352,20 @@ final class InteractivePDFView: PDFView {
 
     override func scrollWheel(with event: NSEvent) {
         onInteraction?()
+        if event.modifierFlags.contains(.command) {
+            // Command + wheel is reserved exclusively for this column's zoom.
+            // Never forward it to PDFKit, otherwise the page would also scroll.
+            let step = event.hasPreciseScrollingDeltas
+                ? event.scrollingDeltaY * 0.012
+                : event.scrollingDeltaY * 0.08
+            guard step.isFinite, abs(step) > 0.0001 else { return }
+            let proposed = scaleFactor * CGFloat(exp(step))
+            let clamped = min(5.0, max(0.25, proposed))
+            if abs(clamped - scaleFactor) > 0.0001 {
+                onCommandScrollZoom?(clamped)
+            }
+            return
+        }
         let isOptionHeld = event.modifierFlags.contains(.option)
         super.scrollWheel(with: event)
         if isOptionHeld {
@@ -331,6 +377,11 @@ final class InteractivePDFView: PDFView {
         onInteraction?()
         onMagnificationWillChange?()
         super.magnify(with: event)
+        // Trackpad pinch uses the same per-column 0.25x...5.0x ceiling.
+        let clamped = min(5.0, max(0.25, scaleFactor))
+        if abs(clamped - scaleFactor) > 0.0001 {
+            scaleFactor = clamped
+        }
         onMagnificationDidChange?()
     }
 
@@ -339,8 +390,28 @@ final class InteractivePDFView: PDFView {
         super.keyDown(with: event)
     }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        switch markupTool {
+        case .hand:
+            addCursorRect(bounds, cursor: .openHand)
+        case .pointer:
+            break
+        default:
+            addCursorRect(bounds, cursor: .crosshair)
+        }
+    }
+
     override func mouseDown(with event: NSEvent) {
         onInteraction?()
+        if markupTool == .hand {
+            beginHandPan(with: event)
+            return
+        }
+        if markupTool.usesDrawingGesture {
+            beginMarkupGesture(with: event)
+            return
+        }
         let viewPoint = convert(event.locationInWindow, from: nil)
         if let page = page(for: viewPoint, nearest: false),
            let doc = document {
@@ -395,7 +466,27 @@ final class InteractivePDFView: PDFView {
         super.mouseDown(with: event)
     }
 
+    override func mouseDragged(with event: NSEvent) {
+        if markupTool == .hand, handDragStart != nil {
+            updateHandPan(with: event)
+            return
+        }
+        if markupTool.usesDrawingGesture, gestureStartPagePoint != nil {
+            updateMarkupGesture(with: event)
+            return
+        }
+        super.mouseDragged(with: event)
+    }
+
     override func mouseUp(with event: NSEvent) {
+        if markupTool == .hand, handDragStart != nil {
+            endHandPan()
+            return
+        }
+        if markupTool.usesDrawingGesture, gestureStartPagePoint != nil {
+            finishMarkupGesture(with: event)
+            return
+        }
         super.mouseUp(with: event)
         guard let sel = currentSelection,
               let text = sel.string?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -591,6 +682,314 @@ final class InteractivePDFView: PDFView {
     }
 }
 
+
+// MARK: - Hand tool, markup gestures, and per-column undo history
+extension InteractivePDFView {
+    private static let markupUserName = "DualPDF_Markup"
+
+    // MARK: Hand tool
+
+    func beginHandPan(with event: NSEvent) {
+        handDragStart = convert(event.locationInWindow, from: nil)
+        handDragOrigin = internalScrollView()?.contentView.bounds.origin
+        NSCursor.closedHand.set()
+    }
+
+    func updateHandPan(with event: NSEvent) {
+        guard let start = handDragStart, var origin = handDragOrigin,
+              let scroll = internalScrollView() else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let delta = NSPoint(x: point.x - start.x, y: point.y - start.y)
+        origin.x -= delta.x
+        origin.y -= delta.y
+        scroll.contentView.scroll(to: origin)
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
+    func endHandPan() {
+        handDragStart = nil
+        handDragOrigin = nil
+        NSCursor.openHand.set()
+        window?.invalidateCursorRects(for: self)
+    }
+
+    private func internalScrollView() -> NSScrollView? {
+        func find(_ view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            for child in view.subviews {
+                if let scroll = find(child) { return scroll }
+            }
+            return nil
+        }
+        return find(self)
+    }
+
+    // MARK: Markup gestures
+
+    func beginMarkupGesture(with event: NSEvent) {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        guard let page = page(for: viewPoint, nearest: true) else { return }
+        let start = convert(viewPoint, to: page)
+        gestureStartPagePoint = start
+        gesturePage = page
+        gestureAnnotation = nil
+        gestureInkPath = nil
+        erasedAnnotationIDs.removeAll()
+        window?.makeFirstResponder(self)
+
+        switch markupTool {
+        case .pointer, .hand:
+            break
+        case .highlight, .underline, .strikethrough:
+            let selection = page.selection(from: start, to: start)
+            setCurrentSelection(selection, animate: false)
+        case .eraser:
+            eraseMarkup(at: start, on: page)
+        case .text:
+            break
+        case .ink:
+            let path = NSBezierPath()
+            path.move(to: start)
+            gestureInkPath = path
+            let annotation = PDFAnnotation(bounds: page.bounds(for: displayBox), forType: .ink, withProperties: nil)
+            annotation.color = markupColor
+            annotation.userName = Self.markupUserName
+            let border = PDFBorder()
+            border.lineWidth = 2.0
+            annotation.border = border
+            annotation.add(path)
+            page.addAnnotation(annotation)
+            gestureAnnotation = annotation
+        case .rectangle, .ellipse, .line, .arrow:
+            let annotation = makeShapeAnnotation(tool: markupTool, start: start, end: start, on: page)
+            if let annotation {
+                page.addAnnotation(annotation)
+                gestureAnnotation = annotation
+            }
+        }
+    }
+
+    func updateMarkupGesture(with event: NSEvent) {
+        guard let start = gestureStartPagePoint, let page = gesturePage else { return }
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        let current = convert(viewPoint, to: page)
+
+        switch markupTool {
+        case .highlight, .underline, .strikethrough:
+            let selection = page.selection(from: start, to: current)
+            setCurrentSelection(selection, animate: false)
+        case .eraser:
+            eraseMarkup(at: current, on: page)
+        case .ink:
+            guard let path = gestureInkPath else { return }
+            path.line(to: current)
+            if let annotation = gestureAnnotation {
+                annotation.remove(path)
+                annotation.add(path)
+            }
+            needsDisplay = true
+        case .rectangle, .ellipse, .line, .arrow:
+            guard let annotation = gestureAnnotation else { return }
+            applyShapeGeometry(annotation, tool: markupTool, start: start, end: current)
+            needsDisplay = true
+        case .pointer, .hand, .text:
+            break
+        }
+    }
+
+    func finishMarkupGesture(with event: NSEvent) {
+        defer {
+            gestureStartPagePoint = nil
+            gesturePage = nil
+            gestureAnnotation = nil
+            gestureInkPath = nil
+            erasedAnnotationIDs.removeAll()
+            needsDisplay = true
+        }
+        guard let start = gestureStartPagePoint, let page = gesturePage else { return }
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        let current = convert(viewPoint, to: page)
+
+        switch markupTool {
+        case .highlight, .underline, .strikethrough:
+            defer { setCurrentSelection(nil, animate: false) }
+            guard let selection = page.selection(from: start, to: current),
+                  let annotation = makeTextMarkupAnnotation(tool: markupTool, selection: selection, on: page) else { return }
+            page.addAnnotation(annotation)
+            recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+        case .eraser:
+            break
+        case .ink:
+            guard let annotation = gestureAnnotation, let path = gestureInkPath else { return }
+            if path.bounds.width < 1.0 && path.bounds.height < 1.0 {
+                page.removeAnnotation(annotation)
+            } else {
+                // Keep the page-sized bounds: PDFKit resolves ink paths in
+                // annotation space, so shrinking bounds moves and clips the
+                // stroke instead of merely tightening its hit area.
+                annotation.remove(path)
+                annotation.add(path)
+                recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+            }
+        case .text:
+            let rect = textAnnotationRect(from: start, to: current)
+            let annotation = PDFAnnotation(bounds: rect, forType: .freeText, withProperties: nil)
+            annotation.contents = "文本"
+            annotation.font = .systemFont(ofSize: 12)
+            annotation.fontColor = markupColor
+            annotation.color = .clear
+            let border = PDFBorder()
+            border.lineWidth = 0
+            annotation.border = border
+            annotation.userName = Self.markupUserName
+            page.addAnnotation(annotation)
+            recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+        case .rectangle, .ellipse, .line, .arrow:
+            guard let annotation = gestureAnnotation else { return }
+            applyShapeGeometry(annotation, tool: markupTool, start: start, end: current)
+            let distance = sqrt(pow(current.x - start.x, 2) + pow(current.y - start.y, 2))
+            if distance < 2 {
+                page.removeAnnotation(annotation)
+            } else {
+                recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+            }
+        case .pointer, .hand:
+            break
+        }
+    }
+
+    private func makeTextMarkupAnnotation(tool: PDFMarkupTool, selection: PDFSelection, on page: PDFPage) -> PDFAnnotation? {
+        let lines = selection.selectionsByLine().filter { $0.pages.contains(page) }
+        let rects = lines.map { $0.bounds(for: page) }.filter { $0.width > 1 || $0.height > 1 }
+        guard let first = rects.first, let subtype = tool.annotationSubtype else { return nil }
+        var union = first
+        for rect in rects.dropFirst() { union = union.union(rect) }
+        let annotation = PDFAnnotation(bounds: union, forType: subtype, withProperties: nil)
+        var quadPoints: [NSValue] = []
+        // PDFKit expects quadrilateral points in annotation space (relative to
+        // the annotation bounds origin), not page space.
+        for rect in rects {
+            let local = NSRect(x: rect.minX - union.minX, y: rect.minY - union.minY, width: rect.width, height: rect.height)
+            quadPoints.append(NSValue(point: NSPoint(x: local.minX, y: local.maxY)))
+            quadPoints.append(NSValue(point: NSPoint(x: local.maxX, y: local.maxY)))
+            quadPoints.append(NSValue(point: NSPoint(x: local.minX, y: local.minY)))
+            quadPoints.append(NSValue(point: NSPoint(x: local.maxX, y: local.minY)))
+        }
+        annotation.quadrilateralPoints = quadPoints
+        annotation.color = markupColor.withAlphaComponent(tool.colorAlpha)
+        annotation.userName = Self.markupUserName
+        return annotation
+    }
+
+    private func makeShapeAnnotation(tool: PDFMarkupTool, start: NSPoint, end: NSPoint, on page: PDFPage) -> PDFAnnotation? {
+        guard let subtype = tool.annotationSubtype else { return nil }
+        let annotation = PDFAnnotation(bounds: shapeBounds(start: start, end: end, tool: tool),
+                                       forType: subtype, withProperties: nil)
+        annotation.color = markupColor
+        let border = PDFBorder()
+        border.lineWidth = 1.6
+        annotation.border = border
+        annotation.userName = Self.markupUserName
+        if tool == .rectangle || tool == .ellipse {
+            annotation.interiorColor = markupColor.withAlphaComponent(0.06)
+        }
+        applyShapeGeometry(annotation, tool: tool, start: start, end: end)
+        return annotation
+    }
+
+    private func shapeBounds(start: NSPoint, end: NSPoint, tool: PDFMarkupTool) -> NSRect {
+        let rect = NSRect(x: min(start.x, end.x), y: min(start.y, end.y),
+                          width: abs(end.x - start.x), height: abs(end.y - start.y))
+        if tool == .line || tool == .arrow {
+            return rect.insetBy(dx: -2, dy: -2)
+        }
+        return rect
+    }
+
+    private func applyShapeGeometry(_ annotation: PDFAnnotation, tool: PDFMarkupTool, start: NSPoint, end: NSPoint) {
+        let bounds = shapeBounds(start: start, end: end, tool: tool)
+        annotation.bounds = bounds
+        if tool == .line || tool == .arrow {
+            annotation.startPoint = NSPoint(x: start.x - bounds.minX, y: start.y - bounds.minY)
+            annotation.endPoint = NSPoint(x: end.x - bounds.minX, y: end.y - bounds.minY)
+            annotation.startLineStyle = .none
+            annotation.endLineStyle = tool == .arrow ? .closedArrow : .none
+        }
+    }
+
+    private func textAnnotationRect(from start: NSPoint, to end: NSPoint) -> NSRect {
+        let rect = NSRect(x: min(start.x, end.x), y: min(start.y, end.y),
+                          width: abs(end.x - start.x), height: abs(end.y - start.y))
+        if rect.width >= 20 && rect.height >= 12 { return rect }
+        return NSRect(x: start.x, y: start.y - 18, width: 140, height: 30)
+    }
+
+    private func eraseMarkup(at point: NSPoint, on page: PDFPage) {
+        let hits = page.annotations.filter { annotation in
+            guard annotation.userName == Self.markupUserName else { return false }
+            if annotation.type == "Ink" || annotation.type == "/Ink" {
+                if let paths = annotation.paths, !paths.isEmpty {
+                    return paths.contains { path in
+                        path.bounds.insetBy(dx: -6, dy: -6).contains(point)
+                    }
+                }
+            }
+            return annotation.bounds.insetBy(dx: -3, dy: -3).contains(point)
+        }
+        for annotation in hits {
+            let id = ObjectIdentifier(annotation)
+            guard !erasedAnnotationIDs.contains(id) else { continue }
+            erasedAnnotationIDs.insert(id)
+            page.removeAnnotation(annotation)
+            recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: false), updateState: false)
+        }
+        if !hits.isEmpty { onMarkupStateChanged?() }
+        needsDisplay = true
+    }
+
+    // MARK: Undo / redo
+
+    func undoMarkup() {
+        guard let edit = markupUndoStack.popLast() else { return }
+        if edit.isAddition {
+            edit.page.removeAnnotation(edit.annotation)
+        } else {
+            edit.page.addAnnotation(edit.annotation)
+        }
+        markupRedoStack.append(edit)
+        needsDisplay = true
+        onMarkupStateChanged?()
+    }
+
+    func redoMarkup() {
+        guard let edit = markupRedoStack.popLast() else { return }
+        if edit.isAddition {
+            edit.page.addAnnotation(edit.annotation)
+        } else {
+            edit.page.removeAnnotation(edit.annotation)
+        }
+        markupUndoStack.append(edit)
+        needsDisplay = true
+        onMarkupStateChanged?()
+    }
+
+    func resetMarkupHistory() {
+        markupUndoStack.removeAll()
+        markupRedoStack.removeAll()
+        gestureStartPagePoint = nil
+        gesturePage = nil
+        gestureAnnotation = nil
+        gestureInkPath = nil
+        onMarkupStateChanged?()
+    }
+
+    private func recordMarkupEdit(_ edit: MarkupEdit, updateState: Bool = true) {
+        markupUndoStack.append(edit)
+        markupRedoStack.removeAll()
+        if updateState { onMarkupStateChanged?() }
+    }
+}
+
 // MARK: - Single Column Wrapper (Supports Any PDF in the Current Paper Collection)
 final class CleanPDFColumnView: NSView {
     let side: PDFSide
@@ -613,6 +1012,13 @@ final class CleanPDFColumnView: NSView {
     let backJumpButton = ModernHoverButton()
     var onBackJumpClicked: (() -> Void)?
     private var bannerHorizontalConstraint: NSLayoutConstraint?
+
+    let columnToolbar = ColumnToolbarView()
+    let pageCapsule = ColumnPageCapsuleView()
+    var onPageCapsuleCommit: ((Int) -> Void)?
+    var onPageCapsuleStep: ((Int) -> Void)?
+    var onToolbarLayoutChanged: (() -> Void)?
+    private var capsuleHideTicket = 0
 
     var currentPaperProvider: (() -> PaperItem?)?
     var onSelectColumnSource: ((ColumnContentSource) -> Void)?
@@ -698,6 +1104,28 @@ final class CleanPDFColumnView: NSView {
         backJumpBanner.addSubview(backJumpButton)
         addSubview(backJumpBanner)
 
+        // 每栏独立工具栏：一级主工具条常驻，二级工具条随“批注/形状”模式展开。
+        columnToolbar.translatesAutoresizingMaskIntoConstraints = false
+        columnToolbar.onLayoutChanged = { [weak self] in self?.onToolbarLayoutChanged?() }
+        pdfView.onMarkupStateChanged = { [weak self] in
+            guard let self else { return }
+            self.columnToolbar.setUndoRedoEnabled(canUndo: self.pdfView.canUndoMarkup,
+                                                  canRedo: self.pdfView.canRedoMarkup)
+        }
+        addSubview(columnToolbar)
+
+        // 底部浮动页码胶囊
+        pageCapsule.previousButton.target = self
+        pageCapsule.previousButton.action = #selector(capsulePreviousAction)
+        pageCapsule.nextButton.target = self
+        pageCapsule.nextButton.action = #selector(capsuleNextAction)
+        pageCapsule.onCommit = { [weak self] page in self?.onPageCapsuleCommit?(page) }
+        pageCapsule.onHoverChanged = { [weak self] hovering in self?.capsuleHoverChanged(hovering) }
+        addSubview(pageCapsule)
+
+        columnToolbar.setViewMode(pdfView.displayMode)
+        columnToolbar.setUndoRedoEnabled(canUndo: false, canRedo: false)
+
         // 空状态占位（当该论文尚未导入该侧 PDF 时显示）
         emptyPlaceholder.translatesAutoresizingMaskIntoConstraints = false
         emptyPlaceholder.wantsLayer = true
@@ -738,12 +1166,16 @@ final class CleanPDFColumnView: NSView {
         addSubview(backJumpBanner)
 
         NSLayoutConstraint.activate([
-            pdfView.topAnchor.constraint(equalTo: topAnchor),
+            columnToolbar.topAnchor.constraint(equalTo: topAnchor),
+            columnToolbar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            columnToolbar.trailingAnchor.constraint(equalTo: trailingAnchor),
+
+            pdfView.topAnchor.constraint(equalTo: columnToolbar.bottomAnchor),
             pdfView.leadingAnchor.constraint(equalTo: leadingAnchor),
             pdfView.trailingAnchor.constraint(equalTo: trailingAnchor),
             pdfView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            cornerBadge.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            cornerBadge.topAnchor.constraint(equalTo: columnToolbar.bottomAnchor, constant: 8),
             cornerBadge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             cornerButton.topAnchor.constraint(equalTo: cornerBadge.topAnchor, constant: 3),
             cornerButton.bottomAnchor.constraint(equalTo: cornerBadge.bottomAnchor, constant: -3),
@@ -756,10 +1188,13 @@ final class CleanPDFColumnView: NSView {
             backJumpButton.trailingAnchor.constraint(equalTo: backJumpBanner.trailingAnchor, constant: -14),
             backJumpBanner.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -18),
 
-            emptyPlaceholder.topAnchor.constraint(equalTo: topAnchor),
+            emptyPlaceholder.topAnchor.constraint(equalTo: columnToolbar.bottomAnchor),
             emptyPlaceholder.leadingAnchor.constraint(equalTo: leadingAnchor),
             emptyPlaceholder.trailingAnchor.constraint(equalTo: trailingAnchor),
             emptyPlaceholder.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            pageCapsule.centerXAnchor.constraint(equalTo: centerXAnchor),
+            pageCapsule.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
 
             dropCard.centerXAnchor.constraint(equalTo: emptyPlaceholder.centerXAnchor),
             dropCard.centerYAnchor.constraint(equalTo: emptyPlaceholder.centerYAnchor),
@@ -960,5 +1395,106 @@ final class CleanPDFColumnView: NSView {
         found?.contentView.postsBoundsChangedNotifications = true
         cachedScrollView = found
         return found
+    }
+}
+
+extension CleanPDFColumnView {
+    func toggleSpreadMode() {
+        let current = pdfView.displayMode
+        let continuous = current == .singlePageContinuous || current == .twoUpContinuous
+        let twoUp = current == .twoUp || current == .twoUpContinuous
+        let target: PDFDisplayMode
+        if twoUp {
+            target = continuous ? .singlePageContinuous : .singlePage
+        } else {
+            target = continuous ? .twoUpContinuous : .twoUp
+        }
+        applyDisplayModeToPDF(target)
+    }
+
+    func toggleContinuousMode() {
+        switch pdfView.displayMode {
+        case .singlePage: pdfView.displayMode = .singlePageContinuous
+        case .singlePageContinuous: pdfView.displayMode = .singlePage
+        case .twoUp: pdfView.displayMode = .twoUpContinuous
+        case .twoUpContinuous: pdfView.displayMode = .twoUp
+        default: pdfView.displayMode = .singlePageContinuous
+        }
+        columnToolbar.setViewMode(pdfView.displayMode)
+        onToolbarLayoutChanged?()
+    }
+
+    private func applyDisplayModeToPDF(_ mode: PDFDisplayMode) {
+        pdfView.displayMode = mode
+        columnToolbar.setViewMode(mode)
+        onToolbarLayoutChanged?()
+    }
+
+    func refreshPageCapsuleFromCurrentPage() {
+        guard let document = pdfView.document, document.pageCount > 0 else {
+            pageCapsule.update(page: 1, total: 1)
+            return
+        }
+        let index = pdfView.currentPage.map { document.index(for: $0) } ?? 0
+        pageCapsule.update(page: index + 1, total: document.pageCount)
+    }
+
+    func revealPageCapsule(hideAfter delay: TimeInterval = 2.0) {
+        guard pdfView.document != nil, !isHidden else { return }
+        // The reader updates both capsules from the precise continuous
+        // position before calling this method; refreshing from currentPage
+        // here would overwrite it with a value that can lag during scrolling.
+        capsuleHideTicket += 1
+        let ticket = capsuleHideTicket
+        pageCapsule.isHidden = false
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            self.pageCapsule.animator().alphaValue = 1
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.capsuleHideTicket == ticket else { return }
+            guard !self.pageCapsule.isHoveredForCapsule else { return }
+            self.hidePageCapsuleAfterIdle()
+        }
+    }
+
+    func expireHideForTesting() {
+        capsuleHideTicket += 1
+        guard !pageCapsule.isHoveredForCapsule else { return }
+        pageCapsule.alphaValue = 0
+        pageCapsule.isHidden = true
+    }
+
+    func capsuleHoverChanged(_ hovering: Bool) {
+        pageCapsule.isHoveredForCapsule = hovering
+        if hovering {
+            capsuleHideTicket += 1
+            pageCapsule.isHidden = false
+            pageCapsule.alphaValue = 1
+        } else {
+            revealPageCapsule()
+        }
+    }
+
+    private func hidePageCapsuleAfterIdle() {
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.24
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            self.pageCapsule.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self, !self.pageCapsule.isHoveredForCapsule, self.pageCapsule.alphaValue < 0.01 else { return }
+            self.pageCapsule.isHidden = true
+        })
+    }
+
+    @objc func capsulePreviousAction() {
+        onPageCapsuleStep?(-1)
+        revealPageCapsule()
+    }
+
+    @objc func capsuleNextAction() {
+        onPageCapsuleStep?(1)
+        revealPageCapsule()
     }
 }

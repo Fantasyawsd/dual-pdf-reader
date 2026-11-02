@@ -386,7 +386,7 @@ autoreleasepool {
           "Column rejects foreign PDF IDs outside the current paper collection")
 
     // 旧第四模式已删除；无效模式不能再打开笔记或替换 PDF。
-    let modeControl = descendants(reader.view).compactMap { $0 as? NSSegmentedControl }.first { $0.segmentCount == 3 && $0.label(forSegment: 2) == "对照" }
+    let modeControl = descendants(reader.view).compactMap { $0 as? NSSegmentedControl }.first { $0.segmentCount == 3 && $0.label(forSegment: 2) == "分屏" }
     reader.openNotesSidebar()
     reader.toggleRightDrawerAction()
     let pdfSources = [reader.leftCol.contentSource, reader.rightCol.contentSource]
@@ -765,10 +765,10 @@ check(abs(testReader.leftCol.frame.width - testReader.rightCol.frame.width) <= 4
 // Sync button appearance toggle (lit vs unlit)
 testReader.syncScrollBtn.state = .on
 testReader.updateSyncButtonStyle()
-check(testReader.syncScrollBtn.title.contains("同步") && testReader.syncScrollBtn.contentTintColor == .controlAccentColor, "Sync button lit in active state")
+check(testReader.syncScrollBtn.title.isEmpty && testReader.syncScrollBtn.image != nil && testReader.syncScrollBtn.contentTintColor == .controlAccentColor, "Sync button lit in active state without text")
 testReader.syncScrollBtn.state = .off
 testReader.updateSyncButtonStyle()
-check(testReader.syncScrollBtn.title.contains("独立") && testReader.syncScrollBtn.contentTintColor == .secondaryLabelColor, "Sync button unlit in inactive state")
+check(testReader.syncScrollBtn.title.isEmpty && testReader.syncScrollBtn.image != nil && testReader.syncScrollBtn.contentTintColor == .secondaryLabelColor, "Sync button unlit in inactive state without text")
 testReader.syncScrollBtn.state = .on
 testReader.updateSyncButtonStyle()
 
@@ -922,5 +922,6 @@ do {
 
 try runReaderCoreTests(root: root)
 try runPDFWidthLayoutTests(root: root)
+try runReaderToolbarTests(root: root)
 print("\nRegression tests: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)

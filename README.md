@@ -33,6 +33,7 @@
 | `PDFViewportCoordinator` | 布局事务、延迟任务失效、各栏阅读锚点和文档对校准 |
 | `PDFViewportLayout` | 按实际栏宽计算缩放、处理旋转和裁切框、统一页面水平居中 |
 | `ReaderLayoutViews` | 根视图与两级分隔线的几何变化通知及尺寸约束 |
+| `ColumnToolbarViews` | 左右栏独立工具栏、阅读/批注/形状选项卡、调色盘与底部页码胶囊 |
 | `PDFScrollSynchronizer` | 连续页坐标、双栏同步、阅读位置恢复 |
 | `PDFAnnotationService` | 跨页选区转换与增量高亮更新 |
 | `PDFSearchController` | 可取消的 PDFKit 异步搜索 |
@@ -69,4 +70,4 @@
 
 `Tests/ReaderCoreTests.swift` 覆盖布局事务、快速连续操作、加载期间导航、后台标签隔离、页尾钳制和文档对校准；`Tests/PDFWidthLayoutTests.swift` 直接测量渲染页面的宽度和中心，覆盖实时拖拽、极窄栏、横版、旋转、裁切框和侧栏压缩。真实鼠标拖拽及空白点击回归位于 `Tests/BugAudit/main.swift`。当前布局行为与验证记录见 [PDF_WIDTH_LAYOUT.md](docs/PDF_WIDTH_LAYOUT.md)，前一轮事务重构记录见 [PDF_VIEWPORT_REFACTOR.md](docs/PDF_VIEWPORT_REFACTOR.md)。
 
-两栏独立缩放的后续修正和验证记录见 [INDEPENDENT_COLUMN_ZOOM.md](docs/INDEPENDENT_COLUMN_ZOOM.md)。
+两栏独立缩放的后续修正和验证记录见 [INDEPENDENT_COLUMN_ZOOM.md](docs/INDEPENDENT_COLUMN_ZOOM.md)。栏内工具栏、页码胶囊与鼠标所在栏 ⌘+滚轮缩放的实现记录见 [READER_COLUMN_TOOLBARS.md](docs/READER_COLUMN_TOOLBARS.md)。

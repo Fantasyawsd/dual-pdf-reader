@@ -272,9 +272,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let topBar = NSVisualEffectView()
     private let outlineToggleBtn = ModernHoverButton()
     var leftSidebarToggleBtn: NSButton { outlineToggleBtn }
-    private let modeSeg = NSSegmentedControl(labels: ["原文", "译文", "对照"], trackingMode: .selectOne, target: nil, action: nil)
+    private let modeSeg = NSSegmentedControl(labels: ["原文", "译文", "分屏"], trackingMode: .selectOne, target: nil, action: nil)
     private let swapBtn = ModernHoverButton()
     var isSwapButtonHidden: Bool { swapBtn.isHidden }
+    var isSyncButtonHidden: Bool { syncScrollBtn.isHidden }
+    var syncButtonTitle: String { syncScrollBtn.title }
+    var modeSegmentLabels: [String] { (0..<modeSeg.segmentCount).map { modeSeg.label(forSegment: $0) ?? "" } }
     var dualSplitView: DualPDFSplitView { splitView }
     func canCollapseColumn(_ col: CleanPDFColumnView) -> Bool {
         splitView(splitView, canCollapseSubview: col)
@@ -589,7 +592,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         modeSeg.selectedSegment = (0...2).contains(savedMode) ? savedMode : 2
         modeSeg.controlSize = .regular
         modeSeg.segmentDistribution = .fillProportionally
-        modeSeg.toolTip = "切换阅读模式：仅原文 / 仅译文 / 双栏对照 (默认)"
+        modeSeg.toolTip = "切换阅读模式：原文 / 译文 / 分屏"
         modeSeg.target = self
         modeSeg.action = #selector(modeChangedAction)
         modeSeg.translatesAutoresizingMaskIntoConstraints = false
@@ -606,12 +609,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         syncScrollBtn.controlSize = .small
         syncScrollBtn.setButtonType(.pushOnPushOff)
         syncScrollBtn.state = isScrollSyncEnabled ? .on : .off
-        syncScrollBtn.imagePosition = .imageLeading
+        syncScrollBtn.imagePosition = .imageOnly
+        syncScrollBtn.title = ""
         syncScrollBtn.target = self
         syncScrollBtn.action = #selector(toggleSyncScrollAction)
         syncScrollBtn.translatesAutoresizingMaskIntoConstraints = false
-        syncScrollBtn.heightAnchor.constraint(equalToConstant: 26).isActive = true
-        syncScrollBtn.widthAnchor.constraint(greaterThanOrEqualToConstant: 58).isActive = true
+        syncScrollBtn.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        syncScrollBtn.widthAnchor.constraint(equalToConstant: 28).isActive = true
         updateSyncButtonStyle()
 
         configureToolbarButton(resetAlignBtn)
@@ -789,13 +793,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         // --- 3 个自平衡分区（左对齐组、绝对中心组、右对齐组） ---
         let leftBarStack = toolbarLeftStack
         [
-            outlineToggleBtn,
-            makeToolbarSeparator(),
             modeSeg,
             swapBtn,
             dualSep,
-            syncScrollBtn,
-            resetAlignBtn
+            syncScrollBtn
         ].forEach { leftBarStack.addArrangedSubview($0) }
         leftBarStack.orientation = .horizontal
         leftBarStack.spacing = 6
@@ -803,15 +804,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         leftBarStack.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(leftBarStack)
 
-        let colSep = makeToolbarSeparator()
-        self.dualColumnControlsSep = colSep
-
+        // 阅读器顶栏只保留模式切换与「分屏」专属的互换、同步按钮。
+        // 单栏页码与缩放改由每栏底部页码胶囊、专属工具栏和 ⌘+滚轮承担。
         let centerBarStack = toolbarCenterStack
-        [
-            leftControlsContainer,
-            colSep,
-            rightControlsContainer
-        ].forEach { centerBarStack.addArrangedSubview($0) }
         centerBarStack.orientation = .horizontal
         centerBarStack.spacing = 8
         centerBarStack.alignment = .centerY
@@ -835,6 +830,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         transientStatusLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         let rightBarStack = toolbarRightStack
+        // P0-2: 保留「未入库」状态与「存入文献库」；搜索默认收起，由 ⌘F / 栏内搜索展开。
         [
             transientStatusLabel,
             saveToLibraryBtn,
@@ -845,6 +841,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         rightBarStack.orientation = .horizontal
         rightBarStack.spacing = 6
         rightBarStack.alignment = .centerY
+        rightBarStack.detachesHiddenViews = true
         rightBarStack.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(rightBarStack)
 
@@ -3000,6 +2997,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         isLeftOverlayOpen.toggle()
         leftOverlaySidebar.isHidden = !isLeftOverlayOpen
         outlineToggleBtn.state = isLeftOverlayOpen ? .on : .off
+        leftCol.columnToolbar.setOutlineActive(isLeftOverlayOpen)
+        rightCol.columnToolbar.setOutlineActive(isLeftOverlayOpen)
         if isLeftOverlayOpen {
             pdfThumbnailView.pdfView = primaryActiveColumn().pdfView
         }
@@ -3227,6 +3226,27 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 guard let self = self, let col = col else { return }
                 self.setZoom(col, autoScales: automatic, scaleFactor: scale)
             }
+            col.pdfView.onCommandScrollZoom = { [weak self, weak col] scale in
+                guard let self = self, let col = col else { return }
+                self.applyCommandScrollZoom(in: col, to: scale)
+            }
+            col.onPageCapsuleStep = { [weak self, weak col] delta in
+                guard let self = self, let col = col else { return }
+                self.stepPage(in: col, delta: delta)
+                col.revealPageCapsule()
+            }
+            col.onPageCapsuleCommit = { [weak self, weak col] page in
+                guard let self = self, let col = col else { return }
+                self.goToColumnPageIndex(col, pageIndex: page - 1, recordHistory: true)
+                col.revealPageCapsule()
+            }
+            col.onToolbarLayoutChanged = { [weak self] in
+                guard let self = self, !self.isClosed else { return }
+                self.beginLayoutChange()
+                self.view.layoutSubtreeIfNeeded()
+                self.scheduleLayoutCompletion()
+            }
+            self.configureColumnToolbar(for: col)
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(pdfScaleChanged(_:)),
@@ -3377,6 +3397,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
               let source = [leftCol, rightCol].first(where: { $0.internalScrollView()?.contentView === clipView }),
               viewportCoordinator.receivedScroll(in: source) else { return }
         lastReadingColumn = source
+        updatePageIndicatorAndSaveProgress()
+        source.revealPageCapsule()
         syncScroll(from: source, to: source === leftCol ? rightCol : leftCol)
         scheduleReadingPositionSave(from: source)
     }
@@ -3470,6 +3492,16 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             rightPageJumpBtn.title = "- / -"
             rightPrevPageBtn.isEnabled = false
             rightNextPageBtn.isEnabled = false
+        }
+
+        // 每栏底部页码胶囊按该栏自己的 PDF 独立更新，互换双栏后也不会串页。
+        for column in [leftCol, rightCol] {
+            if let doc = column.pdfView.document {
+                let idx = currentPageIndex(in: column)
+                column.pageCapsule.update(page: idx + 1, total: doc.pageCount)
+            } else {
+                column.pageCapsule.update(page: 1, total: 1)
+            }
         }
 
         // 同步高亮右侧目录当前所在章节
@@ -3678,6 +3710,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         viewportCoordinator.selectDocument(effectivePDFId, in: col, initialPage: initial)
         col.pdfView.highlightedSelections = nil
         col.pdfView.clearSelection()
+        col.pdfView.resetMarkupHistory()
+        col.columnToolbar.setViewMode(col.pdfView.displayMode)
         if let unlocked = TransientStore.shared.unlockedDocument(for: paperId) ?? transientSession?.document,
            (effectivePDFId == PDFSide.original.rawValue || col.side == .original) {
             ReaderTabViewController.stripLinkAnnotationBorders(in: unlocked)
@@ -4521,6 +4555,66 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
     }
 
+    private func configureColumnToolbar(for col: CleanPDFColumnView) {
+        let toolbar = col.columnToolbar
+        toolbar.onOutline = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.lastReadingColumn = col
+            self.updateNavigationSource()
+            self.toggleLeftSidebarAction()
+        }
+        toolbar.onSpread = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.beginLayoutChange()
+            col.toggleSpreadMode()
+            self.view.layoutSubtreeIfNeeded()
+            self.scheduleLayoutCompletion()
+            self.updatePageIndicatorAndSaveProgress()
+        }
+        toolbar.onContinuous = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.beginLayoutChange()
+            col.toggleContinuousMode()
+            self.view.layoutSubtreeIfNeeded()
+            self.scheduleLayoutCompletion()
+            self.updatePageIndicatorAndSaveProgress()
+        }
+        toolbar.onFitWidth = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.fitColumn(col)
+        }
+        toolbar.onSearch = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.lastReadingColumn = col
+            self.updateNavigationSource()
+            self.openSearchAction()
+        }
+        toolbar.onNotes = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.lastReadingColumn = col
+            if !self.isDrawerOpen { self.toggleRightDrawerAction() }
+            self.switchWorkbenchTab(to: 1)
+        }
+        toolbar.onToolChanged = { [weak col] tool in
+            col?.pdfView.markupTool = tool
+        }
+        toolbar.onColorChanged = { [weak col] color in
+            col?.pdfView.markupColor = color
+        }
+        toolbar.onUndo = { [weak col] in col?.pdfView.undoMarkup() }
+        toolbar.onRedo = { [weak col] in col?.pdfView.redoMarkup() }
+        toolbar.setViewMode(col.pdfView.displayMode)
+        toolbar.setOutlineActive(isLeftOverlayOpen)
+        toolbar.setUndoRedoEnabled(canUndo: col.pdfView.canUndoMarkup, canRedo: col.pdfView.canRedoMarkup)
+    }
+
+    private func applyCommandScrollZoom(in column: CleanPDFColumnView, to scale: CGFloat) {
+        guard !isClosed, !column.isHidden, column.pdfView.document != nil else { return }
+        let clamped = min(5.0, max(0.25, scale))
+        guard abs(column.pdfView.scaleFactor - clamped) > 0.0001 else { return }
+        setZoom(column, autoScales: false, scaleFactor: clamped)
+    }
+
     @objc func swapColumnsAction() {
         guard modeSeg.selectedSegment == 2 else { return }
         finishPendingLayout()
@@ -4549,14 +4643,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             syncScrollBtn.normalBgColor = NSColor.controlAccentColor.withAlphaComponent(0.12)
             syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "双栏同步中")?
                 .withSymbolConfiguration(.init(pointSize: 11.5, weight: .semibold))
-            syncScrollBtn.title = " 同步"
+            syncScrollBtn.title = ""
             syncScrollBtn.toolTip = "双栏同步滚动已开启 (点击关闭)\n小技巧：按住 ⌥ Option 键滚动任意一栏可微调双栏段落对齐差"
         } else {
             syncScrollBtn.normalTintColor = .secondaryLabelColor
             syncScrollBtn.normalBgColor = .clear
             syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "独立滚动")?
                 .withSymbolConfiguration(.init(pointSize: 11.5, weight: .regular))
-            syncScrollBtn.title = " 独立"
+            syncScrollBtn.title = ""
             syncScrollBtn.toolTip = "双栏独立滚动 (同步已关闭，点击开启同步)"
         }
         syncScrollBtn.updateColors()
