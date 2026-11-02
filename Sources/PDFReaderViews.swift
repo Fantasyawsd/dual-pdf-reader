@@ -26,6 +26,7 @@ class ModernHoverButton: NSButton {
     }
 
     private(set) var isHovered: Bool = false
+    private var hoverTrackingArea: NSTrackingArea?
 
     override var wantsUpdateLayer: Bool { true }
 
@@ -73,13 +74,15 @@ class ModernHoverButton: NSButton {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(
             rect: bounds,
             options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
             owner: self,
             userInfo: nil
-        ))
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -178,6 +181,7 @@ final class HighlightSwatchButton: NSButton {
     private var isHovered: Bool = false {
         didSet { needsDisplay = true }
     }
+    private var hoverTrackingArea: NSTrackingArea?
 
     init(color: HighlightColor, selected: Bool = false, target: AnyObject?, action: Selector?) {
         self.highlightColor = color
@@ -206,13 +210,15 @@ final class HighlightSwatchButton: NSButton {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(
             rect: bounds,
             options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
             owner: self,
             userInfo: nil
-        ))
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
     }
 
     override func mouseEntered(with event: NSEvent) { isHovered = true }
