@@ -818,8 +818,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         topBar.addSubview(centerBarStack)
 
         let rightBarStack = toolbarRightStack
-        // 搜索栏仅在 ⌘F 或栏内搜索按钮触发时出现在顶栏右侧，默认完全收起。
-        [searchContainer].forEach { rightBarStack.addArrangedSubview($0) }
+        // 搜索栏仅在 ⌘F 或栏内搜索按钮触发时出现在顶栏右侧，默认完全收起；
+        // 右侧边栏开关始终保留在顶栏最右侧。
+        [searchContainer, drawerToggleBtn].forEach { rightBarStack.addArrangedSubview($0) }
         rightBarStack.orientation = .horizontal
         rightBarStack.spacing = 6
         rightBarStack.alignment = .centerY
