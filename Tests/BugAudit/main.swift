@@ -318,7 +318,7 @@ do {
         for col in [reader.leftCol, reader.rightCol] where !col.isHidden {
             valid = valid && col.frame.width > 1 && abs(col.frame.height - split.bounds.height) < 2
             valid = valid && abs(col.pdfView.frame.width - col.bounds.width) < 2
-            valid = valid && abs(col.pdfView.frame.height - col.bounds.height) < 2
+            valid = valid && abs(col.pdfView.frame.height - (col.bounds.height - col.columnToolbar.frame.height)) < 2
             valid = valid && col.pdfView.scaleFactor.isFinite && col.pdfView.scaleFactor > 0.01
         }
         valid = valid && visible.count == (mode == 2 ? 2 : 1)
@@ -413,13 +413,17 @@ do {
     }
     let compressed = visibleButtons.filter { $0.bounds.width < 12 }
     check(compressed.isEmpty, "L05", "最小窗口双栏打开搜索，宽度不足12pt的顶栏按钮=\(compressed.map { "\($0.toolTip ?? $0.title):\($0.bounds.width)" })")
-    let toolbarButtons = [reader.leftPrevPageBtn, reader.leftPageJumpBtn, reader.leftNextPageBtn,
-        reader.leftZoomInBtn, reader.rightPrevPageBtn, reader.rightPageJumpBtn, reader.rightNextPageBtn, reader.rightZoomInBtn]
-    check(toolbarButtons.allSatisfy { button in
+    let compactToolButtons = [reader.leftCol.columnToolbar, reader.rightCol.columnToolbar].flatMap { toolbar in
+        descendants(toolbar).compactMap { $0 as? NSButton }
+    }.filter { button in
+        ["大纲目录", "双页并排", "单页/连续滚动", "自适应宽度", "抓手漫游", "指针选择"].contains(button.toolTip ?? "")
+    }
+    let capsulesFit = [reader.leftCol, reader.rightCol].allSatisfy { $0.pageCapsule.frame.width >= 140 }
+    check(compactToolButtons.count == 12 && capsulesFit && compactToolButtons.allSatisfy { button in
         let frame = button.convert(button.bounds, to: reader.view)
         return !button.isHiddenOrHasHiddenAncestor && button.frame.width >= 24 &&
             frame.minX >= 0 && frame.maxX <= reader.view.bounds.width && frame.maxY <= reader.view.bounds.height
-    }, "L05-all-controls", "紧凑布局保留两栏全部翻页与缩放入口，宽度至少24pt且位于画布内")
+    }, "L05-all-controls", "紧凑布局保留两栏全部视图/缩放入口与页码胶囊，宽度至少24pt且位于画布内")
     send("closeSearchAction", to: reader)
     reader.focusSearchField()
     let field = descendants(reader.view).compactMap { $0 as? NSSearchField }.first!
@@ -695,7 +699,7 @@ for kind in ["missing-translated", "landscape-translated", "mixed-rotation"] {
             let split = reader.dualSplitView
             if col.frame.width < 1 || col.frame.height < 1 || !col.pdfView.scaleFactor.isFinite ||
                 abs(col.pdfView.frame.width - col.frame.width) > 2 ||
-                abs(col.pdfView.frame.height - col.frame.height) > 2 ||
+                abs(col.pdfView.frame.height - (col.frame.height - col.columnToolbar.frame.height)) > 2 ||
                 col.frame.minX < -1 || col.frame.maxX > split.bounds.width + 1 { invalid += 1 }
         }
     }
