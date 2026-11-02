@@ -314,10 +314,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let searchNavSeg = NSSegmentedControl()
     private let searchCloseBtn = ModernHoverButton()
     private let searchContainer = NSStackView()
+    private weak var searchTargetColumn: CleanPDFColumnView?
+    private var commandScrollMonitor: Any?
+    private var undoKeyMonitor: Any?
     private let drawerToggleBtn = ModernHoverButton()
 
     // 左侧浮动覆盖式边栏（大纲目录与页面预览，无碰撞直接覆盖）
     private let leftOverlaySidebar = NSVisualEffectView()
+    private var outlineSidebarLeadingConstraint: NSLayoutConstraint?
+    private var outlineSidebarTrailingConstraint: NSLayoutConstraint?
     private let leftOverlaySeg = NSSegmentedControl(labels: ["大纲", "缩略图"], trackingMode: .selectOne, target: nil, action: nil)
     private let leftOverlayCloseBtn = ModernHoverButton()
     private let thumbnailsContainer = NSView()
@@ -385,6 +390,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     private let outlineContainer = NSView()
     private let outlineTableView = NSTableView()
+    private weak var outlineActiveColumn: CleanPDFColumnView?
+    private var navigationSourceColumn: CleanPDFColumnView {
+        if isLeftOverlayOpen, let active = outlineActiveColumn, !active.isHidden { return active }
+        return primaryActiveColumn()
+    }
     private var outlineItems: [(title: String, pageIndex: Int, depth: Int)] = []
     private weak var outlineSourceColumn: CleanPDFColumnView?
     private weak var outlineSourceDocument: PDFDocument?
@@ -473,11 +483,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     deinit {
         searchTask?.cancel()
         searchController.cancel()
+        removeCommandScrollMonitor()
+        removeUndoKeyMonitor()
         NotificationCenter.default.removeObserver(self)
     }
 
     func prepareForClose() {
         guard !isClosed else { return }
+        removeCommandScrollMonitor()
+        removeUndoKeyMonitor()
         if isViewLoaded {
             finishPendingLayout()
             persistReaderState(from: primaryActiveColumn())
@@ -493,6 +507,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         NotificationCenter.default.removeObserver(self)
         notesWebView?.configuration.userContentController.removeScriptMessageHandler(forName: "noteAction")
         selectionPopover.close()
+        leftCol.pdfView.dismissTextMarkupPopover()
+        rightCol.pdfView.dismissTextMarkupPopover()
         if let sheet = activeSheetWindow { sheet.sheetParent?.endSheet(sheet) }
         annotationRenderer.reset()
         currentSearchMatches.removeAll()
@@ -539,6 +555,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         setupMainCanvasAndDrawer(in: root)
         setupFloatingBackBanners()
         setupSyncAndCallbacks()
+        installCommandScrollMonitor()
+        installUndoKeyMonitor()
         root.onGeometryWillChange = { [weak self] in self?.beginLayoutChange() }
         root.onGeometryDidChange = { [weak self] in self?.scheduleLayoutCompletion() }
         root.onLayout = { [weak self] in self?.updateToolbarLayout() }
@@ -1037,9 +1055,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         container.addSubview(leftOverlaySidebar)
 
+        let outlineLeading = leftOverlaySidebar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8)
+        let outlineTrailing = leftOverlaySidebar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8)
+        outlineLeading.isActive = true
+        outlineSidebarLeadingConstraint = outlineLeading
+        outlineSidebarTrailingConstraint = outlineTrailing
+
         NSLayoutConstraint.activate([
             leftOverlaySidebar.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            leftOverlaySidebar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
             leftOverlaySidebar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
             leftOverlaySidebar.widthAnchor.constraint(equalToConstant: 280),
 
@@ -1081,6 +1104,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     @objc private func toggleSearchFieldAction() {
         if searchContainer.isHidden {
+            searchTargetColumn = nil
             openSearchAction()
         } else {
             closeSearchAction()
@@ -1091,6 +1115,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         searchContainer.isHidden = false
         searchToggleBtn.isHidden = true
         searchToggleBtn.state = .on
+        if let target = searchTargetColumn {
+            searchField.placeholderString = target === leftCol ? "在左栏中查找…" : "在右栏中查找…"
+        } else {
+            searchField.placeholderString = "页内查找 (⌘F)…"
+        }
         updateToolbarLayout()
         view.window?.makeFirstResponder(searchField)
     }
@@ -1104,6 +1133,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         leftCol.pdfView.clearSelection()
         rightCol.pdfView.clearSelection()
         searchField.stringValue = ""
+        searchField.placeholderString = "页内查找 (⌘F)…"
+        searchTargetColumn = nil
         searchNavSeg.isHidden = true
         searchMatchLabel.isHidden = true
         searchMatchLabel.stringValue = ""
@@ -2965,14 +2996,38 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     @objc func toggleLeftSidebarAction() {
+        toggleOutlineSidebar(for: primaryActiveColumn())
+    }
+
+    func toggleOutlineSidebar(for column: CleanPDFColumnView) {
         isLeftOverlayOpen.toggle()
+        if isLeftOverlayOpen {
+            outlineActiveColumn = column
+            positionOutlineSidebar(for: column)
+        } else {
+            outlineActiveColumn = nil
+        }
         leftOverlaySidebar.isHidden = !isLeftOverlayOpen
         outlineToggleBtn.state = isLeftOverlayOpen ? .on : .off
         leftCol.columnToolbar.setOutlineActive(isLeftOverlayOpen)
         rightCol.columnToolbar.setOutlineActive(isLeftOverlayOpen)
         if isLeftOverlayOpen {
-            pdfThumbnailView.pdfView = primaryActiveColumn().pdfView
+            pdfThumbnailView.pdfView = column.pdfView
         }
+    }
+
+    private func positionOutlineSidebar(for column: CleanPDFColumnView) {
+        let isVisualRight: Bool
+        if modeSeg.selectedSegment == 0 {
+            isVisualRight = false
+        } else if modeSeg.selectedSegment == 1 {
+            isVisualRight = true
+        } else {
+            isVisualRight = column === (isSwapped ? leftCol : rightCol)
+        }
+        outlineSidebarLeadingConstraint?.isActive = !isVisualRight
+        outlineSidebarTrailingConstraint?.isActive = isVisualRight
+        leftOverlaySidebar.layer?.shadowOffset = CGSize(width: isVisualRight ? -4 : 4, height: -2)
     }
 
     @objc private func leftOverlaySegChanged() {
@@ -2980,7 +3035,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         outlineContainer.isHidden = !isTOC
         thumbnailsContainer.isHidden = isTOC
         if !isTOC {
-            pdfThumbnailView.pdfView = primaryActiveColumn().pdfView
+            pdfThumbnailView.pdfView = navigationSourceColumn.pdfView
         }
     }
 
@@ -3056,7 +3111,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     private func updateNavigationSource() {
-        let column = primaryActiveColumn()
+        let column = navigationSourceColumn
         pdfThumbnailView.pdfView = column.pdfView
         if outlineSourceColumn !== column || outlineSourceDocument !== column.pdfView.document {
             rebuildOutlineData()
@@ -3478,6 +3533,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
     }
 
+    private func revealVisiblePageCapsulesAfterLayout() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self = self, !self.isClosed, !self.view.isHiddenOrHasHiddenAncestor else { return }
+            for column in [self.leftCol, self.rightCol] where !column.isHidden && column.pdfView.document != nil {
+                column.revealPageCapsule()
+            }
+        }
+    }
+
     private func scheduleReadingPositionSave(from column: CleanPDFColumnView) {
         guard viewportCoordinator.acceptsEvents, !isClosed, !view.isHiddenOrHasHiddenAncestor, !column.isHidden,
               column.pdfView.document != nil else { return }
@@ -3542,6 +3606,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         // their layout immediately; a queued load can no longer overwrite them.
         viewportCoordinator.documentsInstalled()
         scheduleLayoutCompletion()
+        revealVisiblePageCapsulesAfterLayout()
         if !searchField.stringValue.isEmpty { performInPDFSearch() }
     }
 
@@ -3561,6 +3626,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         view.layoutSubtreeIfNeeded()
         applyColumnSplitRatio()
         scheduleLayoutCompletion()
+        revealVisiblePageCapsulesAfterLayout()
         if !searchField.stringValue.isEmpty { performInPDFSearch() }
     }
 
@@ -4375,6 +4441,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     func focusSearchField() {
+        searchTargetColumn = nil
         openSearchAction()
     }
 
@@ -4433,6 +4500,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
         updateToolbarLayout()
         splitView.adjustSubviews()
+        if isLeftOverlayOpen {
+            if let active = outlineActiveColumn, active.isHidden { outlineActiveColumn = primaryActiveColumn() }
+            positionOutlineSidebar(for: outlineActiveColumn ?? primaryActiveColumn())
+        }
         if segment != 2 { lastReadingColumn = segment == 0 ? leftCol : rightCol }
         if !isLoadingDocuments { finishPendingLayout() }
         updateNavigationSource()
@@ -4446,9 +4517,18 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let toolbar = col.columnToolbar
         toolbar.onOutline = { [weak self, weak col] in
             guard let self = self, let col = col else { return }
+            if self.isLeftOverlayOpen, self.primaryActiveColumn() !== col {
+                // Keep the existing overlay open but move it to the column
+                // whose outline button was just clicked.
+                self.lastReadingColumn = col
+                self.outlineActiveColumn = col
+                self.updateNavigationSource()
+                self.positionOutlineSidebar(for: col)
+                return
+            }
             self.lastReadingColumn = col
             self.updateNavigationSource()
-            self.toggleLeftSidebarAction()
+            self.toggleOutlineSidebar(for: col)
         }
         toolbar.onSpread = { [weak self, weak col] in
             guard let self = self, let col = col else { return }
@@ -4473,8 +4553,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         toolbar.onSearch = { [weak self, weak col] in
             guard let self = self, let col = col else { return }
             self.lastReadingColumn = col
+            self.searchTargetColumn = col
             self.updateNavigationSource()
             self.openSearchAction()
+            if !self.searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.performInPDFSearch()
+            }
         }
         toolbar.onNotes = { [weak self, weak col] in
             guard let self = self, let col = col else { return }
@@ -4493,6 +4577,85 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         toolbar.setViewMode(col.pdfView.displayMode)
         toolbar.setOutlineActive(isLeftOverlayOpen)
         toolbar.setUndoRedoEnabled(canUndo: col.pdfView.canUndoMarkup, canRedo: col.pdfView.canRedoMarkup)
+    }
+
+    private func installCommandScrollMonitor() {
+        guard commandScrollMonitor == nil else { return }
+        commandScrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self = self, !self.isClosed,
+                  event.modifierFlags.contains(.command),
+                  !self.view.isHiddenOrHasHiddenAncestor,
+                  let window = self.view.window, event.window === window else { return event }
+            let point = self.view.convert(event.locationInWindow, from: nil)
+            guard let hit = self.view.hitTest(point) else { return event }
+            var candidate: NSView? = hit
+            var target: CleanPDFColumnView?
+            while let view = candidate {
+                if let column = view as? CleanPDFColumnView { target = column; break }
+                candidate = view.superview
+            }
+            guard let column = target, !column.isHidden, column.pdfView.document != nil else { return event }
+            self.lastReadingColumn = column
+            let step = event.hasPreciseScrollingDeltas
+                ? event.scrollingDeltaY * 0.012
+                : event.scrollingDeltaY * 0.08
+            guard step.isFinite else { return nil }
+            let proposed = column.pdfView.scaleFactor * CGFloat(exp(step))
+            let clamped = min(5.0, max(0.25, proposed))
+            if abs(clamped - column.pdfView.scaleFactor) > 0.0001 {
+                self.applyCommandScrollZoom(in: column, to: clamped)
+            }
+            return nil
+        }
+    }
+
+    private func installUndoKeyMonitor() {
+        guard undoKeyMonitor == nil else { return }
+        undoKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, !self.isClosed,
+                  !self.view.isHiddenOrHasHiddenAncestor,
+                  let window = self.view.window, event.window === window,
+                  event.modifierFlags.contains(.command),
+                  let characters = event.charactersIgnoringModifiers?.lowercased(),
+                  characters == "z" else { return event }
+            guard !self.readerIsEditingText() else { return event }
+            let column: CleanPDFColumnView?
+            if let last = self.lastReadingColumn, !last.isHidden {
+                column = last
+            } else {
+                column = self.primaryActiveColumn()
+            }
+            guard let column, !column.isHidden, column.pdfView.document != nil else { return event }
+            if event.modifierFlags.contains(.shift) {
+                column.pdfView.redoMarkup()
+            } else {
+                column.pdfView.undoMarkup()
+            }
+            return nil
+        }
+    }
+
+    private func removeUndoKeyMonitor() {
+        guard let undoKeyMonitor else { return }
+        NSEvent.removeMonitor(undoKeyMonitor)
+        self.undoKeyMonitor = nil
+    }
+
+    private func readerIsEditingText() -> Bool {
+        guard let responder = view.window?.firstResponder else { return false }
+        if responder is NSTextView { return true }
+        var node: NSView? = responder as? NSView
+        while let current = node {
+            if current is WKWebView { return true }
+            node = current.superview
+        }
+        return false
+    }
+
+    private func removeCommandScrollMonitor() {
+        guard let commandScrollMonitor else { return }
+        NSEvent.removeMonitor(commandScrollMonitor)
+        self.commandScrollMonitor = nil
     }
 
     private func applyCommandScrollZoom(in column: CleanPDFColumnView, to scale: CGFloat) {
@@ -4518,6 +4681,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
         updateBannerPositions()
         applyColumnSplitRatio()
+        if isLeftOverlayOpen { positionOutlineSidebar(for: outlineActiveColumn ?? primaryActiveColumn()) }
         finishPendingLayout()
     }
 
@@ -4763,7 +4927,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     // MARK: - 9. Right Drawer Refresh (Outline / Notes WebView / Links & Related Papers)
     private func rebuildOutlineData() {
         outlineItems.removeAll()
-        let column = primaryActiveColumn()
+        let column = navigationSourceColumn
         let docWithOutline = column.pdfView.document
         outlineSourceColumn = column
         outlineSourceDocument = docWithOutline
@@ -4982,7 +5146,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let task = DispatchWorkItem { [weak self] in
             guard let self = self, !self.isClosed, self.searchGeneration == generation,
                   !self.searchContainer.isHidden else { return }
-            let columns = [self.leftCol, self.rightCol].filter { !$0.isHidden }
+            let visibleColumns = [self.leftCol, self.rightCol].filter { !$0.isHidden }
+            let columns: [CleanPDFColumnView]
+            if let target = self.searchTargetColumn, visibleColumns.contains(where: { $0 === target }) {
+                columns = [target]
+            } else {
+                columns = visibleColumns
+            }
             self.searchController.search(query, columns: columns) { [weak self] matches in
                 guard let self = self, !self.isClosed, self.searchGeneration == generation,
                       self.searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }

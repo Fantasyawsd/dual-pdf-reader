@@ -263,6 +263,7 @@ final class InteractivePDFView: PDFView {
     var onMarkupStateChanged: (() -> Void)?
     var markupTool: PDFMarkupTool = .pointer {
         didSet {
+            textMarkupPopover?.close()
             window?.invalidateCursorRects(for: self)
             needsDisplay = true
         }
@@ -299,6 +300,9 @@ final class InteractivePDFView: PDFView {
     private var erasedAnnotationIDs: Set<ObjectIdentifier> = []
     private var handDragStart: NSPoint?
     private var handDragOrigin: NSPoint?
+    private var textMarkupPopover: NSPopover?
+    private var textMarkupDraftPage: PDFPage?
+    private var textMarkupDraftPoint: NSPoint?
 
     var canUndoMarkup: Bool { !markupUndoStack.isEmpty }
     var canRedoMarkup: Bool { !markupRedoStack.isEmpty }
@@ -352,7 +356,20 @@ final class InteractivePDFView: PDFView {
 
     override func keyDown(with event: NSEvent) {
         onInteraction?()
+        if event.modifierFlags.contains(.command),
+           let characters = event.charactersIgnoringModifiers?.lowercased(), characters == "z" {
+            if event.modifierFlags.contains(.shift) { redoMarkup() } else { undoMarkup() }
+            return
+        }
         super.keyDown(with: event)
+    }
+
+    @objc func undo(_ sender: Any?) {
+        undoMarkup()
+    }
+
+    @objc func redo(_ sender: Any?) {
+        redoMarkup()
     }
 
     override func resetCursorRects() {
@@ -790,18 +807,7 @@ extension InteractivePDFView {
                 recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
             }
         case .text:
-            let rect = textAnnotationRect(from: start, to: current)
-            let annotation = PDFAnnotation(bounds: rect, forType: .freeText, withProperties: nil)
-            annotation.contents = "文本"
-            annotation.font = .systemFont(ofSize: 12)
-            annotation.fontColor = markupColor
-            annotation.color = .clear
-            let border = PDFBorder()
-            border.lineWidth = 0
-            annotation.border = border
-            annotation.userName = Self.markupUserName
-            page.addAnnotation(annotation)
-            recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+            presentTextMarkupEditor(on: page, at: start)
         case .rectangle, .ellipse, .line, .arrow:
             guard let annotation = gestureAnnotation else { return }
             applyShapeGeometry(annotation, tool: markupTool, start: start, end: current)
@@ -875,11 +881,69 @@ extension InteractivePDFView {
         }
     }
 
-    private func textAnnotationRect(from start: NSPoint, to end: NSPoint) -> NSRect {
-        let rect = NSRect(x: min(start.x, end.x), y: min(start.y, end.y),
-                          width: abs(end.x - start.x), height: abs(end.y - start.y))
-        if rect.width >= 20 && rect.height >= 12 { return rect }
-        return NSRect(x: start.x, y: start.y - 18, width: 140, height: 30)
+    // MARK: Text annotation editor
+
+    private func presentTextMarkupEditor(on page: PDFPage, at point: NSPoint) {
+        textMarkupPopover?.close()
+        textMarkupDraftPage = page
+        textMarkupDraftPoint = point
+        let controller = TextMarkupPopoverController()
+        controller.onCommit = { [weak self] text in self?.commitTextMarkup(text) }
+        controller.onCancel = { [weak self] in self?.dismissTextMarkupEditor() }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = controller
+        popover.delegate = self
+        let anchor = convert(NSRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2), from: page)
+        popover.show(relativeTo: anchor, of: self, preferredEdge: .maxY)
+        textMarkupPopover = popover
+    }
+
+    private func commitTextMarkup(_ text: String) {
+        guard let page = textMarkupDraftPage, let point = textMarkupDraftPoint else { return }
+        let annotation = makeTextAnnotation(text: text, page: page, point: point)
+        page.addAnnotation(annotation)
+        recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+        dismissTextMarkupEditor()
+    }
+
+    private func dismissTextMarkupEditor() {
+        textMarkupPopover?.close()
+        textMarkupPopover = nil
+        textMarkupDraftPage = nil
+        textMarkupDraftPoint = nil
+    }
+
+    private func makeTextAnnotation(text: String, page: PDFPage, point: NSPoint) -> PDFAnnotation {
+        let pageBounds = page.bounds(for: displayBox)
+        let width: CGFloat = 180
+        let height: CGFloat = 34
+        let maxX = max(pageBounds.minX + 4, pageBounds.maxX - width - 4)
+        let maxY = max(pageBounds.minY + 4, pageBounds.maxY - height - 4)
+        let x = min(max(point.x, pageBounds.minX + 4), maxX)
+        let y = min(max(point.y - height / 2, pageBounds.minY + 4), maxY)
+        let rect = NSRect(x: x, y: y, width: width, height: height)
+        let annotation = PDFAnnotation(bounds: rect, forType: .freeText, withProperties: nil)
+        annotation.contents = text
+        annotation.font = .systemFont(ofSize: 12)
+        annotation.fontColor = markupColor
+        annotation.color = .clear
+        annotation.alignment = .left
+        let border = PDFBorder()
+        border.lineWidth = 0
+        annotation.border = border
+        annotation.userName = Self.markupUserName
+        return annotation
+    }
+
+    func addTextMarkupForTesting(text: String, page: PDFPage, at point: NSPoint) {
+        let annotation = makeTextAnnotation(text: text, page: page, point: point)
+        page.addAnnotation(annotation)
+        recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+    }
+
+    func dismissTextMarkupPopover() {
+        dismissTextMarkupEditor()
     }
 
     private func eraseMarkup(at point: NSPoint, on page: PDFPage) {
@@ -948,6 +1012,99 @@ extension InteractivePDFView {
     }
 }
 
+
+// MARK: - Text annotation editor
+
+final class TextMarkupPopoverController: NSViewController, NSTextFieldDelegate {
+    var onCommit: ((String) -> Void)?
+    var onCancel: (() -> Void)?
+    private let textField = NSTextField()
+
+    override func loadView() {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 96))
+        let title = NSTextField(labelWithString: "添加文本批注")
+        title.font = .systemFont(ofSize: 12, weight: .semibold)
+        title.textColor = .labelColor
+        title.translatesAutoresizingMaskIntoConstraints = false
+
+        textField.placeholderString = "输入文本内容"
+        textField.font = .systemFont(ofSize: 13)
+        textField.delegate = self
+        textField.translatesAutoresizingMaskIntoConstraints = false
+
+        let addButton = NSButton(title: "添加", target: self, action: #selector(commitAction))
+        addButton.bezelStyle = .rounded
+        addButton.keyEquivalent = "\r"
+        addButton.translatesAutoresizingMaskIntoConstraints = false
+        let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancelAction))
+        cancelButton.bezelStyle = .rounded
+        cancelButton.keyEquivalent = "\u{1b}"
+        cancelButton.translatesAutoresizingMaskIntoConstraints = false
+        let buttons = NSStackView(views: [cancelButton, addButton])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        buttons.alignment = .centerY
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(title)
+        container.addSubview(textField)
+        container.addSubview(buttons)
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            title.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            textField.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
+            textField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            textField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            buttons.topAnchor.constraint(equalTo: textField.bottomAnchor, constant: 10),
+            buttons.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14)
+        ])
+        view = container
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        view.window?.makeFirstResponder(textField)
+    }
+
+    @objc private func commitAction() {
+        let text = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        onCommit?(text.isEmpty ? "文本" : text)
+    }
+
+    @objc private func cancelAction() {
+        onCancel?()
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            commitAction()
+            return true
+        }
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            cancelAction()
+            return true
+        }
+        return false
+    }
+}
+
+extension InteractivePDFView: NSPopoverDelegate {
+    func popoverDidClose(_ notification: Notification) {
+        textMarkupPopover = nil
+        textMarkupDraftPage = nil
+        textMarkupDraftPoint = nil
+    }
+}
+
+extension InteractivePDFView: NSUserInterfaceValidations {
+    func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(undo(_:)) { return canUndoMarkup }
+        if item.action == #selector(redo(_:)) { return canRedoMarkup }
+        return true
+    }
+}
+
 // MARK: - Single Column Wrapper (Supports Any PDF in the Current Paper Collection)
 final class CleanPDFColumnView: NSView {
     let side: PDFSide
@@ -977,6 +1134,7 @@ final class CleanPDFColumnView: NSView {
     var onPageCapsuleStep: ((Int) -> Void)?
     var onToolbarLayoutChanged: (() -> Void)?
     private var capsuleHideTicket = 0
+    private var capsuleHotspotTrackingArea: NSTrackingArea?
 
     var currentPaperProvider: (() -> PaperItem?)?
     var onSelectColumnSource: ((ColumnContentSource) -> Void)?
@@ -1143,7 +1301,7 @@ final class CleanPDFColumnView: NSView {
             backJumpButton.bottomAnchor.constraint(equalTo: backJumpBanner.bottomAnchor, constant: -5),
             backJumpButton.leadingAnchor.constraint(equalTo: backJumpBanner.leadingAnchor, constant: 14),
             backJumpButton.trailingAnchor.constraint(equalTo: backJumpBanner.trailingAnchor, constant: -14),
-            backJumpBanner.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -18),
+            backJumpBanner.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -56),
 
             emptyPlaceholder.topAnchor.constraint(equalTo: columnToolbar.bottomAnchor),
             emptyPlaceholder.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -1310,6 +1468,21 @@ final class CleanPDFColumnView: NSView {
         onRevealPDFInFinder?(side)
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let capsuleHotspotTrackingArea { removeTrackingArea(capsuleHotspotTrackingArea) }
+        let height = min(64, max(0, bounds.height))
+        let area = NSTrackingArea(rect: NSRect(x: 0, y: 0, width: bounds.width, height: height),
+                                  options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        capsuleHotspotTrackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if point.y <= 64 { revealPageCapsule() }
+    }
+
     func internalScrollView() -> NSScrollView? {
         if let cached = cachedScrollView, cached.isDescendant(of: pdfView) { return cached }
         func findSV(in v: NSView) -> NSScrollView? {
@@ -1374,11 +1547,16 @@ extension CleanPDFColumnView {
         // here would overwrite it with a value that can lag during scrolling.
         capsuleHideTicket += 1
         let ticket = capsuleHideTicket
+        let alreadyVisible = !pageCapsule.isHidden && pageCapsule.alphaValue > 0.98
         pageCapsule.isHidden = false
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            self.pageCapsule.animator().alphaValue = 1
+        if alreadyVisible {
+            pageCapsule.alphaValue = 1
+        } else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                self.pageCapsule.animator().alphaValue = 1
+            }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.capsuleHideTicket == ticket else { return }

@@ -94,6 +94,41 @@ func runReaderToolbarTests(root: URL) throws {
               "\(column.side.rawValue) returning to 阅读 collapses the secondary row again")
     }
 
+    reader.leftCol.columnToolbar.applyMode(.annotate)
+    settle(0.25)
+    reader.view.layoutSubtreeIfNeeded()
+    check(reader.rightCol.columnToolbar.mode == .read && reader.rightCol.columnToolbar.secondaryHeightForTesting == 0,
+          "Changing the left column mode leaves the right column in read mode")
+    for column in [reader.leftCol, reader.rightCol] {
+        let expectedPDFHeight = column.bounds.height - column.columnToolbar.frame.height
+        check(abs(column.pdfView.frame.height - expectedPDFHeight) < 2 && column.pdfView.scaleFactor > 0.01,
+              "(column.side.rawValue) PDF view keeps the correct height below its toolbar after mode changes")
+    }
+
+    reader.leftCol.columnToolbar.setUndoRedoEnabled(canUndo: true, canRedo: false)
+    reader.leftCol.columnToolbar.applyMode(.shape)
+    settle(0.2)
+    check(reader.leftCol.columnToolbar.undoEnabledForTesting && !reader.leftCol.columnToolbar.redoEnabledForTesting,
+          "Column undo state survives switching from 批注 to 形状")
+    reader.leftCol.columnToolbar.applyMode(.read)
+    settle(0.2)
+
+    let narrowToolbar = ColumnToolbarView(frame: NSRect(x: 0, y: 0, width: 180, height: 36))
+    narrowToolbar.layout()
+    let narrowTitles = ["大纲目录", "双页并排", "单页/连续滚动", "自适应宽度", "抓手漫游", "指针选择"]
+    check(!narrowToolbar.overflowButtonForTesting.isHidden &&
+          !narrowToolbar.modeMenuButtonForTesting.isHidden &&
+          Set(narrowToolbar.overflowMenuTitlesForTesting()).isSuperset(of: narrowTitles),
+          "Narrow columns keep every primary tool reachable through the overflow menu")
+    check(narrowToolbar.modeMenuButtonForTesting.title == "阅读",
+          "Narrow columns replace the mode tabs with the current mode menu")
+    narrowToolbar.applyMode(.annotate)
+    narrowToolbar.layout()
+    check(narrowToolbar.secondaryHeightForTesting == 32 && narrowToolbar.modeMenuButtonForTesting.title == "批注",
+          "Narrow columns still expand annotation tools and update the mode menu")
+    check(Set(narrowToolbar.overflowMenuTitlesForTesting()).isSuperset(of: ["撤销批注", "重做批注", "选择颜色…"]),
+          "Narrow annotation mode keeps undo, redo and color reachable from the overflow menu")
+
     // Mode tabs: text-only underline on the selected mode only
     let leftTabs = descendants(reader.leftCol.columnToolbar).compactMap { $0 as? ColumnModeTabView }
     check(leftTabs.map(\.mode.title) == ["阅读", "批注", "形状"], "Left column renders three text-only mode tabs")
@@ -115,7 +150,11 @@ func runReaderToolbarTests(root: URL) throws {
 
     // Page capsule fade, idle hide, and hover persistence
     let capsule = reader.leftCol.pageCapsule
-    check(capsule.isHidden, "Page capsule starts hidden")
+    // The reader briefly reveals the capsule once after loading, so force the
+    // idle state before testing the scroll-driven lifecycle.
+    reader.leftCol.expireHideForTesting()
+    reader.rightCol.expireHideForTesting()
+    check(capsule.isHidden, "Page capsule starts hidden once the initial reveal expires")
     reader.leftCol.revealPageCapsule(hideAfter: 0.35)
     settle(0.25)
     check(!capsule.isHidden && capsule.alphaValue > 0.9, "Page capsule fades in when the column scrolls")
@@ -217,18 +256,20 @@ func runReaderToolbarTests(root: URL) throws {
     dragGesture(from: NSPoint(x: 40, y: 450), to: NSPoint(x: 240, y: 468), tool: .highlight)
     check(markupCount("Highlight") == 1, "高亮 tool creates a native PDF highlight annotation")
     check(probeView.canUndoMarkup, "Markup action enables this column's undo stack")
-    probeView.undoMarkup()
-    check(markupCount("Highlight") == 0 && probeView.canRedoMarkup, "Markup undo removes the annotation and enables redo")
-    probeView.redoMarkup()
-    check(markupCount("Highlight") == 1, "Markup redo restores the annotation")
+    probeView.undo(nil)
+    check(markupCount("Highlight") == 0 && probeView.canRedoMarkup, "Standard undo removes the annotation and enables redo")
+    probeView.redo(nil)
+    check(markupCount("Highlight") == 1, "Standard redo restores the annotation")
 
     dragGesture(from: NSPoint(x: 60, y: 300), to: NSPoint(x: 200, y: 380), tool: .rectangle)
     check(markupCount("Square") == 1, "矩形 tool creates a rectangle annotation")
     clickGesture(at: NSPoint(x: 130, y: 340), tool: .eraser)
     check(markupCount("Square") == 0, "橡皮擦 removes the markup under the pointer")
 
-    clickGesture(at: NSPoint(x: 70, y: 250), tool: .text)
-    check(markupCount("FreeText") == 1, "文本 tool creates a free-text annotation")
+    probeView.addTextMarkupForTesting(text: "测试文本", page: probePage, at: NSPoint(x: 70, y: 250))
+    let freeText = probePage.annotations.first { $0.type == "FreeText" && $0.userName == "DualPDF_Markup" }
+    check(markupCount("FreeText") == 1 && freeText?.contents == "测试文本",
+          "文本 tool creates an editable free-text annotation with the entered content")
     dragGesture(from: NSPoint(x: 60, y: 200), to: NSPoint(x: 170, y: 240), tool: .ink)
     check(markupCount("Ink") == 1, "画笔 tool creates an ink annotation")
     dragGesture(from: NSPoint(x: 40, y: 450), to: NSPoint(x: 240, y: 468), tool: .underline)
