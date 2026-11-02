@@ -405,6 +405,8 @@ final class ColumnToolbarView: NSVisualEffectView {
     private let pointerButton = ModernHoverButton()
     private let searchButton = ModernHoverButton()
     private let notesButton = ModernHoverButton()
+    private let overflowButton = ModernHoverButton()
+    private let modeMenuButton = ModernHoverButton()
     private let paletteButton = ModernHoverButton()
     private var undoButton: ModernHoverButton?
     private var redoButton: ModernHoverButton?
@@ -415,8 +417,11 @@ final class ColumnToolbarView: NSVisualEffectView {
     private let rightGroup = NSStackView()
     private let secondaryRow = NSStackView()
     private var secondaryHeightConstraint: NSLayoutConstraint!
-    private var leftLimitConstraint: NSLayoutConstraint?
+    private var tabsLeadingConstraint: NSLayoutConstraint?
+    private var tabsCenterXConstraint: NSLayoutConstraint?
     private var rightLimitConstraint: NSLayoutConstraint?
+    private var overflowTabsLimitConstraint: NSLayoutConstraint?
+    private var modeMenuOverflowLimitConstraint: NSLayoutConstraint?
     private var tabs: [ColumnModeTabView] = []
     private var toolButtons: [PDFMarkupTool: ModernHoverButton] = [:]
     private var lastAnnotateTool: PDFMarkupTool = .highlight
@@ -426,6 +431,8 @@ final class ColumnToolbarView: NSVisualEffectView {
     private var palettePopover: NSPopover?
     private var lastResponsiveWidth: CGFloat = 0
     private var isUpdatingMode = false
+    private var canUndoMarkup = false
+    private var canRedoMarkup = false
 
     var secondaryHeightForTesting: CGFloat { secondaryHeightConstraint.constant }
     var selectedToolForTesting: PDFMarkupTool { selectedTool }
@@ -442,6 +449,14 @@ final class ColumnToolbarView: NSVisualEffectView {
     }
     var hasPaletteButton: Bool { paletteButton.superview != nil }
     var hasSecondaryRow: Bool { !secondaryRow.isHidden }
+    var overflowButtonForTesting: ModernHoverButton { overflowButton }
+    var modeMenuButtonForTesting: ModernHoverButton { modeMenuButton }
+    var modeTabsVisibleForTesting: Bool { !tabsGroup.isHidden }
+    var undoEnabledForTesting: Bool { undoButton?.isEnabled ?? false }
+    var redoEnabledForTesting: Bool { redoButton?.isEnabled ?? false }
+    func overflowMenuTitlesForTesting() -> [String] {
+        buildOverflowMenu().items.map { $0.title }.filter { !$0.isEmpty }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -497,6 +512,25 @@ final class ColumnToolbarView: NSVisualEffectView {
         rightGroup.translatesAutoresizingMaskIntoConstraints = false
         primaryRow.addSubview(rightGroup)
 
+        configureIconButton(overflowButton, symbols: ["ellipsis", "ellipsis.circle"], tip: "更多工具",
+                            action: #selector(overflowAction), isToggle: false)
+        overflowButton.isHidden = true
+        primaryRow.addSubview(overflowButton)
+
+        modeMenuButton.bezelStyle = .inline
+        modeMenuButton.isBordered = false
+        modeMenuButton.setButtonType(.momentaryPushIn)
+        modeMenuButton.image = columnToolbarSymbol(["chevron.down"], pointSize: 9, weight: .semibold)
+        modeMenuButton.imagePosition = .imageTrailing
+        modeMenuButton.font = .systemFont(ofSize: 12, weight: .medium)
+        modeMenuButton.title = "阅读"
+        modeMenuButton.toolTip = "切换阅读/批注/形状模式"
+        modeMenuButton.target = self
+        modeMenuButton.action = #selector(modeMenuAction)
+        modeMenuButton.translatesAutoresizingMaskIntoConstraints = false
+        modeMenuButton.isHidden = true
+        primaryRow.addSubview(modeMenuButton)
+
         secondaryRow.orientation = .horizontal
         secondaryRow.alignment = .centerY
         secondaryRow.spacing = 3
@@ -521,10 +555,15 @@ final class ColumnToolbarView: NSVisualEffectView {
 
             leftGroup.leadingAnchor.constraint(equalTo: primaryRow.leadingAnchor, constant: 8),
             leftGroup.centerYAnchor.constraint(equalTo: primaryRow.centerYAnchor),
-            tabsGroup.centerXAnchor.constraint(equalTo: primaryRow.centerXAnchor),
             tabsGroup.centerYAnchor.constraint(equalTo: primaryRow.centerYAnchor),
             rightGroup.trailingAnchor.constraint(equalTo: primaryRow.trailingAnchor, constant: -8),
             rightGroup.centerYAnchor.constraint(equalTo: primaryRow.centerYAnchor),
+            overflowButton.trailingAnchor.constraint(equalTo: primaryRow.trailingAnchor, constant: -8),
+            overflowButton.centerYAnchor.constraint(equalTo: primaryRow.centerYAnchor),
+            modeMenuButton.leadingAnchor.constraint(equalTo: primaryRow.leadingAnchor, constant: 8),
+            modeMenuButton.centerYAnchor.constraint(equalTo: primaryRow.centerYAnchor),
+            modeMenuButton.widthAnchor.constraint(equalToConstant: 62),
+            modeMenuButton.heightAnchor.constraint(equalToConstant: 26),
 
             secondaryRow.topAnchor.constraint(equalTo: primaryRow.bottomAnchor),
             secondaryRow.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -537,14 +576,29 @@ final class ColumnToolbarView: NSVisualEffectView {
             bottomLine.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
-        let leftLimit = leftGroup.trailingAnchor.constraint(lessThanOrEqualTo: tabsGroup.leadingAnchor, constant: -6)
-        leftLimit.priority = .defaultHigh
-        leftLimit.isActive = true
-        leftLimitConstraint = leftLimit
+        // Tabs stay centered when there is room. At narrower widths the
+        // center constraint (750) yields and the tabs sit after the left
+        // group instead of disappearing.
+        let tabsCenter = tabsGroup.centerXAnchor.constraint(equalTo: primaryRow.centerXAnchor)
+        tabsCenter.priority = .defaultHigh
+        tabsCenter.isActive = true
+        tabsCenterXConstraint = tabsCenter
+
+        let tabsLeading = tabsGroup.leadingAnchor.constraint(greaterThanOrEqualTo: leftGroup.trailingAnchor, constant: 6)
+        tabsLeading.isActive = true
+        tabsLeadingConstraint = tabsLeading
+
         let rightLimit = tabsGroup.trailingAnchor.constraint(lessThanOrEqualTo: rightGroup.leadingAnchor, constant: -6)
-        rightLimit.priority = .defaultHigh
         rightLimit.isActive = true
         rightLimitConstraint = rightLimit
+
+        let overflowTabsLimit = tabsGroup.trailingAnchor.constraint(lessThanOrEqualTo: overflowButton.leadingAnchor, constant: -6)
+        overflowTabsLimit.isActive = false
+        overflowTabsLimitConstraint = overflowTabsLimit
+
+        let modeMenuOverflowLimit = modeMenuButton.trailingAnchor.constraint(lessThanOrEqualTo: overflowButton.leadingAnchor, constant: -6)
+        modeMenuOverflowLimit.isActive = false
+        modeMenuOverflowLimitConstraint = modeMenuOverflowLimit
 
         configureIconButton(paletteButton, symbols: ["paintpalette", "circle.grid.hex"], tip: "选择颜色", action: #selector(paletteAction), isToggle: false)
         paletteButton.contentTintColor = selectedColor
@@ -576,15 +630,44 @@ final class ColumnToolbarView: NSVisualEffectView {
         let width = bounds.width
         guard width > 0, abs(width - lastResponsiveWidth) > 0.5 else { return }
         lastResponsiveWidth = width
+        updateResponsiveVisibility()
+    }
+
+    private func updateResponsiveVisibility() {
+        let width = bounds.width
+        guard width > 0 else { return }
+        let showLeft = width >= 370
         let showRight = width >= 420
-        let showTabs = width >= 330
+        let showTabs = width >= 240
+        let showModeMenu = !showTabs
+        let showOverflow = !showLeft || !showRight || !showTabs
+        leftGroup.isHidden = !showLeft
         rightGroup.isHidden = !showRight
         tabsGroup.isHidden = !showTabs
-        leftLimitConstraint?.isActive = showTabs
-        rightLimitConstraint?.isActive = showTabs && showRight
-        if let undoButton { undoButton.isHidden = width < 370 }
-        if let redoButton { redoButton.isHidden = width < 370 }
+        modeMenuButton.isHidden = !showModeMenu
+        overflowButton.isHidden = !showOverflow
+        tabsLeadingConstraint?.isActive = showLeft && showTabs
+        rightLimitConstraint?.isActive = showRight
+        overflowTabsLimitConstraint?.isActive = showOverflow && showTabs
+        modeMenuOverflowLimitConstraint?.isActive = showOverflow && showModeMenu
+        if let undoButton { undoButton.isHidden = width < 280 }
+        if let redoButton { redoButton.isHidden = width < 280 }
         paletteButton.isHidden = width < 260
+        applySecondaryDensity()
+    }
+
+    private func applySecondaryDensity() {
+        let compact = mode != .read && bounds.width > 0 && bounds.width < 260
+        for button in toolButtons.values {
+            guard let widthConstraint = button.constraints.first(where: {
+                $0.firstAttribute == .width && $0.firstItem === button
+            }) else { continue }
+            widthConstraint.constant = compact ? 22 : 26
+        }
+        secondaryRow.spacing = compact ? 1 : 3
+        secondaryRow.edgeInsets = compact
+            ? NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
+            : NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
     }
 
     func applyMode(_ newMode: ColumnToolMode) {
@@ -593,8 +676,10 @@ final class ColumnToolbarView: NSVisualEffectView {
         palettePopover?.close()
         palettePopover = nil
         mode = newMode
+        modeMenuButton.title = newMode.title
         for tab in tabs { tab.isSelected = (tab.mode == newMode) }
         rebuildSecondaryRow()
+        updateResponsiveVisibility()
         let targetTool: PDFMarkupTool
         switch newMode {
         case .read: targetTool = .pointer
@@ -622,6 +707,8 @@ final class ColumnToolbarView: NSVisualEffectView {
     }
 
     func setUndoRedoEnabled(canUndo: Bool, canRedo: Bool) {
+        canUndoMarkup = canUndo
+        canRedoMarkup = canRedo
         undoButton?.isEnabled = canUndo
         redoButton?.isEnabled = canRedo
         undoButton?.alphaValue = canUndo ? 1 : 0.38
@@ -699,7 +786,9 @@ final class ColumnToolbarView: NSVisualEffectView {
         redoButton = redo
         secondaryRow.addArrangedSubview(undo)
         secondaryRow.addArrangedSubview(redo)
-        setUndoRedoEnabled(canUndo: false, canRedo: false)
+        // Preserve the column's existing history enablement when rebuilding
+        // the secondary row after a mode switch.
+        setUndoRedoEnabled(canUndo: canUndoMarkup, canRedo: canRedoMarkup)
     }
 
     private func updateSecondaryHeight() {
@@ -718,6 +807,56 @@ final class ColumnToolbarView: NSVisualEffectView {
     @objc private func notesAction() { onNotes?() }
     @objc private func undoAction() { onUndo?() }
     @objc private func redoAction() { onRedo?() }
+
+    @objc private func overflowAction() {
+        let menu = buildOverflowMenu()
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: overflowButton.bounds.height + 4), in: overflowButton)
+    }
+
+    @objc private func modeMenuAction() {
+        let menu = NSMenu(title: "阅读模式")
+        for toolMode in ColumnToolMode.allCases {
+            let item = NSMenuItem(title: toolMode.title, action: #selector(selectModeFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = toolMode.rawValue
+            item.state = toolMode == mode ? .on : .off
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: modeMenuButton.bounds.height + 4), in: modeMenuButton)
+    }
+
+    @objc private func selectModeFromMenu(_ sender: NSMenuItem) {
+        applyMode(ColumnToolMode(rawValue: sender.tag) ?? .read)
+    }
+
+    private func buildOverflowMenu() -> NSMenu {
+        let menu = NSMenu(title: "更多工具")
+        addOverflowItem(menu, title: "大纲目录", action: #selector(outlineAction), isOn: outlineButton.state == .on)
+        addOverflowItem(menu, title: "双页并排", action: #selector(spreadAction), isOn: spreadButton.state == .on)
+        addOverflowItem(menu, title: "单页/连续滚动", action: #selector(continuousAction), isOn: continuousButton.state == .on)
+        addOverflowItem(menu, title: "自适应宽度", action: #selector(fitWidthAction))
+        addOverflowItem(menu, title: "抓手漫游", action: #selector(handAction), isOn: handButton.state == .on)
+        addOverflowItem(menu, title: "指针选择", action: #selector(pointerAction), isOn: pointerButton.state == .on)
+        menu.addItem(.separator())
+        addOverflowItem(menu, title: "页内搜索", action: #selector(searchAction))
+        addOverflowItem(menu, title: "随手笔记", action: #selector(notesAction))
+        if mode != .read {
+            menu.addItem(.separator())
+            addOverflowItem(menu, title: "撤销批注", action: #selector(undoAction), isEnabled: canUndoMarkup)
+            addOverflowItem(menu, title: "重做批注", action: #selector(redoAction), isEnabled: canRedoMarkup)
+            addOverflowItem(menu, title: "选择颜色…", action: #selector(moreColorsAction))
+        }
+        return menu
+    }
+
+    private func addOverflowItem(_ menu: NSMenu, title: String, action: Selector,
+                                 isOn: Bool = false, isEnabled: Bool = true) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.state = isOn ? .on : .off
+        item.isEnabled = isEnabled
+        menu.addItem(item)
+    }
 
     @objc private func handAction() {
         setActiveTool(.hand)
