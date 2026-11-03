@@ -46,7 +46,11 @@ final class PDFAnnotationRenderer {
         else { state = State(document: document); states[colKey] = state }
         let models = Dictionary(selected.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for (id, old) in state.models where models[id] != old {
-            for rendered in state.rendered.removeValue(forKey: id) ?? [] { rendered.page?.removeAnnotation(rendered) }
+            for rendered in state.rendered.removeValue(forKey: id) ?? [] {
+                guard let page = rendered.page else { continue }
+                page.removeAnnotation(rendered)
+                column.pdfView.annotationsChanged(on: page)
+            }
         }
         for (id, model) in models where state.models[id] != model {
             var rendered: [PDFAnnotation] = []
@@ -103,6 +107,7 @@ final class PDFAnnotationRenderer {
                 highlight.contents = tooltip
 
                 page.addAnnotation(highlight)
+                column.pdfView.annotationsChanged(on: page)
                 rendered.append(highlight)
             }
             state.rendered[id] = rendered

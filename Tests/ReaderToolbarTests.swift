@@ -73,6 +73,8 @@ func runReaderToolbarTests(root: URL) throws {
         settle(0.2)
         check(toolbar.secondaryHeightForTesting == 32 && toolbar.hasSecondaryRow,
               "\(column.side.rawValue) 批注 mode expands the secondary toolbar")
+        check(column.pdfView.markupTool == .highlight,
+              "\(column.side.rawValue) 批注 mode activates the highlight tool in the PDF view")
         let annotateTips = Set(toolbar.visibleToolTips)
         check(annotateTips.isSuperset(of: ["高亮", "下划线", "删除线", "画笔", "橡皮擦", "文本", "选择颜色", "撤销", "重做"]),
               "\(column.side.rawValue) 批注 mode exposes core tools, one palette, undo and redo")
@@ -83,6 +85,8 @@ func runReaderToolbarTests(root: URL) throws {
 
         toolbar.applyMode(.shape)
         settle(0.2)
+        check(column.pdfView.markupTool == .rectangle,
+              "\(column.side.rawValue) 形状 mode activates the rectangle tool in the PDF view")
         let shapeTips = Set(toolbar.visibleToolTips)
         check(toolbar.secondaryHeightForTesting == 32 &&
               shapeTips.isSuperset(of: ["矩形", "椭圆", "直线", "箭头", "选择颜色", "撤销", "重做"]),
@@ -128,6 +132,44 @@ func runReaderToolbarTests(root: URL) throws {
           "Narrow columns still expand annotation tools and update the mode menu")
     check(Set(narrowToolbar.overflowMenuTitlesForTesting()).isSuperset(of: ["撤销批注", "重做批注", "选择颜色…"]),
           "Narrow annotation mode keeps undo, redo and color reachable from the overflow menu")
+
+    // Integration pass: the real reader window must route a shape gesture
+    // through its column toolbar and PDF view (not just the isolated probe).
+    let readerWindow = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 1360, height: 860),
+                                styleMask: [.titled], backing: .buffered, defer: false)
+    readerWindow.contentViewController = reader
+    readerWindow.makeKeyAndOrderFront(nil)
+    settle(0.35)
+    reader.view.layoutSubtreeIfNeeded()
+    reader.leftCol.columnToolbar.applyMode(.shape)
+    settle(0.35)
+    reader.view.layoutSubtreeIfNeeded()
+    if let page = reader.leftCol.pdfView.document?.page(at: 0) {
+        let pdf = reader.leftCol.pdfView
+        let pagePoint = pdf.convert(NSPoint(x: pdf.bounds.midX, y: pdf.bounds.midY), to: page)
+        let endPage = NSPoint(x: pagePoint.x + 70, y: pagePoint.y + 35)
+        let startWindow = pdf.convert(pdf.convert(pagePoint, from: page), to: nil)
+        let endWindow = pdf.convert(pdf.convert(endPage, from: page), to: nil)
+        func readerEvent(_ type: NSEvent.EventType, at p: NSPoint, pressure: Float) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: 0,
+                               windowNumber: readerWindow.windowNumber, context: nil,
+                               eventNumber: 1, clickCount: 1, pressure: pressure)
+        }
+        if let down = readerEvent(.leftMouseDown, at: startWindow, pressure: 1),
+           let move = readerEvent(.leftMouseDragged, at: endWindow, pressure: 1),
+           let up = readerEvent(.leftMouseUp, at: endWindow, pressure: 0) {
+            readerWindow.sendEvent(down)
+            readerWindow.sendEvent(move)
+            readerWindow.sendEvent(up)
+        }
+        settle(0.25)
+        check(page.annotations.contains { $0.type == "Square" && $0.userName == "DualPDF_Markup" },
+              "A shape gesture in the actual reader window creates an annotation")
+    } else {
+        check(false, "Reader integration shape gesture has a document page")
+    }
+    reader.leftCol.columnToolbar.applyMode(.read)
+    readerWindow.orderOut(nil)
 
     // Mode tabs: text-only underline on the selected mode only
     let leftTabs = descendants(reader.leftCol.columnToolbar).compactMap { $0 as? ColumnModeTabView }
@@ -231,9 +273,13 @@ func runReaderToolbarTests(root: URL) throws {
               let up = NSEvent.mouseEvent(with: .leftMouseUp, location: b, modifierFlags: [], timestamp: 0,
                                           windowNumber: probeWindow.windowNumber, context: nil, eventNumber: 3,
                                           clickCount: 1, pressure: 0) else { return }
-        probeView.mouseDown(with: down)
-        probeView.mouseDragged(with: move)
-        probeView.mouseUp(with: up)
+        // Deliver through the window so PDFKit's private page views get a
+        // chance to swallow the event first. Calling the view directly hides
+        // regressions in hit testing, which previously made every markup tool
+        // inert in the real app.
+        probeWindow.sendEvent(down)
+        probeWindow.sendEvent(move)
+        probeWindow.sendEvent(up)
         settle(0.12)
     }
     func clickGesture(at point: NSPoint, tool: PDFMarkupTool) {
@@ -245,8 +291,8 @@ func runReaderToolbarTests(root: URL) throws {
               let up = NSEvent.mouseEvent(with: .leftMouseUp, location: p, modifierFlags: [], timestamp: 0,
                                           windowNumber: probeWindow.windowNumber, context: nil, eventNumber: 2,
                                           clickCount: 1, pressure: 0) else { return }
-        probeView.mouseDown(with: down)
-        probeView.mouseUp(with: up)
+        probeWindow.sendEvent(down)
+        probeWindow.sendEvent(up)
         settle(0.12)
     }
     func markupCount(_ type: String) -> Int {
@@ -270,12 +316,34 @@ func runReaderToolbarTests(root: URL) throws {
     let freeText = probePage.annotations.first { $0.type == "FreeText" && $0.userName == "DualPDF_Markup" }
     check(markupCount("FreeText") == 1 && freeText?.contents == "测试文本",
           "文本 tool creates an editable free-text annotation with the entered content")
+    if let color = freeText?.fontColor?.usingColorSpace(.deviceRGB) {
+        let luminance = 0.2126 * color.redComponent + 0.7152 * color.greenComponent + 0.0722 * color.blueComponent
+        check(luminance < 0.6, "Text annotations darken bright highlight colors for readability on white paper")
+    } else {
+        check(false, "Text annotation exposes a readable font color")
+    }
     dragGesture(from: NSPoint(x: 60, y: 200), to: NSPoint(x: 170, y: 240), tool: .ink)
     check(markupCount("Ink") == 1, "画笔 tool creates an ink annotation")
     dragGesture(from: NSPoint(x: 40, y: 450), to: NSPoint(x: 240, y: 468), tool: .underline)
     check(markupCount("Underline") == 1, "下划线 tool creates an underline annotation")
     dragGesture(from: NSPoint(x: 40, y: 450), to: NSPoint(x: 240, y: 468), tool: .strikethrough)
     check(markupCount("StrikeOut") == 1, "删除线 tool creates a strike-out annotation")
+
+    // A persisted highlight is rendered by PDFKit, but its note popover is
+    // owned by InteractivePDFView. PDFKit's page views must not swallow that
+    // click before the app can show the existing-annotation popover.
+    let stored = PaperAnnotation(side: .original, pageIndex: 0,
+                                 rects: [RectCodable(NSRect(x: 40, y: 450, width: 200, height: 18))],
+                                 selectedText: "toolbar alpha beta gamma", color: .yellow,
+                                 markdownNote: "existing note", linkedURL: nil, linkedTitle: nil,
+                                 pdfDocumentId: "original")
+    var clickedStoredAnnotation: PaperAnnotation?
+    probeView.markupTool = .pointer
+    probeView.storedAnnotations = [stored]
+    probeView.onAnnotationClicked = { annotation, _ in clickedStoredAnnotation = annotation }
+    clickGesture(at: NSPoint(x: 140, y: 459), tool: .pointer)
+    check(clickedStoredAnnotation == stored,
+          "Clicking a persisted highlight routes to the existing-note handler")
 
     probeWindow.orderOut(nil)
     probeView.document = nil

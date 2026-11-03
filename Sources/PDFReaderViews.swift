@@ -384,6 +384,40 @@ final class InteractivePDFView: PDFView {
         }
     }
 
+    /// PDFKit installs private page views above the PDFView. When a markup
+    /// tool is active those views would swallow mouse events before our
+    /// gesture handlers run, so route page hits to this view. The pointer
+    /// tool keeps PDFKit's native text-selection and link behavior.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        guard bounds.contains(local) else { return nil }
+        if markupTool == .pointer {
+            // Persisted highlights are drawn by PDFKit, but their note
+            // popovers are owned by this app. PDFKit's private page views
+            // would otherwise consume the click.
+            if storedAnnotation(at: local) != nil { return self }
+            return super.hitTest(point)
+        }
+        if markupTool == .hand { return self }
+        guard page(for: local, nearest: false) != nil else { return super.hitTest(point) }
+        return self
+    }
+
+    private func storedAnnotation(at viewPoint: NSPoint) -> PaperAnnotation? {
+        guard let page = page(for: viewPoint, nearest: false),
+              let doc = document else { return nil }
+        let pageIndex = doc.index(for: page)
+        let pagePoint = convert(viewPoint, to: page)
+        return storedAnnotations.first { annotation in
+            annotation.effectivePDFId == activePDFDocumentId &&
+                annotation.pageRegions.contains { region in
+                    region.pageIndex == pageIndex && region.rects.contains {
+                        $0.cgRect.insetBy(dx: -2, dy: -2).contains(pagePoint)
+                    }
+                }
+        }
+    }
+
     override func mouseDown(with event: NSEvent) {
         onInteraction?()
         if markupTool == .hand {
@@ -395,8 +429,7 @@ final class InteractivePDFView: PDFView {
             return
         }
         let viewPoint = convert(event.locationInWindow, from: nil)
-        if let page = page(for: viewPoint, nearest: false),
-           let doc = document {
+        if let page = page(for: viewPoint, nearest: false) {
             let pagePoint = convert(viewPoint, to: page)
 
             // 1. 检测是否点击了 PDF 原生内部跳转链接 (References / TOC / Figure Links) 或外部链接 (URL)
@@ -429,19 +462,11 @@ final class InteractivePDFView: PDFView {
             }
 
             // 2. 检测是否点击了自定义 PaperAnnotation 高亮/笔记/挂载链接区域
-            let pageIdx = doc.index(for: page)
-            if let hitCustom = storedAnnotations.first(where: { ann in
-                ann.effectivePDFId == self.activePDFDocumentId && ann.pageRegions.contains(where: { region in
-                    region.pageIndex == pageIdx && region.rects.contains(where: {
-                        $0.cgRect.insetBy(dx: -2, dy: -2).contains(pagePoint)
-                    })
-                })
-            }) {
-                super.mouseDown(with: event)
-                if currentSelection == nil || (currentSelection?.string?.isEmpty ?? true) {
-                    onAnnotationClicked?(hitCustom, viewPoint)
-                    return
-                }
+            if let hitCustom = storedAnnotation(at: viewPoint) {
+                // This view owns the highlight's note popover. Do not let
+                // PDFKit start a text selection first: that selection would
+                // suppress the popover and make the highlight look inert.
+                onAnnotationClicked?(hitCustom, viewPoint)
                 return
             }
         }
@@ -701,6 +726,15 @@ extension InteractivePDFView {
 
     // MARK: Markup gestures
 
+    /// PDFKit caches the rendered page and its annotation metadata. Mutating a
+    /// page's annotations does not reliably invalidate that cache, so a shape
+    /// or stroke would otherwise stay invisible until PDFKit happened to
+    /// rebuild the page. This is the documented refresh hook.
+    private func notifyAnnotationsChanged(on page: PDFPage) {
+        annotationsChanged(on: page)
+        needsDisplay = true
+    }
+
     func beginMarkupGesture(with event: NSEvent) {
         let viewPoint = convert(event.locationInWindow, from: nil)
         guard let page = page(for: viewPoint, nearest: true) else { return }
@@ -734,11 +768,13 @@ extension InteractivePDFView {
             annotation.border = border
             annotation.add(path)
             page.addAnnotation(annotation)
+            notifyAnnotationsChanged(on: page)
             gestureAnnotation = annotation
         case .rectangle, .ellipse, .line, .arrow:
             let annotation = makeShapeAnnotation(tool: markupTool, start: start, end: start, on: page)
             if let annotation {
                 page.addAnnotation(annotation)
+                notifyAnnotationsChanged(on: page)
                 gestureAnnotation = annotation
             }
         }
@@ -761,12 +797,13 @@ extension InteractivePDFView {
             if let annotation = gestureAnnotation {
                 annotation.remove(path)
                 annotation.add(path)
+                notifyAnnotationsChanged(on: page)
             }
             needsDisplay = true
         case .rectangle, .ellipse, .line, .arrow:
             guard let annotation = gestureAnnotation else { return }
             applyShapeGeometry(annotation, tool: markupTool, start: start, end: current)
-            needsDisplay = true
+            notifyAnnotationsChanged(on: page)
         case .pointer, .hand, .text:
             break
         }
@@ -791,6 +828,7 @@ extension InteractivePDFView {
             guard let selection = page.selection(from: start, to: current),
                   let annotation = makeTextMarkupAnnotation(tool: markupTool, selection: selection, on: page) else { return }
             page.addAnnotation(annotation)
+            notifyAnnotationsChanged(on: page)
             recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
         case .eraser:
             break
@@ -806,6 +844,7 @@ extension InteractivePDFView {
                 annotation.add(path)
                 recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
             }
+            notifyAnnotationsChanged(on: page)
         case .text:
             presentTextMarkupEditor(on: page, at: start)
         case .rectangle, .ellipse, .line, .arrow:
@@ -817,6 +856,7 @@ extension InteractivePDFView {
             } else {
                 recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
             }
+            notifyAnnotationsChanged(on: page)
         case .pointer, .hand:
             break
         }
@@ -903,6 +943,7 @@ extension InteractivePDFView {
         guard let page = textMarkupDraftPage, let point = textMarkupDraftPoint else { return }
         let annotation = makeTextAnnotation(text: text, page: page, point: point)
         page.addAnnotation(annotation)
+        notifyAnnotationsChanged(on: page)
         recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
         dismissTextMarkupEditor()
     }
@@ -926,7 +967,10 @@ extension InteractivePDFView {
         let annotation = PDFAnnotation(bounds: rect, forType: .freeText, withProperties: nil)
         annotation.contents = text
         annotation.font = .systemFont(ofSize: 12)
-        annotation.fontColor = markupColor
+        // Highlight colors such as yellow are nearly invisible as text on a
+        // white page. Keep the chosen hue but darken bright colors so the
+        // annotation remains readable.
+        annotation.fontColor = readableTextColor(markupColor)
         annotation.color = .clear
         annotation.alignment = .left
         let border = PDFBorder()
@@ -936,9 +980,21 @@ extension InteractivePDFView {
         return annotation
     }
 
+    private func readableTextColor(_ color: NSColor) -> NSColor {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return .black }
+        let luminance = 0.2126 * rgb.redComponent + 0.7152 * rgb.greenComponent + 0.0722 * rgb.blueComponent
+        guard luminance > 0.62 else { return rgb }
+        let factor: CGFloat = 0.42
+        return NSColor(calibratedRed: rgb.redComponent * factor,
+                       green: rgb.greenComponent * factor,
+                       blue: rgb.blueComponent * factor,
+                       alpha: 1)
+    }
+
     func addTextMarkupForTesting(text: String, page: PDFPage, at point: NSPoint) {
         let annotation = makeTextAnnotation(text: text, page: page, point: point)
         page.addAnnotation(annotation)
+        notifyAnnotationsChanged(on: page)
         recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
     }
 
@@ -965,7 +1021,10 @@ extension InteractivePDFView {
             page.removeAnnotation(annotation)
             recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: false), updateState: false)
         }
-        if !hits.isEmpty { onMarkupStateChanged?() }
+        if !hits.isEmpty {
+            notifyAnnotationsChanged(on: page)
+            onMarkupStateChanged?()
+        }
         needsDisplay = true
     }
 
@@ -978,6 +1037,7 @@ extension InteractivePDFView {
         } else {
             edit.page.addAnnotation(edit.annotation)
         }
+        notifyAnnotationsChanged(on: edit.page)
         markupRedoStack.append(edit)
         needsDisplay = true
         onMarkupStateChanged?()
@@ -990,6 +1050,7 @@ extension InteractivePDFView {
         } else {
             edit.page.removeAnnotation(edit.annotation)
         }
+        notifyAnnotationsChanged(on: edit.page)
         markupUndoStack.append(edit)
         needsDisplay = true
         onMarkupStateChanged?()
