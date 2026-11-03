@@ -301,11 +301,16 @@ final class InteractivePDFView: PDFView {
     var onZoomCommand: ((Bool, CGFloat?) -> Void)?
     var onCommandScrollZoom: ((CGFloat) -> Void)?
     var onMarkupStateChanged: (() -> Void)?
+    var onMarkupCreate: ((PaperAnnotation) -> Void)?
+    var onMarkupUpdate: ((PaperAnnotation) -> Void)?
+    var onMarkupDelete: (([String]) -> Void)?
+    var onMarkupVisibilityChanged: ((Set<String>) -> Void)?
     var markupTool: PDFMarkupTool = .pointer {
         didSet {
             textMarkupPopover?.close()
             window?.invalidateCursorRects(for: self)
-            needsDisplay = true
+            if markupTool != .eraser { eraserCursorPoint = nil }
+            markupOverlay?.needsDisplay = true
         }
     }
     var markupColor: NSColor = NSColor.systemYellow
@@ -323,27 +328,56 @@ final class InteractivePDFView: PDFView {
     var onContextMenuSwapColumns: (() -> Void)?
     var onContextMenuResetSync: (() -> Void)?
 
-    var storedAnnotations: [PaperAnnotation] = []
-
-    // Column-local markup undo history. Each PDF view owns its own stack so
-    // undo/redo in one pane never touches the other pane.
-    private struct MarkupEdit {
-        let page: PDFPage
-        let annotation: PDFAnnotation
-        let isAddition: Bool
+    var storedAnnotations: [PaperAnnotation] = [] {
+        didSet { markupOverlay?.needsDisplay = true }
     }
-    private var markupUndoStack: [MarkupEdit] = []
-    private var markupRedoStack: [MarkupEdit] = []
-    private var gestureStartPagePoint: NSPoint?
-    private var gesturePage: PDFPage?
-    private var gestureAnnotation: PDFAnnotation?
-    private var gestureInkPath: NSBezierPath?
-    private var erasedAnnotationIDs: Set<ObjectIdentifier> = []
+    private(set) var selectedMarkupId: String?
+
+    private enum MarkupCommand {
+        case create(PaperAnnotation)
+        case delete([PaperAnnotation])
+        case update(before: PaperAnnotation, after: PaperAnnotation)
+    }
+
+    private enum MarkupHandle {
+        case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
+        case startPoint, endPoint
+    }
+
+    private enum MarkupGestureOperation {
+        case draw(PaperAnnotationKind)
+        case move(id: String, before: PaperAnnotation)
+        case resize(id: String, before: PaperAnnotation, handle: MarkupHandle)
+        case endpoint(id: String, before: PaperAnnotation, isStart: Bool)
+        case erase(Set<String>)
+    }
+
+    private struct MarkupGesture {
+        var page: PDFPage
+        var pageIndex: Int
+        var start: PointCodable
+        var current: PointCodable
+        var points: [PointCodable]
+        var modifiers: NSEvent.ModifierFlags
+        var operation: MarkupGestureOperation
+    }
+
+    private var markupUndoStack: [MarkupCommand] = []
+    private var markupRedoStack: [MarkupCommand] = []
+    private var markupGesture: MarkupGesture?
+    private var markupOverlay: MarkupOverlayView?
+    private var nativeTextMarkupTool: PDFMarkupTool?
     private var handDragStart: NSPoint?
     private var handDragOrigin: NSPoint?
     private var textMarkupPopover: NSPopover?
     private var textMarkupDraftPage: PDFPage?
     private var textMarkupDraftPoint: NSPoint?
+    private var textMarkupDraftAnnotation: PaperAnnotation?
+    private var contextMarkupId: String?
+    private var contextMarkupPoint: NSPoint = .zero
+    private var eraserCursorPoint: NSPoint?
+    private var markupTrackingArea: NSTrackingArea?
+    private var observers: [NSObjectProtocol] = []
 
     var canUndoMarkup: Bool { !markupUndoStack.isEmpty }
     var canRedoMarkup: Bool { !markupRedoStack.isEmpty }
@@ -355,11 +389,24 @@ final class InteractivePDFView: PDFView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         registerForDraggedTypes([.fileURL])
+        installMarkupOverlay()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         registerForDraggedTypes([.fileURL])
+        installMarkupOverlay()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let markupOverlay {
+            addSubview(markupOverlay, positioned: .above, relativeTo: nil)
+        }
+    }
+
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -404,6 +451,20 @@ final class InteractivePDFView: PDFView {
             if event.modifierFlags.contains(.shift) { redoMarkup() } else { undoMarkup() }
             return
         }
+        if event.keyCode == 53 || event.charactersIgnoringModifiers == "\u{1b}" {
+            markupGesture = nil
+            onMarkupVisibilityChanged?([])
+            dismissTextMarkupEditor()
+            markupOverlay?.needsDisplay = true
+            selectMarkup(nil)
+            return
+        }
+        if event.keyCode == 51 || event.keyCode == 117 {
+            if deleteSelectedMarkup() { return }
+        }
+        if [123, 124, 125, 126].contains(Int(event.keyCode)), nudgeSelectedMarkup(for: event) {
+            return
+        }
         super.keyDown(with: event)
     }
 
@@ -421,10 +482,52 @@ final class InteractivePDFView: PDFView {
         case .hand:
             addCursorRect(bounds, cursor: .openHand)
         case .pointer:
-            break
+            addCursorRect(bounds, cursor: .arrow)
+        case .text, .highlight, .underline, .strikethrough:
+            addCursorRect(bounds, cursor: .iBeam)
         default:
             addCursorRect(bounds, cursor: .crosshair)
         }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        guard markupTool == .pointer else {
+            super.cursorUpdate(with: event)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        if let handle = selectedHandle(at: point) {
+            switch handle {
+            case .left, .right: NSCursor.resizeLeftRight.set()
+            case .top, .bottom: NSCursor.resizeUpDown.set()
+            case .topLeft, .bottomRight: NSCursor.resizeLeftRight.set()
+            case .topRight, .bottomLeft: NSCursor.resizeUpDown.set()
+            case .startPoint, .endPoint: NSCursor.pointingHand.set()
+            }
+        } else if markupHit(at: point) != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let markupTrackingArea { removeTrackingArea(markupTrackingArea) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        markupTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if markupTool == .eraser {
+            eraserCursorPoint = convert(event.locationInWindow, from: nil)
+            markupOverlay?.needsDisplay = true
+        }
+        if markupTool == .pointer { cursorUpdate(with: event) }
+        else { super.mouseMoved(with: event) }
     }
 
     /// PDFKit installs private page views above the PDFView. When a markup
@@ -435,30 +538,11 @@ final class InteractivePDFView: PDFView {
         let local = convert(point, from: superview)
         guard bounds.contains(local) else { return nil }
         if markupTool == .pointer {
-            // Persisted highlights are drawn by PDFKit, but their note
-            // popovers are owned by this app. PDFKit's private page views
-            // would otherwise consume the click.
-            if storedAnnotation(at: local) != nil { return self }
-            return super.hitTest(point)
+            return page(for: local, nearest: false) == nil ? super.hitTest(point) : self
         }
         if markupTool == .hand { return self }
         guard page(for: local, nearest: false) != nil else { return super.hitTest(point) }
         return self
-    }
-
-    private func storedAnnotation(at viewPoint: NSPoint) -> PaperAnnotation? {
-        guard let page = page(for: viewPoint, nearest: false),
-              let doc = document else { return nil }
-        let pageIndex = doc.index(for: page)
-        let pagePoint = convert(viewPoint, to: page)
-        return storedAnnotations.first { annotation in
-            annotation.effectivePDFId == activePDFDocumentId &&
-                annotation.pageRegions.contains { region in
-                    region.pageIndex == pageIndex && region.rects.contains {
-                        $0.cgRect.insetBy(dx: -2, dy: -2).contains(pagePoint)
-                    }
-                }
-        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -467,11 +551,21 @@ final class InteractivePDFView: PDFView {
             beginHandPan(with: event)
             return
         }
-        if markupTool.usesDrawingGesture {
+        if markupTool.isTextMarkup {
+            nativeTextMarkupTool = markupTool
+            super.mouseDown(with: event)
+            commitNativeTextMarkupSelection()
+            return
+        }
+        if markupTool != .pointer {
             beginMarkupGesture(with: event)
             return
         }
         let viewPoint = convert(event.locationInWindow, from: nil)
+        if markupTool == .eraser {
+            eraserCursorPoint = viewPoint
+            markupOverlay?.needsDisplay = true
+        }
         if let page = page(for: viewPoint, nearest: false) {
             let pagePoint = convert(viewPoint, to: page)
 
@@ -504,15 +598,11 @@ final class InteractivePDFView: PDFView {
                 }
             }
 
-            // 2. 检测是否点击了自定义 PaperAnnotation 高亮/笔记/挂载链接区域
-            if let hitCustom = storedAnnotation(at: viewPoint) {
-                // This view owns the highlight's note popover. Do not let
-                // PDFKit start a text selection first: that selection would
-                // suppress the popover and make the highlight look inert.
-                onAnnotationClicked?(hitCustom, viewPoint)
+            if handlePointerMouseDown(at: viewPoint, event: event) {
                 return
             }
         }
+        selectMarkup(nil)
         super.mouseDown(with: event)
     }
 
@@ -521,7 +611,19 @@ final class InteractivePDFView: PDFView {
             updateHandPan(with: event)
             return
         }
-        if markupTool.usesDrawingGesture, gestureStartPagePoint != nil {
+        if markupTool.isTextMarkup {
+            super.mouseDragged(with: event)
+            return
+        }
+        if markupTool == .pointer, markupGesture != nil {
+            updateMarkupGesture(with: event)
+            return
+        }
+        if markupTool == .eraser {
+            eraserCursorPoint = convert(event.locationInWindow, from: nil)
+            markupOverlay?.needsDisplay = true
+        }
+        if markupTool != .pointer, markupTool != .hand, markupGesture != nil {
             updateMarkupGesture(with: event)
             return
         }
@@ -533,7 +635,12 @@ final class InteractivePDFView: PDFView {
             endHandPan()
             return
         }
-        if markupTool.usesDrawingGesture, gestureStartPagePoint != nil {
+        if markupTool.isTextMarkup {
+            super.mouseUp(with: event)
+            commitNativeTextMarkupSelection()
+            return
+        }
+        if markupGesture != nil {
             finishMarkupGesture(with: event)
             return
         }
@@ -576,10 +683,50 @@ final class InteractivePDFView: PDFView {
         return urls.filter { $0.pathExtension.lowercased() == "pdf" }
     }
 
+    private func commitNativeTextMarkupSelection() {
+        let tool = nativeTextMarkupTool
+        nativeTextMarkupTool = nil
+        guard let tool, let selection = currentSelection,
+              let document,
+              let annotation = PDFSelectionAnnotationFactory.make(
+                  selection: selection, document: document, side: side,
+                  pdfDocumentId: activePDFDocumentId, color: .nearest(to: markupColor),
+                  note: "", linkedURL: nil, linkedTitle: nil,
+                  kind: tool.annotationKind, colorHex: markupColor.hexString) else { return }
+        commitCreate(annotation)
+        setCurrentSelection(nil, animate: false)
+    }
+
     // MARK: - Native macOS Context Menu
     override func menu(for event: NSEvent) -> NSMenu? {
         onInteraction?()
         let menu = NSMenu(title: "PDF Context Menu")
+        let contextPoint = convert(event.locationInWindow, from: nil)
+        if let annotation = markupHit(at: contextPoint) {
+            contextMarkupId = annotation.id
+            contextMarkupPoint = contextPoint
+            let deleteItem = NSMenuItem(title: "删除", action: #selector(deleteContextMarkupAction), keyEquivalent: "")
+            deleteItem.target = self
+            menu.addItem(deleteItem)
+
+            let colorItem = NSMenuItem(title: "颜色", action: nil, keyEquivalent: "")
+            let colorMenu = NSMenu(title: "颜色")
+            for color in HighlightColor.allCases {
+                let item = NSMenuItem(title: color.displayName, action: #selector(changeContextMarkupColorAction(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = color
+                colorMenu.addItem(item)
+            }
+            colorItem.submenu = colorMenu
+            menu.addItem(colorItem)
+
+            let noteItem = NSMenuItem(title: "添加/编辑笔记", action: #selector(noteContextMarkupAction), keyEquivalent: "")
+            noteItem.target = self
+            menu.addItem(noteItem)
+            menu.addItem(NSMenuItem.separator())
+        } else {
+            contextMarkupId = nil
+        }
 
         if let sel = currentSelection,
            let text = sel.string?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -667,6 +814,27 @@ final class InteractivePDFView: PDFView {
         return menu
     }
 
+    @objc private func deleteContextMarkupAction() {
+        guard let id = contextMarkupId else { return }
+        commitDelete([id])
+    }
+
+    @objc private func changeContextMarkupColorAction(_ sender: NSMenuItem) {
+        guard let id = contextMarkupId,
+              let color = sender.representedObject as? HighlightColor,
+              let annotation = storedAnnotations.first(where: { $0.id == id }) else { return }
+        var updated = annotation
+        updated.color = color
+        updated.colorHex = color.solidColor.hexString
+        commitUpdate(before: annotation, after: updated)
+    }
+
+    @objc private func noteContextMarkupAction() {
+        guard let id = contextMarkupId,
+              let annotation = storedAnnotations.first(where: { $0.id == id }) else { return }
+        onAnnotationClicked?(annotation, contextMarkupPoint)
+    }
+
     @objc private func copySelectedTextAction() {
         copy(self)
     }
@@ -733,11 +901,30 @@ final class InteractivePDFView: PDFView {
 }
 
 
-// MARK: - Hand tool, markup gestures, and per-column undo history
+// MARK: - Hand tool, model-driven markup, and per-column undo history
 extension InteractivePDFView {
-    private static let markupUserName = "DualPDF_Markup"
+    func installMarkupOverlay() {
+        let overlay = MarkupOverlayView(frame: bounds)
+        overlay.autoresizingMask = [.width, .height]
+        overlay.drawContent = { [weak self] in self?.drawMarkupOverlay() }
+        addSubview(overlay, positioned: .above, relativeTo: nil)
+        markupOverlay = overlay
+        observeMarkupViewport()
+    }
 
-    // MARK: Hand tool
+    private func observeMarkupViewport() {
+        let center = NotificationCenter.default
+        for name in [Notification.Name.PDFViewScaleChanged, .PDFViewPageChanged] {
+            observers.append(center.addObserver(forName: name, object: self, queue: .main) { [weak self] _ in
+                self?.markupOverlay?.needsDisplay = true
+            })
+        }
+        guard let clipView = internalScrollView()?.contentView else { return }
+        clipView.postsBoundsChangedNotifications = true
+        observers.append(center.addObserver(forName: NSView.boundsDidChangeNotification, object: clipView, queue: .main) { [weak self] _ in
+            self?.markupOverlay?.needsDisplay = true
+        })
+    }
 
     func beginHandPan(with event: NSEvent) {
         handDragStart = convert(event.locationInWindow, from: nil)
@@ -749,9 +936,8 @@ extension InteractivePDFView {
         guard let start = handDragStart, var origin = handDragOrigin,
               let scroll = internalScrollView() else { return }
         let point = convert(event.locationInWindow, from: nil)
-        let delta = NSPoint(x: point.x - start.x, y: point.y - start.y)
-        origin.x -= delta.x
-        origin.y -= delta.y
+        origin.x -= point.x - start.x
+        origin.y -= point.y - start.y
         scroll.contentView.scroll(to: origin)
         scroll.reflectScrolledClipView(scroll.contentView)
     }
@@ -774,210 +960,280 @@ extension InteractivePDFView {
         return find(self)
     }
 
-    // MARK: Markup gestures
+    func markupHit(at viewPoint: NSPoint) -> PaperAnnotation? {
+        guard let page = page(for: viewPoint, nearest: false), let document,
+              scaleFactor > 0 else { return nil }
+        let pageIndex = document.index(for: page)
+        let pagePoint = convert(viewPoint, to: page)
+        let tolerance: CGFloat = 6
+        let candidates = storedAnnotations.enumerated()
+            .filter { $0.element.effectivePDFId == activePDFDocumentId }
+            .sorted {
+                $0.element.createdAt == $1.element.createdAt
+                    ? $0.offset > $1.offset
+                    : $0.element.createdAt > $1.element.createdAt
+            }
+            .map(\.element)
 
-    /// PDFKit caches the rendered page and its annotation metadata. Mutating a
-    /// page's annotations does not reliably invalidate that cache, so a shape
-    /// or stroke would otherwise stay invisible until PDFKit happened to
-    /// rebuild the page. This is the documented refresh hook.
-    private func notifyAnnotationsChanged(on page: PDFPage) {
-        annotationsChanged(on: page)
-        needsDisplay = true
+        for annotation in candidates {
+            if annotation.effectiveKind.isTextMarkup {
+                let contains = annotation.pageRegions.contains { region in
+                    region.pageIndex == pageIndex && region.rects.contains {
+                        $0.cgRect.insetBy(dx: -tolerance / scaleFactor,
+                                          dy: -tolerance / scaleFactor).contains(pagePoint)
+                    }
+                }
+                if contains { return annotation }
+                continue
+            }
+            guard annotation.pageIndex == pageIndex, let rect = annotation.rects.first?.cgRect else { continue }
+            switch annotation.effectiveKind {
+            case .line, .arrow:
+                guard let start = annotation.startPoint?.cgPoint,
+                      let end = annotation.endPoint?.cgPoint else { continue }
+                let a = convert(start, from: page)
+                let b = convert(end, from: page)
+                if distance(viewPoint, toSegmentFrom: a, to: b) <=
+                    max(tolerance, CGFloat(annotation.strokeWidth ?? 0) * scaleFactor + 3) {
+                    return annotation
+                }
+            case .ink:
+                let segmentTolerance = max(tolerance,
+                                           CGFloat(annotation.strokeWidth ?? 2) * scaleFactor + 3)
+                for path in annotation.inkPaths ?? [] {
+                    let points = path.map { convert($0.cgPoint, from: page) }
+                    if points.contains(where: { hypot($0.x - viewPoint.x, $0.y - viewPoint.y) <= segmentTolerance }) ||
+                        zip(points, points.dropFirst()).contains(where: {
+                            distance(viewPoint, toSegmentFrom: $0.0, to: $0.1) <= segmentTolerance
+                        }) {
+                        return annotation
+                    }
+                }
+            case .rectangle, .ellipse, .text:
+                if convert(rect, from: page).insetBy(dx: -tolerance, dy: -tolerance).contains(viewPoint) {
+                    return annotation
+                }
+            case .highlight, .underline, .strikethrough:
+                break
+            }
+        }
+        return nil
+    }
+
+    private func handlePointerMouseDown(at viewPoint: NSPoint, event: NSEvent) -> Bool {
+        guard let page = page(for: viewPoint, nearest: false), let document else { return false }
+        let pageIndex = document.index(for: page)
+        let pagePoint = PointCodable(convert(viewPoint, to: page))
+        if let handle = selectedHandle(at: viewPoint),
+           let selected = selectedMarkupId,
+           let annotation = storedAnnotations.first(where: { $0.id == selected }) {
+            let operation: MarkupGestureOperation
+            switch handle {
+            case .startPoint: operation = .endpoint(id: selected, before: annotation, isStart: true)
+            case .endPoint: operation = .endpoint(id: selected, before: annotation, isStart: false)
+            default: operation = .resize(id: selected, before: annotation, handle: handle)
+            }
+            beginEditGesture(page: page, pageIndex: pageIndex, point: pagePoint, operation: operation)
+            return true
+        }
+        guard let annotation = markupHit(at: viewPoint) else { return false }
+        selectMarkup(annotation.id)
+        if annotation.effectiveKind.isTextMarkup {
+            onAnnotationClicked?(annotation, viewPoint)
+        }
+        if annotation.effectiveKind == .text, event.clickCount > 1 {
+            presentTextMarkupEditor(on: page, at: pagePoint.cgPoint, editing: annotation)
+            return true
+        }
+        beginEditGesture(page: page, pageIndex: pageIndex, point: pagePoint,
+                         operation: .move(id: annotation.id, before: annotation))
+        return true
+    }
+
+    private func beginEditGesture(page: PDFPage, pageIndex: Int, point: PointCodable,
+                                 operation: MarkupGestureOperation) {
+        window?.makeFirstResponder(self)
+        markupGesture = MarkupGesture(page: page, pageIndex: pageIndex, start: point, current: point,
+                                      points: [], modifiers: [], operation: operation)
+        switch operation {
+        case .move(let id, _), .resize(let id, _, _), .endpoint(let id, _, _):
+            onMarkupVisibilityChanged?([id])
+        case .draw, .erase:
+            break
+        }
+        markupOverlay?.needsDisplay = true
     }
 
     func beginMarkupGesture(with event: NSEvent) {
         let viewPoint = convert(event.locationInWindow, from: nil)
-        guard let page = page(for: viewPoint, nearest: true) else { return }
-        let start = convert(viewPoint, to: page)
-        gestureStartPagePoint = start
-        gesturePage = page
-        gestureAnnotation = nil
-        gestureInkPath = nil
-        erasedAnnotationIDs.removeAll()
+        guard let page = page(for: viewPoint, nearest: false),
+              let document,
+              document.index(for: page) != NSNotFound else { return }
+        let pageIndex = document.index(for: page)
+        let point = PointCodable(convert(viewPoint, to: page))
         window?.makeFirstResponder(self)
-
         switch markupTool {
-        case .pointer, .hand:
-            break
-        case .highlight, .underline, .strikethrough:
-            let selection = page.selection(from: start, to: start)
-            setCurrentSelection(selection, animate: false)
-        case .eraser:
-            eraseMarkup(at: start, on: page)
         case .text:
-            break
+            presentTextMarkupEditor(on: page, at: point.cgPoint)
+        case .eraser:
+            markupGesture = MarkupGesture(page: page, pageIndex: pageIndex, start: point, current: point,
+                                          points: [], modifiers: event.modifierFlags, operation: .erase([]))
+            collectEraseHit(at: viewPoint)
         case .ink:
-            let path = NSBezierPath()
-            path.move(to: start)
-            gestureInkPath = path
-            let annotation = PDFAnnotation(bounds: page.bounds(for: displayBox), forType: .ink, withProperties: nil)
-            annotation.color = markupColor
-            annotation.userName = Self.markupUserName
-            let border = PDFBorder()
-            border.lineWidth = 2.0
-            annotation.border = border
-            annotation.add(path)
-            page.addAnnotation(annotation)
-            notifyAnnotationsChanged(on: page)
-            gestureAnnotation = annotation
+            markupGesture = MarkupGesture(page: page, pageIndex: pageIndex, start: point, current: point,
+                                          points: [point], modifiers: event.modifierFlags, operation: .draw(.ink))
         case .rectangle, .ellipse, .line, .arrow:
-            let annotation = makeShapeAnnotation(tool: markupTool, start: start, end: start, on: page)
-            if let annotation {
-                page.addAnnotation(annotation)
-                notifyAnnotationsChanged(on: page)
-                gestureAnnotation = annotation
-            }
+            markupGesture = MarkupGesture(page: page, pageIndex: pageIndex, start: point, current: point,
+                                          points: [], modifiers: event.modifierFlags,
+                                          operation: .draw(markupTool.annotationKind))
+        case .pointer, .hand, .highlight, .underline, .strikethrough:
+            break
         }
+        markupOverlay?.needsDisplay = true
     }
 
     func updateMarkupGesture(with event: NSEvent) {
-        guard let start = gestureStartPagePoint, let page = gesturePage else { return }
+        guard var gesture = markupGesture else { return }
         let viewPoint = convert(event.locationInWindow, from: nil)
-        let current = convert(viewPoint, to: page)
-
-        switch markupTool {
-        case .highlight, .underline, .strikethrough:
-            let selection = page.selection(from: start, to: current)
-            setCurrentSelection(selection, animate: false)
-        case .eraser:
-            eraseMarkup(at: current, on: page)
-        case .ink:
-            guard let path = gestureInkPath else { return }
-            path.line(to: current)
-            if let annotation = gestureAnnotation {
-                annotation.remove(path)
-                annotation.add(path)
-                notifyAnnotationsChanged(on: page)
+        let point = PointCodable(convert(viewPoint, to: gesture.page))
+        gesture.current = point
+        gesture.modifiers = event.modifierFlags
+        switch gesture.operation {
+        case .draw(.ink):
+            if let last = gesture.points.last,
+               hypot(point.cgPoint.x - last.cgPoint.x, point.cgPoint.y - last.cgPoint.y) >= 0.75 {
+                gesture.points.append(point)
             }
-            needsDisplay = true
-        case .rectangle, .ellipse, .line, .arrow:
-            guard let annotation = gestureAnnotation else { return }
-            applyShapeGeometry(annotation, tool: markupTool, start: start, end: current)
-            notifyAnnotationsChanged(on: page)
-        case .pointer, .hand, .text:
+        case .erase(var ids):
+            if let hit = markupHit(at: viewPoint) { ids.insert(hit.id) }
+            gesture.operation = .erase(ids)
+            onMarkupVisibilityChanged?(ids)
+        default:
             break
         }
+        markupGesture = gesture
+        markupOverlay?.needsDisplay = true
     }
 
     func finishMarkupGesture(with event: NSEvent) {
-        defer {
-            gestureStartPagePoint = nil
-            gesturePage = nil
-            gestureAnnotation = nil
-            gestureInkPath = nil
-            erasedAnnotationIDs.removeAll()
-            needsDisplay = true
-        }
-        guard let start = gestureStartPagePoint, let page = gesturePage else { return }
+        guard var gesture = markupGesture else { return }
         let viewPoint = convert(event.locationInWindow, from: nil)
-        let current = convert(viewPoint, to: page)
+        gesture.current = PointCodable(convert(viewPoint, to: gesture.page))
+        gesture.modifiers = event.modifierFlags
+        markupGesture = gesture
+        defer {
+            markupGesture = nil
+            onMarkupVisibilityChanged?([])
+            markupOverlay?.needsDisplay = true
+        }
 
-        switch markupTool {
-        case .highlight, .underline, .strikethrough:
-            defer { setCurrentSelection(nil, animate: false) }
-            guard let selection = page.selection(from: start, to: current),
-                  let annotation = makeTextMarkupAnnotation(tool: markupTool, selection: selection, on: page) else { return }
-            page.addAnnotation(annotation)
-            notifyAnnotationsChanged(on: page)
-            recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
-        case .eraser:
-            break
-        case .ink:
-            guard let annotation = gestureAnnotation, let path = gestureInkPath else { return }
-            if path.bounds.width < 1.0 && path.bounds.height < 1.0 {
-                page.removeAnnotation(annotation)
+        switch gesture.operation {
+        case .draw(let kind):
+            if kind == .ink {
+                if let last = gesture.points.last,
+                   hypot(gesture.current.cgPoint.x - last.cgPoint.x,
+                         gesture.current.cgPoint.y - last.cgPoint.y) >= 0.75 {
+                    gesture.points.append(gesture.current)
+                }
+                guard let bounds = pointBounds(gesture.points), bounds.width >= 2 || bounds.height >= 2 else { return }
+                var annotation = makeMarkup(kind: .ink, pageIndex: gesture.pageIndex,
+                                            rect: bounds, selectedText: "")
+                annotation.inkPaths = [gesture.points]
+                annotation.strokeWidth = 2
+                commitCreate(annotation)
             } else {
-                // Keep the page-sized bounds: PDFKit resolves ink paths in
-                // annotation space, so shrinking bounds moves and clips the
-                // stroke instead of merely tightening its hit area.
-                annotation.remove(path)
-                annotation.add(path)
-                recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+                let end = constrainedEnd(gesture.current.cgPoint, from: gesture.start.cgPoint,
+                                         kind: kind, shift: gesture.modifiers.contains(.shift))
+                let rect = CGRect(x: min(gesture.start.x, end.x), y: min(gesture.start.y, end.y),
+                                  width: abs(end.x - gesture.start.x), height: abs(end.y - gesture.start.y))
+                guard hypot(end.x - gesture.start.x, end.y - gesture.start.y) >= 3 else { return }
+                var annotation = makeMarkup(kind: kind, pageIndex: gesture.pageIndex,
+                                            rect: rect, selectedText: "")
+                if kind == .line || kind == .arrow {
+                    annotation.startPoint = gesture.start
+                    annotation.endPoint = PointCodable(end)
+                }
+                commitCreate(annotation)
             }
-            notifyAnnotationsChanged(on: page)
-        case .text:
-            presentTextMarkupEditor(on: page, at: start)
-        case .rectangle, .ellipse, .line, .arrow:
-            guard let annotation = gestureAnnotation else { return }
-            applyShapeGeometry(annotation, tool: markupTool, start: start, end: current)
-            let distance = sqrt(pow(current.x - start.x, 2) + pow(current.y - start.y, 2))
-            if distance < 2 {
-                page.removeAnnotation(annotation)
+        case .erase(let ids):
+            if !ids.isEmpty { commitDelete(Array(ids)) }
+        case .move(let id, let before):
+            let after = translated(before, dx: gesture.current.x - gesture.start.x,
+                                   dy: gesture.current.y - gesture.start.y)
+            if hypot(gesture.current.x - gesture.start.x, gesture.current.y - gesture.start.y) >= 1 {
+                commitUpdate(before: before, after: after)
             } else {
-                recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+                selectMarkup(id)
             }
-            notifyAnnotationsChanged(on: page)
-        case .pointer, .hand:
-            break
+        case .resize(let id, let before, let handle):
+            let after = resized(before, handle: handle, to: gesture.current.cgPoint,
+                                constrain: gesture.modifiers.contains(.shift))
+            if before != after { commitUpdate(before: before, after: after) } else { selectMarkup(id) }
+        case .endpoint(let id, let before, let isStart):
+            var after = before
+            if isStart { after.startPoint = gesture.current } else { after.endPoint = gesture.current }
+            if let start = after.startPoint?.cgPoint, let end = after.endPoint?.cgPoint {
+                after.rects = [RectCodable(CGRect(x: min(start.x, end.x), y: min(start.y, end.y),
+                                                width: abs(end.x - start.x), height: abs(end.y - start.y)))]
+            }
+            if before != after { commitUpdate(before: before, after: after) } else { selectMarkup(id) }
         }
     }
 
-    private func makeTextMarkupAnnotation(tool: PDFMarkupTool, selection: PDFSelection, on page: PDFPage) -> PDFAnnotation? {
-        let lines = selection.selectionsByLine().filter { $0.pages.contains(page) }
-        let rects = lines.map { $0.bounds(for: page) }.filter { $0.width > 1 || $0.height > 1 }
-        guard let first = rects.first, let subtype = tool.annotationSubtype else { return nil }
-        var union = first
-        for rect in rects.dropFirst() { union = union.union(rect) }
-        let annotation = PDFAnnotation(bounds: union, forType: subtype, withProperties: nil)
-        var quadPoints: [NSValue] = []
-        // PDFKit expects quadrilateral points in annotation space (relative to
-        // the annotation bounds origin), not page space.
-        for rect in rects {
-            let local = NSRect(x: rect.minX - union.minX, y: rect.minY - union.minY, width: rect.width, height: rect.height)
-            quadPoints.append(NSValue(point: NSPoint(x: local.minX, y: local.maxY)))
-            quadPoints.append(NSValue(point: NSPoint(x: local.maxX, y: local.maxY)))
-            quadPoints.append(NSValue(point: NSPoint(x: local.minX, y: local.minY)))
-            quadPoints.append(NSValue(point: NSPoint(x: local.maxX, y: local.minY)))
-        }
-        annotation.quadrilateralPoints = quadPoints
-        annotation.color = markupColor.withAlphaComponent(tool.colorAlpha)
-        annotation.userName = Self.markupUserName
+    private func collectEraseHit(at viewPoint: NSPoint) {
+        guard var gesture = markupGesture else { return }
+        guard case .erase(var ids) = gesture.operation else { return }
+        if let hit = markupHit(at: viewPoint) { ids.insert(hit.id) }
+        gesture.operation = .erase(ids)
+        markupGesture = gesture
+        onMarkupVisibilityChanged?(ids)
+    }
+
+    private func makeMarkup(kind: PaperAnnotationKind, pageIndex: Int, rect: CGRect,
+                            selectedText: String) -> PaperAnnotation {
+        var annotation = PaperAnnotation(side: side, pageIndex: pageIndex, rects: [RectCodable(rect)],
+                                         selectedText: selectedText, color: .nearest(to: markupColor),
+                                         markdownNote: "", linkedURL: nil, linkedTitle: nil,
+                                         pdfDocumentId: activePDFDocumentId)
+        annotation.kind = kind
+        annotation.colorHex = markupColor.hexString
+        annotation.strokeWidth = kind == .ink ? 2 : 1.6
         return annotation
     }
 
-    private func makeShapeAnnotation(tool: PDFMarkupTool, start: NSPoint, end: NSPoint, on page: PDFPage) -> PDFAnnotation? {
-        guard let subtype = tool.annotationSubtype else { return nil }
-        let annotation = PDFAnnotation(bounds: shapeBounds(start: start, end: end, tool: tool),
-                                       forType: subtype, withProperties: nil)
-        annotation.color = markupColor
-        let border = PDFBorder()
-        border.lineWidth = 1.6
-        annotation.border = border
-        annotation.userName = Self.markupUserName
-        if tool == .rectangle || tool == .ellipse {
-            annotation.interiorColor = markupColor.withAlphaComponent(0.06)
+    private func constrainedEnd(_ end: CGPoint, from start: CGPoint, kind: PaperAnnotationKind,
+                                shift: Bool) -> CGPoint {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        if shift, kind == .rectangle || kind == .ellipse {
+            let length = max(abs(dx), abs(dy))
+            return CGPoint(x: start.x + (dx < 0 ? -length : length),
+                           y: start.y + (dy < 0 ? -length : length))
         }
-        applyShapeGeometry(annotation, tool: tool, start: start, end: end)
-        return annotation
+        if shift, kind == .line || kind == .arrow {
+            let angle = atan2(dy, dx)
+            let snapped = (angle / (.pi / 4)).rounded() * (.pi / 4)
+            let length = hypot(dx, dy)
+            return CGPoint(x: start.x + cos(snapped) * length, y: start.y + sin(snapped) * length)
+        }
+        return end
     }
 
-    private func shapeBounds(start: NSPoint, end: NSPoint, tool: PDFMarkupTool) -> NSRect {
-        let rect = NSRect(x: min(start.x, end.x), y: min(start.y, end.y),
-                          width: abs(end.x - start.x), height: abs(end.y - start.y))
-        if tool == .line || tool == .arrow {
-            return rect.insetBy(dx: -2, dy: -2)
-        }
-        return rect
-    }
-
-    private func applyShapeGeometry(_ annotation: PDFAnnotation, tool: PDFMarkupTool, start: NSPoint, end: NSPoint) {
-        let bounds = shapeBounds(start: start, end: end, tool: tool)
-        annotation.bounds = bounds
-        if tool == .line || tool == .arrow {
-            annotation.startPoint = NSPoint(x: start.x - bounds.minX, y: start.y - bounds.minY)
-            annotation.endPoint = NSPoint(x: end.x - bounds.minX, y: end.y - bounds.minY)
-            annotation.startLineStyle = .none
-            annotation.endLineStyle = tool == .arrow ? .closedArrow : .none
+    private func pointBounds(_ points: [PointCodable]) -> CGRect? {
+        guard let first = points.first else { return nil }
+        return points.dropFirst().reduce(CGRect(origin: first.cgPoint, size: .zero)) {
+            $0.union(CGRect(origin: $1.cgPoint, size: .zero))
         }
     }
 
-    // MARK: Text annotation editor
-
-    private func presentTextMarkupEditor(on page: PDFPage, at point: NSPoint) {
+    private func presentTextMarkupEditor(on page: PDFPage, at point: CGPoint,
+                                         editing annotation: PaperAnnotation? = nil) {
         textMarkupPopover?.close()
         textMarkupDraftPage = page
         textMarkupDraftPoint = point
-        let controller = TextMarkupPopoverController()
+        textMarkupDraftAnnotation = annotation
+        let controller = TextMarkupPopoverController(initialText: annotation?.selectedText ?? "",
+                                                     isEditing: annotation != nil)
         controller.onCommit = { [weak self] text in self?.commitTextMarkup(text) }
         controller.onCancel = { [weak self] in self?.dismissTextMarkupEditor() }
         let popover = NSPopover()
@@ -991,11 +1247,32 @@ extension InteractivePDFView {
 
     private func commitTextMarkup(_ text: String) {
         guard let page = textMarkupDraftPage, let point = textMarkupDraftPoint else { return }
-        let annotation = makeTextAnnotation(text: text, page: page, point: point)
-        page.addAnnotation(annotation)
-        notifyAnnotationsChanged(on: page)
-        recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+        if let before = textMarkupDraftAnnotation {
+            var after = before
+            after.selectedText = text
+            after.rects = [RectCodable(measuredTextBounds(text, origin: before.rects.first?.cgRect.origin ?? point,
+                                                         on: page))]
+            commitUpdate(before: before, after: after)
+        } else {
+            let bounds = measuredTextBounds(text, origin: point, on: page)
+            commitCreate(makeMarkup(kind: .text, pageIndex: document?.index(for: page) ?? 0,
+                                    rect: bounds, selectedText: text))
+        }
         dismissTextMarkupEditor()
+    }
+
+    private func measuredTextBounds(_ text: String, origin: CGPoint, on page: PDFPage) -> CGRect {
+        let font = NSFont.systemFont(ofSize: 12)
+        let measured = (text as NSString).boundingRect(
+            with: NSSize(width: 232, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font])
+        let width = min(240, max(12, ceil(measured.width) + 8))
+        let height = max(18, ceil(measured.height)) + 8
+        let pageBounds = page.bounds(for: displayBox).insetBy(dx: 4, dy: 4)
+        let x = min(max(origin.x, pageBounds.minX), max(pageBounds.minX, pageBounds.maxX - width))
+        let y = min(max(origin.y, pageBounds.minY), max(pageBounds.minY, pageBounds.maxY - height))
+        return CGRect(x: x, y: y, width: min(width, pageBounds.width), height: min(height, pageBounds.height))
     }
 
     private func dismissTextMarkupEditor() {
@@ -1003,123 +1280,378 @@ extension InteractivePDFView {
         textMarkupPopover = nil
         textMarkupDraftPage = nil
         textMarkupDraftPoint = nil
-    }
-
-    private func makeTextAnnotation(text: String, page: PDFPage, point: NSPoint) -> PDFAnnotation {
-        let pageBounds = page.bounds(for: displayBox)
-        let width: CGFloat = 180
-        let height: CGFloat = 34
-        let maxX = max(pageBounds.minX + 4, pageBounds.maxX - width - 4)
-        let maxY = max(pageBounds.minY + 4, pageBounds.maxY - height - 4)
-        let x = min(max(point.x, pageBounds.minX + 4), maxX)
-        let y = min(max(point.y - height / 2, pageBounds.minY + 4), maxY)
-        let rect = NSRect(x: x, y: y, width: width, height: height)
-        let annotation = PDFAnnotation(bounds: rect, forType: .freeText, withProperties: nil)
-        annotation.contents = text
-        annotation.font = .systemFont(ofSize: 12)
-        // Highlight colors such as yellow are nearly invisible as text on a
-        // white page. Keep the chosen hue but darken bright colors so the
-        // annotation remains readable.
-        annotation.fontColor = readableTextColor(markupColor)
-        annotation.color = .clear
-        annotation.alignment = .left
-        let border = PDFBorder()
-        border.lineWidth = 0
-        annotation.border = border
-        annotation.userName = Self.markupUserName
-        return annotation
-    }
-
-    private func readableTextColor(_ color: NSColor) -> NSColor {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return .black }
-        let luminance = 0.2126 * rgb.redComponent + 0.7152 * rgb.greenComponent + 0.0722 * rgb.blueComponent
-        guard luminance > 0.62 else { return rgb }
-        let factor: CGFloat = 0.42
-        return NSColor(calibratedRed: rgb.redComponent * factor,
-                       green: rgb.greenComponent * factor,
-                       blue: rgb.blueComponent * factor,
-                       alpha: 1)
+        textMarkupDraftAnnotation = nil
     }
 
     func addTextMarkupForTesting(text: String, page: PDFPage, at point: NSPoint) {
-        let annotation = makeTextAnnotation(text: text, page: page, point: point)
-        page.addAnnotation(annotation)
-        notifyAnnotationsChanged(on: page)
-        recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: true))
+        let bounds = measuredTextBounds(text, origin: point, on: page)
+        commitCreate(makeMarkup(kind: .text, pageIndex: document?.index(for: page) ?? 0,
+                                rect: bounds, selectedText: text))
     }
 
     func dismissTextMarkupPopover() {
         dismissTextMarkupEditor()
     }
 
-    private func eraseMarkup(at point: NSPoint, on page: PDFPage) {
-        let hits = page.annotations.filter { annotation in
-            guard annotation.userName == Self.markupUserName else { return false }
-            if annotation.type == "Ink" || annotation.type == "/Ink" {
-                if let paths = annotation.paths, !paths.isEmpty {
-                    return paths.contains { path in
-                        path.bounds.insetBy(dx: -6, dy: -6).contains(point)
-                    }
-                }
+    private func selectedHandle(at viewPoint: NSPoint) -> MarkupHandle? {
+        guard let id = selectedMarkupId,
+              let annotation = storedAnnotations.first(where: { $0.id == id }),
+              !annotation.effectiveKind.isTextMarkup,
+              let page = page(for: viewPoint, nearest: false),
+              annotation.pageIndex == document?.index(for: page) else { return nil }
+        if annotation.effectiveKind == .line || annotation.effectiveKind == .arrow {
+            if let start = annotation.startPoint?.cgPoint,
+               hypot(convert(start, from: page).x - viewPoint.x, convert(start, from: page).y - viewPoint.y) <= 7 {
+                return .startPoint
             }
-            return annotation.bounds.insetBy(dx: -3, dy: -3).contains(point)
+            if let end = annotation.endPoint?.cgPoint,
+               hypot(convert(end, from: page).x - viewPoint.x, convert(end, from: page).y - viewPoint.y) <= 7 {
+                return .endPoint
+            }
+            return nil
         }
-        for annotation in hits {
-            let id = ObjectIdentifier(annotation)
-            guard !erasedAnnotationIDs.contains(id) else { continue }
-            erasedAnnotationIDs.insert(id)
-            page.removeAnnotation(annotation)
-            recordMarkupEdit(MarkupEdit(page: page, annotation: annotation, isAddition: false), updateState: false)
-        }
-        if !hits.isEmpty {
-            notifyAnnotationsChanged(on: page)
-            onMarkupStateChanged?()
-        }
-        needsDisplay = true
+        guard let rect = annotation.rects.first?.cgRect else { return nil }
+        let viewRect = convert(rect, from: page)
+        let xMid = viewRect.midX
+        let yMid = viewRect.midY
+        let handles: [(MarkupHandle, NSPoint)] = [
+            (.topLeft, NSPoint(x: viewRect.minX, y: viewRect.maxY)),
+            (.top, NSPoint(x: xMid, y: viewRect.maxY)),
+            (.topRight, NSPoint(x: viewRect.maxX, y: viewRect.maxY)),
+            (.right, NSPoint(x: viewRect.maxX, y: yMid)),
+            (.bottomRight, NSPoint(x: viewRect.maxX, y: viewRect.minY)),
+            (.bottom, NSPoint(x: xMid, y: viewRect.minY)),
+            (.bottomLeft, NSPoint(x: viewRect.minX, y: viewRect.minY)),
+            (.left, NSPoint(x: viewRect.minX, y: yMid))
+        ]
+        return handles.first { abs($0.1.x - viewPoint.x) <= 6 && abs($0.1.y - viewPoint.y) <= 6 }?.0
     }
 
-    // MARK: Undo / redo
+    private func selectMarkup(_ id: String?) {
+        selectedMarkupId = id
+        markupOverlay?.needsDisplay = true
+        window?.invalidateCursorRects(for: self)
+    }
+
+    private func deleteSelectedMarkup() -> Bool {
+        guard let id = selectedMarkupId else { return false }
+        commitDelete([id])
+        return true
+    }
+
+    private func nudgeSelectedMarkup(for event: NSEvent) -> Bool {
+        guard let id = selectedMarkupId,
+              let before = storedAnnotations.first(where: { $0.id == id }) else { return false }
+        let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
+        let delta: CGPoint
+        switch event.keyCode {
+        case 123: delta = CGPoint(x: -step, y: 0)
+        case 124: delta = CGPoint(x: step, y: 0)
+        case 125: delta = CGPoint(x: 0, y: -step)
+        case 126: delta = CGPoint(x: 0, y: step)
+        default: return false
+        }
+        commitUpdate(before: before, after: translated(before, dx: Double(delta.x), dy: Double(delta.y)))
+        return true
+    }
+
+    private func translated(_ annotation: PaperAnnotation, dx: Double, dy: Double) -> PaperAnnotation {
+        var updated = annotation
+        func move(_ point: PointCodable) -> PointCodable {
+            PointCodable(CGPoint(x: CGFloat(point.x + dx), y: CGFloat(point.y + dy)))
+        }
+        func move(_ rect: RectCodable) -> RectCodable {
+            RectCodable(CGRect(x: CGFloat(rect.x + dx), y: CGFloat(rect.y + dy),
+                               width: CGFloat(rect.width), height: CGFloat(rect.height)))
+        }
+        updated.rects = annotation.rects.map(move)
+        updated.additionalPageRegions = annotation.additionalPageRegions?.map { region in
+            AnnotationPageRegion(pageIndex: region.pageIndex, rects: region.rects.map(move))
+        }
+        updated.inkPaths = annotation.inkPaths?.map { $0.map(move) }
+        if let start = annotation.startPoint { updated.startPoint = move(start) }
+        if let end = annotation.endPoint { updated.endPoint = move(end) }
+        return updated
+    }
+
+    private func resized(_ annotation: PaperAnnotation, handle: MarkupHandle, to point: CGPoint,
+                         constrain: Bool) -> PaperAnnotation {
+        guard let old = annotation.rects.first?.cgRect else { return annotation }
+        var minX = old.minX, maxX = old.maxX, minY = old.minY, maxY = old.maxY
+        switch handle {
+        case .topLeft: minX = point.x; maxY = point.y
+        case .top: maxY = point.y
+        case .topRight: maxX = point.x; maxY = point.y
+        case .right: maxX = point.x
+        case .bottomRight: maxX = point.x; minY = point.y
+        case .bottom: minY = point.y
+        case .bottomLeft: minX = point.x; minY = point.y
+        case .left: minX = point.x
+        case .startPoint, .endPoint: return annotation
+        }
+        let isCorner = handle == .topLeft || handle == .topRight || handle == .bottomLeft || handle == .bottomRight
+        if (constrain || annotation.effectiveKind == .ink), isCorner {
+            let anchor = CGPoint(x: handle == .topLeft || handle == .bottomLeft ? old.maxX : old.minX,
+                                 y: handle == .topLeft || handle == .topRight ? old.minY : old.maxY)
+            let dx = point.x - anchor.x
+            let dy = point.y - anchor.y
+            let size = max(abs(dx), abs(dy))
+            minX = dx < 0 ? anchor.x - size : anchor.x
+            maxX = dx < 0 ? anchor.x : anchor.x + size
+            minY = dy < 0 ? anchor.y - size : anchor.y
+            maxY = dy < 0 ? anchor.y : anchor.y + size
+        }
+        let next = CGRect(x: min(minX, maxX), y: min(minY, maxY),
+                          width: max(1, abs(maxX - minX)), height: max(1, abs(maxY - minY)))
+        var updated = annotation
+        updated.rects[0] = RectCodable(next)
+        if annotation.effectiveKind == .ink,
+           old.width > 0, old.height > 0 {
+            updated.inkPaths = annotation.inkPaths?.map { path in
+                path.map { point in
+                    PointCodable(CGPoint(
+                        x: next.minX + (CGFloat(point.x) - old.minX) * next.width / old.width,
+                        y: next.minY + (CGFloat(point.y) - old.minY) * next.height / old.height))
+                }
+            }
+        }
+        return updated
+    }
+
+    private func commitCreate(_ annotation: PaperAnnotation) {
+        onMarkupCreate?(annotation)
+        markupUndoStack.append(.create(annotation))
+        markupRedoStack.removeAll()
+        selectMarkup(annotation.id)
+        onMarkupStateChanged?()
+    }
+
+    private func commitUpdate(before: PaperAnnotation, after: PaperAnnotation) {
+        guard before != after else { return }
+        onMarkupUpdate?(after)
+        markupUndoStack.append(.update(before: before, after: after))
+        markupRedoStack.removeAll()
+        selectMarkup(after.id)
+        onMarkupStateChanged?()
+    }
+
+    private func commitDelete(_ ids: [String]) {
+        let uniqueIDs = Array(Set(ids))
+        let removed = uniqueIDs.compactMap { id in storedAnnotations.first(where: { $0.id == id }) }
+        guard !removed.isEmpty else { return }
+        onMarkupDelete?(removed.map(\.id))
+        markupUndoStack.append(.delete(removed))
+        markupRedoStack.removeAll()
+        if removed.contains(where: { $0.id == selectedMarkupId }) { selectMarkup(nil) }
+        onMarkupStateChanged?()
+    }
+
+    func updateSelectedMarkupColor(_ color: NSColor) {
+        guard let id = selectedMarkupId,
+              let before = storedAnnotations.first(where: { $0.id == id }) else { return }
+        var after = before
+        after.color = .nearest(to: color)
+        after.colorHex = color.hexString
+        commitUpdate(before: before, after: after)
+    }
 
     func undoMarkup() {
-        guard let edit = markupUndoStack.popLast() else { return }
-        if edit.isAddition {
-            edit.page.removeAnnotation(edit.annotation)
-        } else {
-            edit.page.addAnnotation(edit.annotation)
+        guard let command = markupUndoStack.popLast() else { return }
+        switch command {
+        case .create(let annotation):
+            onMarkupDelete?([annotation.id])
+            selectMarkup(nil)
+        case .delete(let annotations):
+            annotations.forEach { onMarkupCreate?($0) }
+            selectMarkup(annotations.first?.id)
+        case .update(let before, _):
+            onMarkupUpdate?(before)
+            selectMarkup(before.id)
         }
-        notifyAnnotationsChanged(on: edit.page)
-        markupRedoStack.append(edit)
-        needsDisplay = true
+        markupRedoStack.append(command)
         onMarkupStateChanged?()
     }
 
     func redoMarkup() {
-        guard let edit = markupRedoStack.popLast() else { return }
-        if edit.isAddition {
-            edit.page.addAnnotation(edit.annotation)
-        } else {
-            edit.page.removeAnnotation(edit.annotation)
+        guard let command = markupRedoStack.popLast() else { return }
+        switch command {
+        case .create(let annotation):
+            onMarkupCreate?(annotation)
+            selectMarkup(annotation.id)
+        case .delete(let annotations):
+            onMarkupDelete?(annotations.map(\.id))
+            selectMarkup(nil)
+        case .update(_, let after):
+            onMarkupUpdate?(after)
+            selectMarkup(after.id)
         }
-        notifyAnnotationsChanged(on: edit.page)
-        markupUndoStack.append(edit)
-        needsDisplay = true
+        markupUndoStack.append(command)
         onMarkupStateChanged?()
     }
 
     func resetMarkupHistory() {
         markupUndoStack.removeAll()
         markupRedoStack.removeAll()
-        gestureStartPagePoint = nil
-        gesturePage = nil
-        gestureAnnotation = nil
-        gestureInkPath = nil
+        markupGesture = nil
+        selectMarkup(nil)
+        onMarkupVisibilityChanged?([])
         onMarkupStateChanged?()
     }
 
-    private func recordMarkupEdit(_ edit: MarkupEdit, updateState: Bool = true) {
-        markupUndoStack.append(edit)
-        markupRedoStack.removeAll()
-        if updateState { onMarkupStateChanged?() }
+    func clearSelectedMarkupIfMissing() {
+        guard let selectedMarkupId,
+              storedAnnotations.contains(where: { $0.id == selectedMarkupId }) else {
+            selectMarkup(nil)
+            return
+        }
+    }
+
+    private func distance(_ point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        guard dx != 0 || dy != 0 else { return hypot(point.x - start.x, point.y - start.y) }
+        let t = min(1, max(0, ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy)))
+        return hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy))
+    }
+
+    private func drawMarkupOverlay() {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        if markupTool == .eraser, let cursorPoint = eraserCursorPoint {
+            let cursorRect = CGRect(x: cursorPoint.x - 8, y: cursorPoint.y - 8, width: 16, height: 16)
+            context.setStrokeColor(NSColor.secondaryLabelColor.withAlphaComponent(0.8).cgColor)
+            context.setLineWidth(1)
+            context.strokeEllipse(in: cursorRect)
+        }
+        guard let document else { return }
+        if let gesture = markupGesture {
+            switch gesture.operation {
+            case .draw(let kind):
+                if let model = previewMarkup(for: gesture, kind: kind) {
+                    draw(model, pageIndex: gesture.pageIndex, selected: false)
+                }
+            case .move(_, let before), .resize(_, let before, _), .endpoint(_, let before, _):
+                let preview: PaperAnnotation
+                switch gesture.operation {
+                case .move: preview = translated(before, dx: gesture.current.x - gesture.start.x, dy: gesture.current.y - gesture.start.y)
+                case .resize(_, _, let handle): preview = resized(before, handle: handle, to: gesture.current.cgPoint, constrain: gesture.modifiers.contains(.shift))
+                case .endpoint(_, _, let isStart):
+                    var value = before
+                    if isStart { value.startPoint = gesture.current } else { value.endPoint = gesture.current }
+                    preview = value
+                default: preview = before
+                }
+                draw(preview, pageIndex: gesture.pageIndex, selected: true)
+            case .erase:
+                break
+            }
+        } else if let selectedMarkupId,
+                  let selected = storedAnnotations.first(where: { $0.id == selectedMarkupId }) {
+            draw(selected, pageIndex: selected.pageIndex, selected: true)
+        }
+        _ = document
+    }
+
+    private func previewMarkup(for gesture: MarkupGesture, kind: PaperAnnotationKind) -> PaperAnnotation? {
+        if kind == .ink {
+            guard let bounds = pointBounds(gesture.points) else { return nil }
+            var model = makeMarkup(kind: .ink, pageIndex: gesture.pageIndex, rect: bounds, selectedText: "")
+            model.inkPaths = [gesture.points]
+            return model
+        }
+        let end = constrainedEnd(gesture.current.cgPoint, from: gesture.start.cgPoint, kind: kind,
+                                 shift: gesture.modifiers.contains(.shift))
+        let rect = CGRect(x: min(gesture.start.x, end.x), y: min(gesture.start.y, end.y),
+                          width: abs(end.x - gesture.start.x), height: abs(end.y - gesture.start.y))
+        var model = makeMarkup(kind: kind, pageIndex: gesture.pageIndex, rect: rect, selectedText: "")
+        if kind == .line || kind == .arrow {
+            model.startPoint = gesture.start
+            model.endPoint = PointCodable(end)
+        }
+        return model
+    }
+
+    private func draw(_ annotation: PaperAnnotation, pageIndex: Int, selected: Bool) {
+        guard let page = document?.page(at: pageIndex) else { return }
+        let color = annotation.displayColor
+        if annotation.effectiveKind.isTextMarkup {
+            for region in annotation.pageRegions where region.pageIndex == pageIndex {
+                for rect in region.rects {
+                    let viewRect = convert(rect.cgRect, from: page)
+                    (selected ? NSColor.controlAccentColor : color.withAlphaComponent(0.18)).setStroke()
+                    let outline = NSBezierPath(rect: viewRect)
+                    outline.lineWidth = selected ? 1.5 : 1
+                    outline.stroke()
+                }
+            }
+            return
+        }
+        if annotation.effectiveKind == .ink, let paths = annotation.inkPaths {
+            for points in paths where !points.isEmpty {
+                let path = NSBezierPath()
+                path.lineWidth = CGFloat(annotation.strokeWidth ?? 2)
+                path.lineCapStyle = .round
+                path.lineJoinStyle = .round
+                path.move(to: convert(points[0].cgPoint, from: page))
+                for point in points.dropFirst() { path.line(to: convert(point.cgPoint, from: page)) }
+                color.setStroke()
+                path.stroke()
+            }
+        } else if annotation.effectiveKind == .line || annotation.effectiveKind == .arrow {
+            if let start = annotation.startPoint?.cgPoint, let end = annotation.endPoint?.cgPoint {
+                let path = NSBezierPath()
+                path.lineWidth = CGFloat(annotation.strokeWidth ?? 1.6)
+                path.move(to: convert(start, from: page))
+                path.line(to: convert(end, from: page))
+                color.setStroke()
+                path.stroke()
+            }
+        } else if let rect = annotation.rects.first?.cgRect {
+            let bounds = convert(rect, from: page)
+            if annotation.effectiveKind == .text {
+                color.setStroke()
+                NSBezierPath(rect: bounds).stroke()
+            } else {
+                color.setStroke()
+                (annotation.effectiveKind == .ellipse ? NSBezierPath(ovalIn: bounds) : NSBezierPath(rect: bounds)).stroke()
+            }
+        }
+        guard selected, let rect = annotation.rects.first?.cgRect else { return }
+        let bounds = convert(rect, from: page)
+        NSColor.controlAccentColor.setStroke()
+        let outline = NSBezierPath(rect: bounds)
+        outline.lineWidth = 1
+        outline.stroke()
+        if annotation.effectiveKind == .line || annotation.effectiveKind == .arrow {
+            for point in [annotation.startPoint, annotation.endPoint].compactMap({ $0 }) {
+                fillMarkupHandle(at: convert(point.cgPoint, from: page))
+            }
+        } else if !annotation.effectiveKind.isTextMarkup {
+            let positions = [
+                NSPoint(x: bounds.minX, y: bounds.maxY), NSPoint(x: bounds.midX, y: bounds.maxY),
+                NSPoint(x: bounds.maxX, y: bounds.maxY), NSPoint(x: bounds.maxX, y: bounds.midY),
+                NSPoint(x: bounds.maxX, y: bounds.minY), NSPoint(x: bounds.midX, y: bounds.minY),
+                NSPoint(x: bounds.minX, y: bounds.minY), NSPoint(x: bounds.minX, y: bounds.midY)
+            ]
+            positions.forEach(fillMarkupHandle(at:))
+        }
+    }
+
+    private func fillMarkupHandle(at point: NSPoint) {
+        let rect = NSRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6)
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(rect: rect).fill()
+        NSColor.white.setStroke()
+        NSBezierPath(rect: rect).stroke()
+    }
+}
+
+final class MarkupOverlayView: NSView {
+    var drawContent: (() -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        drawContent?()
     }
 }
 
@@ -1130,20 +1662,35 @@ final class TextMarkupPopoverController: NSViewController, NSTextFieldDelegate {
     var onCommit: ((String) -> Void)?
     var onCancel: (() -> Void)?
     private let textField = NSTextField()
+    private let initialText: String
+    private let isEditing: Bool
+
+    init(initialText: String = "", isEditing: Bool = false) {
+        self.initialText = initialText
+        self.isEditing = isEditing
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        initialText = ""
+        isEditing = false
+        super.init(coder: coder)
+    }
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 96))
-        let title = NSTextField(labelWithString: "添加文本批注")
+        let title = NSTextField(labelWithString: isEditing ? "编辑文本批注" : "添加文本批注")
         title.font = .systemFont(ofSize: 12, weight: .semibold)
         title.textColor = .labelColor
         title.translatesAutoresizingMaskIntoConstraints = false
 
         textField.placeholderString = "输入文本内容"
+        textField.stringValue = initialText
         textField.font = .systemFont(ofSize: 13)
         textField.delegate = self
         textField.translatesAutoresizingMaskIntoConstraints = false
 
-        let addButton = NSButton(title: "添加", target: self, action: #selector(commitAction))
+        let addButton = NSButton(title: isEditing ? "保存" : "添加", target: self, action: #selector(commitAction))
         addButton.bezelStyle = .rounded
         addButton.keyEquivalent = "\r"
         addButton.translatesAutoresizingMaskIntoConstraints = false
@@ -1205,6 +1752,7 @@ extension InteractivePDFView: NSPopoverDelegate {
         textMarkupPopover = nil
         textMarkupDraftPage = nil
         textMarkupDraftPoint = nil
+        textMarkupDraftAnnotation = nil
     }
 }
 
