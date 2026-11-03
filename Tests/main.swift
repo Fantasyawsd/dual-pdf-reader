@@ -184,12 +184,31 @@ combined.add(lastPage.selection(for: NSRange(location: 0, length: lastPage.numbe
 let annotation = PDFSelectionAnnotationFactory.make(selection: combined, document: document, side: .original,
     color: .yellow, note: "note", linkedURL: nil, linkedTitle: nil)!
 check(annotation.pageRegions.map(\.pageIndex) == [0, 1], "Cross-page selection preserves all page regions")
+let textMarkupTools: [(PDFMarkupTool, PaperAnnotationKind)] = [
+    (.highlight, .highlight),
+    (.underline, .underline),
+    (.strikethrough, .strikethrough)
+]
+for (tool, kind) in textMarkupTools {
+    let textMarkup = PDFSelectionAnnotationFactory.make(
+        selection: combined, document: document, side: .original,
+        color: .yellow, note: "", linkedURL: nil, linkedTitle: nil,
+        kind: tool.annotationKind, colorHex: "#E24A36")
+    check(textMarkup?.effectiveKind == kind && textMarkup?.pageRegions == annotation.pageRegions,
+          "\(tool.displayName) selection creates persisted \(kind.rawValue) markup on every page")
+}
 let decodedAnnotation = try decoder.decode(PaperAnnotation.self, from: encoder.encode(annotation))
 check(decodedAnnotation.pageRegions == annotation.pageRegions, "Cross-page geometry round-trips")
 var legacyAnnotation = try JSONSerialization.jsonObject(with: encoder.encode(annotation)) as! [String: Any]
 legacyAnnotation.removeValue(forKey: "additionalPageRegions")
+for key in ["kind", "colorHex", "strokeWidth", "inkPaths", "startPoint", "endPoint"] {
+    legacyAnnotation.removeValue(forKey: key)
+}
 let oldAnnotation = try decoder.decode(PaperAnnotation.self, from: JSONSerialization.data(withJSONObject: legacyAnnotation))
-check(oldAnnotation.pageRegions.count == 1, "Existing annotations decode without new page regions")
+check(oldAnnotation.pageRegions.count == 1 && oldAnnotation.effectiveKind == .highlight,
+      "Legacy annotations decode without new markup fields and default to highlights")
+check(PointCodable(CGPoint(x: 12.5, y: 42)).cgPoint == CGPoint(x: 12.5, y: 42),
+      "Codable markup points round-trip through page coordinates")
 let column = CleanPDFColumnView(side: .original)
 column.pdfView.document = document
 let renderer = PDFAnnotationRenderer()
@@ -200,6 +219,55 @@ let existingHighlight = document.page(at: 0)!.annotations.first { $0.userName ==
 renderer.apply([annotation], to: column)
 check(document.page(at: 0)!.annotations.contains { $0 === existingHighlight }, "Unchanged annotation retains PDFKit object")
 check(document.page(at: 0)!.annotations.count + document.page(at: 1)!.annotations.count == count, "Repeated apply never duplicates highlights")
+func markupModel(_ kind: PaperAnnotationKind, rect: CGRect, text: String = "") -> PaperAnnotation {
+    var model = PaperAnnotation(side: .original, pageIndex: 0, rects: [RectCodable(rect)],
+                                selectedText: text, color: .yellow, markdownNote: "",
+                                linkedURL: nil, linkedTitle: nil)
+    model.kind = kind
+    model.colorHex = "#E24A36"
+    model.strokeWidth = 2
+    return model
+}
+var inkModel = markupModel(.ink, rect: CGRect(x: 200, y: 300, width: 20, height: 20))
+inkModel.inkPaths = [[PointCodable(CGPoint(x: 200, y: 300)), PointCodable(CGPoint(x: 220, y: 320))]]
+var lineModel = markupModel(.line, rect: CGRect(x: 250, y: 300, width: 30, height: 20))
+lineModel.startPoint = PointCodable(CGPoint(x: 250, y: 300))
+lineModel.endPoint = PointCodable(CGPoint(x: 280, y: 320))
+var arrowModel = markupModel(.arrow, rect: CGRect(x: 290, y: 300, width: 30, height: 20))
+arrowModel.startPoint = PointCodable(CGPoint(x: 290, y: 300))
+arrowModel.endPoint = PointCodable(CGPoint(x: 320, y: 320))
+let textModel = markupModel(.text, rect: CGRect(x: 330, y: 300, width: 80, height: 24), text: "model text")
+let rectangleModel = markupModel(.rectangle, rect: CGRect(x: 420, y: 300, width: 30, height: 30))
+let ellipseModel = markupModel(.ellipse, rect: CGRect(x: 460, y: 300, width: 30, height: 30))
+let underlineModel = markupModel(.underline, rect: CGRect(x: 500, y: 300, width: 30, height: 12), text: "under")
+let strikeModel = markupModel(.strikethrough, rect: CGRect(x: 540, y: 300, width: 30, height: 12), text: "strike")
+let otherKinds = [inkModel, lineModel, arrowModel, textModel, rectangleModel, ellipseModel, underlineModel, strikeModel]
+var displayTextPaper = fixture()
+displayTextPaper.annotations = [textModel, rectangleModel]
+let exportedMarkup = MarkdownNotesExporter.render(displayTextPaper)
+check(exportedMarkup.contains("> model text") && exportedMarkup.contains("> [矩形]"),
+      "Markdown notes export uses model display text for free markup")
+renderer.apply([], to: column)
+renderer.apply([annotation] + otherKinds, to: column)
+let renderedMarkup = firstPage.annotations.filter { $0.userName == "DualPDF_CustomAnnot" }
+check(renderedMarkup.count == 9, "Renderer recreates every markup kind from stored models")
+let renderedInk = renderedMarkup.first { $0.type == "Ink" }
+check(renderedInk?.bounds.minX == 196 && renderedInk?.bounds.maxX == 224,
+      "Ink rendering uses tight path bounds expanded by stroke width")
+check(renderedMarkup.contains { $0.type == "Square" } &&
+      renderedMarkup.contains { $0.type == "Circle" } &&
+      renderedMarkup.contains { $0.type == "Line" } &&
+      renderedMarkup.contains { $0.type == "FreeText" && $0.contents == "model text" } &&
+      renderedMarkup.contains { $0.type == "Highlight" } &&
+      renderedMarkup.contains { $0.type == "Underline" } &&
+      renderedMarkup.contains { $0.type == "StrikeOut" },
+      "Renderer maps model kinds to their PDFKit annotation subtypes")
+renderer.setHidden([rectangleModel.id], in: column)
+check(!firstPage.annotations.contains { $0.userName == "DualPDF_CustomAnnot" && $0.type == "Square" },
+      "Renderer can temporarily hide selected markup while editing")
+renderer.setHidden([], in: column)
+check(firstPage.annotations.contains { $0.userName == "DualPDF_CustomAnnot" && $0.type == "Square" },
+      "Renderer restores temporarily hidden markup")
 renderer.apply([], to: column)
 check(document.page(at: 0)!.annotations.allSatisfy { $0.userName != "DualPDF_CustomAnnot" } &&
       document.page(at: 1)!.annotations.allSatisfy { $0.userName != "DualPDF_CustomAnnot" }, "Removing annotation clears every page region")
