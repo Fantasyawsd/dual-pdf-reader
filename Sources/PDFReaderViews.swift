@@ -261,7 +261,7 @@ final class InteractivePDFView: PDFView {
     var onZoomCommand: ((Bool, CGFloat?) -> Void)?
     var onCommandScrollZoom: ((CGFloat) -> Void)?
     var onMarkupStateChanged: (() -> Void)?
-    var onMarkupCreate: ((PaperAnnotation) -> Void)?
+    var onMarkupCreate: (([PaperAnnotation]) -> Void)?
     var onMarkupUpdate: ((PaperAnnotation) -> Void)?
     var onMarkupDelete: (([String]) -> Void)?
     var onMarkupVisibilityChanged: ((Set<String>) -> Void)?
@@ -316,9 +316,12 @@ final class InteractivePDFView: PDFView {
         var pageIndex: Int
         var start: PointCodable
         var current: PointCodable
+        var startViewPoint: NSPoint
         var points: [PointCodable]
         var modifiers: NSEvent.ModifierFlags
         var operation: MarkupGestureOperation
+        var didExceedDragThreshold = false
+        var hiddenMarkupIDs = Set<String>()
     }
 
     private var markupUndoStack: [MarkupCommand] = []
@@ -519,10 +522,6 @@ final class InteractivePDFView: PDFView {
             return
         }
         let viewPoint = convert(event.locationInWindow, from: nil)
-        if markupTool == .eraser {
-            eraserCursorPoint = viewPoint
-            markupOverlay?.needsDisplay = true
-        }
         if let page = page(for: viewPoint, nearest: false) {
             let pagePoint = convert(viewPoint, to: page)
 
@@ -575,10 +574,6 @@ final class InteractivePDFView: PDFView {
         if markupTool == .pointer, markupGesture != nil {
             updateMarkupGesture(with: event)
             return
-        }
-        if markupTool == .eraser {
-            eraserCursorPoint = convert(event.locationInWindow, from: nil)
-            markupOverlay?.needsDisplay = true
         }
         if markupTool != .pointer, markupTool != .hand, markupGesture != nil {
             updateMarkupGesture(with: event)
@@ -974,6 +969,11 @@ extension InteractivePDFView {
         guard let page = page(for: viewPoint, nearest: false), let document else { return false }
         let pageIndex = document.index(for: page)
         let pagePoint = PointCodable(convert(viewPoint, to: page))
+        if let annotation = markupHit(at: viewPoint), annotation.effectiveKind.isTextMarkup {
+            selectMarkup(annotation.id)
+            onAnnotationClicked?(annotation, viewPoint)
+            return true
+        }
         if let handle = selectedHandle(at: viewPoint),
            let selected = selectedMarkupId,
            let annotation = storedAnnotations.first(where: { $0.id == selected }) {
@@ -983,39 +983,37 @@ extension InteractivePDFView {
             case .endPoint: operation = .endpoint(id: selected, before: annotation, isStart: false)
             default: operation = .resize(id: selected, before: annotation, handle: handle)
             }
-            beginEditGesture(page: page, pageIndex: pageIndex, point: pagePoint, operation: operation)
+            beginEditGesture(page: page, pageIndex: pageIndex, point: pagePoint,
+                             viewPoint: viewPoint, operation: operation)
             return true
         }
         guard let annotation = markupHit(at: viewPoint) else { return false }
         selectMarkup(annotation.id)
-        if annotation.effectiveKind.isTextMarkup {
-            onAnnotationClicked?(annotation, viewPoint)
-        }
         if annotation.effectiveKind == .text, event.clickCount > 1 {
             presentTextMarkupEditor(on: page, at: pagePoint.cgPoint, editing: annotation)
             return true
         }
         beginEditGesture(page: page, pageIndex: pageIndex, point: pagePoint,
+                         viewPoint: viewPoint,
                          operation: .move(id: annotation.id, before: annotation))
         return true
     }
 
     private func beginEditGesture(page: PDFPage, pageIndex: Int, point: PointCodable,
-                                 operation: MarkupGestureOperation) {
+                                 viewPoint: NSPoint, operation: MarkupGestureOperation) {
         window?.makeFirstResponder(self)
         markupGesture = MarkupGesture(page: page, pageIndex: pageIndex, start: point, current: point,
-                                      points: [], modifiers: [], operation: operation)
-        switch operation {
-        case .move(let id, _), .resize(let id, _, _), .endpoint(let id, _, _):
-            onMarkupVisibilityChanged?([id])
-        case .draw, .erase:
-            break
-        }
+                                      startViewPoint: viewPoint, points: [], modifiers: [],
+                                      operation: operation)
         markupOverlay?.needsDisplay = true
     }
 
     func beginMarkupGesture(with event: NSEvent) {
         let viewPoint = convert(event.locationInWindow, from: nil)
+        if markupTool == .eraser {
+            eraserCursorPoint = viewPoint
+            markupOverlay?.needsDisplay = true
+        }
         guard let page = page(for: viewPoint, nearest: false),
               let document,
               document.index(for: page) != NSNotFound else { return }
@@ -1027,14 +1025,16 @@ extension InteractivePDFView {
             presentTextMarkupEditor(on: page, at: point.cgPoint)
         case .eraser:
             markupGesture = MarkupGesture(page: page, pageIndex: pageIndex, start: point, current: point,
-                                          points: [], modifiers: event.modifierFlags, operation: .erase([]))
+                                          startViewPoint: viewPoint, points: [],
+                                          modifiers: event.modifierFlags, operation: .erase([]))
             collectEraseHit(at: viewPoint)
         case .ink:
             markupGesture = MarkupGesture(page: page, pageIndex: pageIndex, start: point, current: point,
-                                          points: [point], modifiers: event.modifierFlags, operation: .draw(.ink))
+                                          startViewPoint: viewPoint, points: [point],
+                                          modifiers: event.modifierFlags, operation: .draw(.ink))
         case .rectangle, .ellipse, .line, .arrow:
             markupGesture = MarkupGesture(page: page, pageIndex: pageIndex, start: point, current: point,
-                                          points: [], modifiers: event.modifierFlags,
+                                          startViewPoint: viewPoint, points: [], modifiers: event.modifierFlags,
                                           operation: .draw(markupTool.annotationKind))
         case .pointer, .hand, .highlight, .underline, .strikethrough:
             break
@@ -1055,9 +1055,15 @@ extension InteractivePDFView {
                 gesture.points.append(point)
             }
         case .erase(var ids):
+            eraserCursorPoint = viewPoint
             if let hit = markupHit(at: viewPoint) { ids.insert(hit.id) }
             gesture.operation = .erase(ids)
-            onMarkupVisibilityChanged?(ids)
+            if ids != gesture.hiddenMarkupIDs {
+                onMarkupVisibilityChanged?(ids)
+                gesture.hiddenMarkupIDs = ids
+            }
+        case .move, .resize, .endpoint:
+            updateEditDragThreshold(&gesture, at: viewPoint)
         default:
             break
         }
@@ -1070,10 +1076,20 @@ extension InteractivePDFView {
         let viewPoint = convert(event.locationInWindow, from: nil)
         gesture.current = PointCodable(convert(viewPoint, to: gesture.page))
         gesture.modifiers = event.modifierFlags
+        updateEditDragThreshold(&gesture, at: viewPoint)
         markupGesture = gesture
+        let shouldRestoreHiddenMarkup: Bool
+        switch gesture.operation {
+        case .move, .resize, .endpoint:
+            shouldRestoreHiddenMarkup = gesture.didExceedDragThreshold
+        case .erase(let ids):
+            shouldRestoreHiddenMarkup = !ids.isEmpty
+        case .draw:
+            shouldRestoreHiddenMarkup = false
+        }
         defer {
             markupGesture = nil
-            onMarkupVisibilityChanged?([])
+            if shouldRestoreHiddenMarkup { onMarkupVisibilityChanged?([]) }
             markupOverlay?.needsDisplay = true
         }
 
@@ -1110,7 +1126,7 @@ extension InteractivePDFView {
         case .move(let id, let before):
             let after = translated(before, dx: gesture.current.x - gesture.start.x,
                                    dy: gesture.current.y - gesture.start.y)
-            if hypot(gesture.current.x - gesture.start.x, gesture.current.y - gesture.start.y) >= 1 {
+            if gesture.didExceedDragThreshold, before != after {
                 commitUpdate(before: before, after: after)
             } else {
                 selectMarkup(id)
@@ -1118,7 +1134,11 @@ extension InteractivePDFView {
         case .resize(let id, let before, let handle):
             let after = resized(before, handle: handle, to: gesture.current.cgPoint,
                                 constrain: gesture.modifiers.contains(.shift))
-            if before != after { commitUpdate(before: before, after: after) } else { selectMarkup(id) }
+            if gesture.didExceedDragThreshold, before != after {
+                commitUpdate(before: before, after: after)
+            } else {
+                selectMarkup(id)
+            }
         case .endpoint(let id, let before, let isStart):
             var after = before
             if isStart { after.startPoint = gesture.current } else { after.endPoint = gesture.current }
@@ -1126,17 +1146,38 @@ extension InteractivePDFView {
                 after.rects = [RectCodable(CGRect(x: min(start.x, end.x), y: min(start.y, end.y),
                                                 width: abs(end.x - start.x), height: abs(end.y - start.y)))]
             }
-            if before != after { commitUpdate(before: before, after: after) } else { selectMarkup(id) }
+            if gesture.didExceedDragThreshold, before != after {
+                commitUpdate(before: before, after: after)
+            } else {
+                selectMarkup(id)
+            }
         }
+    }
+
+    private func updateEditDragThreshold(_ gesture: inout MarkupGesture, at viewPoint: NSPoint) {
+        guard !gesture.didExceedDragThreshold,
+              hypot(viewPoint.x - gesture.startViewPoint.x,
+                    viewPoint.y - gesture.startViewPoint.y) > 2 else { return }
+        let id: String
+        switch gesture.operation {
+        case .move(let value, _), .resize(let value, _, _), .endpoint(let value, _, _):
+            id = value
+        case .draw, .erase:
+            return
+        }
+        gesture.didExceedDragThreshold = true
+        onMarkupVisibilityChanged?([id])
     }
 
     private func collectEraseHit(at viewPoint: NSPoint) {
         guard var gesture = markupGesture else { return }
         guard case .erase(var ids) = gesture.operation else { return }
+        let previousIDs = ids
         if let hit = markupHit(at: viewPoint) { ids.insert(hit.id) }
         gesture.operation = .erase(ids)
+        gesture.hiddenMarkupIDs = ids
         markupGesture = gesture
-        onMarkupVisibilityChanged?(ids)
+        if ids != previousIDs { onMarkupVisibilityChanged?(ids) }
     }
 
     private func makeMarkup(kind: PaperAnnotationKind, pageIndex: Int, rect: CGRect,
@@ -1369,7 +1410,7 @@ extension InteractivePDFView {
     }
 
     private func commitCreate(_ annotation: PaperAnnotation) {
-        onMarkupCreate?(annotation)
+        onMarkupCreate?([annotation])
         markupUndoStack.append(.create(annotation))
         markupRedoStack.removeAll()
         selectMarkup(annotation.id)
@@ -1412,7 +1453,7 @@ extension InteractivePDFView {
             onMarkupDelete?([annotation.id])
             selectMarkup(nil)
         case .delete(let annotations):
-            annotations.forEach { onMarkupCreate?($0) }
+            onMarkupCreate?(annotations)
             selectMarkup(annotations.first?.id)
         case .update(let before, _):
             onMarkupUpdate?(before)
@@ -1426,7 +1467,7 @@ extension InteractivePDFView {
         guard let command = markupRedoStack.popLast() else { return }
         switch command {
         case .create(let annotation):
-            onMarkupCreate?(annotation)
+            onMarkupCreate?([annotation])
             selectMarkup(annotation.id)
         case .delete(let annotations):
             onMarkupDelete?(annotations.map(\.id))
@@ -1480,17 +1521,21 @@ extension InteractivePDFView {
                     draw(model, pageIndex: gesture.pageIndex, selected: false)
                 }
             case .move(_, let before), .resize(_, let before, _), .endpoint(_, let before, _):
-                let preview: PaperAnnotation
-                switch gesture.operation {
-                case .move: preview = translated(before, dx: gesture.current.x - gesture.start.x, dy: gesture.current.y - gesture.start.y)
-                case .resize(_, _, let handle): preview = resized(before, handle: handle, to: gesture.current.cgPoint, constrain: gesture.modifiers.contains(.shift))
-                case .endpoint(_, _, let isStart):
-                    var value = before
-                    if isStart { value.startPoint = gesture.current } else { value.endPoint = gesture.current }
-                    preview = value
-                default: preview = before
+                if gesture.didExceedDragThreshold {
+                    let preview: PaperAnnotation
+                    switch gesture.operation {
+                    case .move: preview = translated(before, dx: gesture.current.x - gesture.start.x, dy: gesture.current.y - gesture.start.y)
+                    case .resize(_, _, let handle): preview = resized(before, handle: handle, to: gesture.current.cgPoint, constrain: gesture.modifiers.contains(.shift))
+                    case .endpoint(_, _, let isStart):
+                        var value = before
+                        if isStart { value.startPoint = gesture.current } else { value.endPoint = gesture.current }
+                        preview = value
+                    default: preview = before
+                    }
+                    draw(preview, pageIndex: gesture.pageIndex, selected: true)
+                } else {
+                    draw(before, pageIndex: gesture.pageIndex, selected: true)
                 }
-                draw(preview, pageIndex: gesture.pageIndex, selected: true)
             case .erase:
                 break
             }

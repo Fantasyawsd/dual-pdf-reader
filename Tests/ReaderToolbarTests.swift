@@ -163,7 +163,9 @@ func runReaderToolbarTests(root: URL) throws {
             readerWindow.sendEvent(up)
         }
         settle(0.25)
-        check(store.paper(withId: paper.id)?.annotations.contains { $0.effectiveKind == .rectangle } == true,
+        let paperAfterShape = store.paper(withId: paper.id)
+        let originalShape = paperAfterShape?.annotations.first { $0.effectiveKind == .rectangle }
+        check(originalShape != nil,
               "A shape gesture in the actual reader window persists a rectangle model")
     } else {
         check(false, "Reader integration shape gesture has a document page")
@@ -255,21 +257,65 @@ func runReaderToolbarTests(root: URL) throws {
         check(false, "Markup gesture probe page is available")
         return
     }
+    let probePaper = store.createPaper(title: "Markup edit \(UUID().uuidString)", originalSourceURL: source)!
+    let probeColumn = CleanPDFColumnView(side: .original)
+    probeColumn.pdfView.document = probeView.document
+    let probeRenderer = PDFAnnotationRenderer()
+    var savePaperCallCount = 0
     var probeModels: [String: PaperAnnotation] = [:]
     var deleteBatches: [[String]] = []
+    var createBatches: [[PaperAnnotation]] = []
+    var markupUpdateCount = 0
+    var visibilityChanges: [Set<String>] = []
     var nextMarkupEventNumber = 1
-    probeView.onMarkupCreate = { model in
-        probeModels[model.id] = model
+    func mutateProbePaper(_ mutation: (inout PaperItem) -> Void) {
+        guard var stored = store.paper(withId: probePaper.id) else { return }
+        mutation(&stored)
+        savePaperCallCount += 1
+        _ = store.savePaper(stored, notify: false)
+    }
+    probeView.onMarkupCreate = { models in
+        createBatches.append(models)
+        models.forEach { probeModels[$0.id] = $0 }
+        mutateProbePaper { stored in
+            for source in models {
+                var model = source
+                model.side = probeColumn.side
+                model.pdfDocumentId = probeColumn.activePDFDocumentId
+                if let index = stored.annotations.firstIndex(where: { $0.id == model.id }) {
+                    stored.annotations[index] = model
+                } else {
+                    stored.annotations.append(model)
+                }
+            }
+        }
         probeView.storedAnnotations = Array(probeModels.values)
+        probeRenderer.apply(Array(probeModels.values), to: probeColumn)
     }
     probeView.onMarkupUpdate = { model in
+        markupUpdateCount += 1
         probeModels[model.id] = model
         probeView.storedAnnotations = Array(probeModels.values)
+        mutateProbePaper { stored in
+            if let index = stored.annotations.firstIndex(where: { $0.id == model.id }) {
+                stored.annotations[index] = model
+            }
+        }
+        probeRenderer.apply(Array(probeModels.values), to: probeColumn)
     }
     probeView.onMarkupDelete = { ids in
         deleteBatches.append(ids)
         ids.forEach { probeModels.removeValue(forKey: $0) }
         probeView.storedAnnotations = Array(probeModels.values)
+        mutateProbePaper { stored in
+            let idSet = Set(ids)
+            stored.annotations.removeAll { idSet.contains($0.id) }
+        }
+        probeRenderer.apply(Array(probeModels.values), to: probeColumn)
+    }
+    probeView.onMarkupVisibilityChanged = { ids in
+        visibilityChanges.append(ids)
+        probeRenderer.setHidden(ids, in: probeColumn)
     }
     func windowPoint(_ pagePoint: NSPoint) -> NSPoint {
         let viewPoint = probeView.convert(pagePoint, from: probePage)
@@ -343,6 +389,25 @@ func runReaderToolbarTests(root: URL) throws {
     probeView.redo(nil)
     check(markupCount(.highlight) == 1 && probeModels[highlightID ?? ""]?.id == highlightID,
           "Redo restores a highlight model with the same ID")
+    if let highlightID, let highlight = probeModels[highlightID],
+       let rect = highlight.pageRegions.first?.rects.first?.cgRect {
+        let center = NSPoint(x: rect.midX, y: rect.midY)
+        let beforeUpdates = markupUpdateCount
+        let beforeUndo = probeView.markupUndoCount
+        let beforeVisibility = visibilityChanges.count
+        var annotationClickCount = 0
+        probeView.onAnnotationClicked = { _, _ in annotationClickCount += 1 }
+        dragGesture(from: center, to: NSPoint(x: center.x + 8, y: center.y + 4), tool: .pointer)
+        let after = probeModels[highlightID]
+        check(probeView.selectedMarkupId == highlightID &&
+              after?.rects == highlight.rects && after?.pageRegions == highlight.pageRegions,
+              "Pointer click-drag selects a highlight without moving its text-anchored geometry")
+        check(markupUpdateCount == beforeUpdates && probeView.markupUndoCount == beforeUndo &&
+              visibilityChanges.count == beforeVisibility && annotationClickCount == 1,
+              "Pointer click-drag on a highlight only routes its click callback")
+    } else {
+        check(false, "Highlight exposes text-markup geometry for pointer selection")
+    }
 
     dragGesture(from: NSPoint(x: 60, y: 300), to: NSPoint(x: 200, y: 380), tool: .rectangle)
     check(markupCount(.rectangle) == 1, "矩形 tool creates a rectangle model")
@@ -362,6 +427,26 @@ func runReaderToolbarTests(root: URL) throws {
         return
     }
     let center = NSPoint(x: initialRectangle.midX, y: initialRectangle.midY)
+    if let rectangleID, let rectangle = probeModels[rectangleID] {
+        let beforeUpdates = markupUpdateCount
+        let beforeUndo = probeView.markupUndoCount
+        let beforeVisibility = visibilityChanges.count
+        let beforeSaveCalls = savePaperCallCount
+        let annotationsBeforeClick = store.paper(withId: probePaper.id)?.annotations
+        let renderedRectangle = probePage.annotations.first {
+            $0.userName == "DualPDF_CustomAnnot" && $0.type == "Square"
+        }
+        check(renderedRectangle != nil, "Created rectangle has a rendered PDFAnnotation")
+        check(createBatches.last?.count == 1, "A single markup create is delivered as a one-item batch")
+        clickGesture(at: center, tool: .pointer)
+        check(probeView.selectedMarkupId == rectangleID && probeModels[rectangleID] == rectangle &&
+              store.paper(withId: probePaper.id)?.annotations == annotationsBeforeClick &&
+              markupUpdateCount == beforeUpdates && probeView.markupUndoCount == beforeUndo &&
+              visibilityChanges.count == beforeVisibility && savePaperCallCount == beforeSaveCalls,
+              "Pointer click selects a rectangle without hiding, updating, saving, or recording undo")
+        check(renderedRectangle.map { value in probePage.annotations.contains { $0 === value } } == true,
+              "Pointer click leaves the rendered rectangle on its PDF page after mouse-up")
+    }
     dragGesture(from: center, to: NSPoint(x: center.x + 14, y: center.y + 9), tool: .pointer)
     let movedRectangle = rectangleID.flatMap { probeModels[$0] }
     check(movedRectangle?.rects.first?.cgRect.minX == initialRectangle.minX + 14 &&
@@ -429,13 +514,28 @@ func runReaderToolbarTests(root: URL) throws {
     dragGesture(from: NSPoint(x: 420, y: 300), to: NSPoint(x: 460, y: 340), tool: .rectangle)
     let batchesBeforeErase = deleteBatches.count
     let undoBeforeErase = probeView.markupUndoCount
+    let erasedModelIDs = Set(probeModels.values.filter {
+        guard $0.effectiveKind == .rectangle, let rect = $0.rects.first?.cgRect else { return false }
+        return abs(rect.minX - 360) < 1 || abs(rect.minX - 420) < 1
+    }.map(\.id))
+    let eraseSaveCallsBefore = savePaperCallCount
     dragGesture(from: NSPoint(x: 380, y: 320), to: NSPoint(x: 440, y: 320), tool: .eraser)
     check(deleteBatches.count == batchesBeforeErase + 1 && deleteBatches.last?.count == 2 &&
-          probeView.markupUndoCount == undoBeforeErase + 1,
+          erasedModelIDs.count == 2 && probeView.markupUndoCount == undoBeforeErase + 1 &&
+          savePaperCallCount == eraseSaveCallsBefore + 1 &&
+          erasedModelIDs.allSatisfy { id in store.paper(withId: probePaper.id)?.annotations.contains { $0.id == id } == false },
           "A drag eraser deletes multiple hit models in one batch")
+    let undoSaveCallsBefore = savePaperCallCount
+    let createBatchCountBeforeUndo = createBatches.count
     probeView.undoMarkup()
-    check(probeModels.values.filter { $0.effectiveKind == .rectangle }.count >= 2,
-          "Undo restores a batched eraser deletion")
+    check(probeModels.values.filter { $0.effectiveKind == .rectangle }.count >= 2 &&
+          createBatches.count == createBatchCountBeforeUndo + 1 &&
+          Set(createBatches.last?.map(\.id) ?? []) == erasedModelIDs &&
+          erasedModelIDs.allSatisfy { probeModels[$0] != nil } &&
+          savePaperCallCount == undoSaveCallsBefore + 1 &&
+          Set(store.paper(withId: probePaper.id)?.annotations
+              .filter { erasedModelIDs.contains($0.id) }.map(\.id) ?? []) == erasedModelIDs,
+          "One undo restores every erased model together with its original IDs")
 
     // A persisted highlight is rendered by PDFKit, but its note popover is
     // owned by InteractivePDFView. PDFKit's page views must not swallow that
