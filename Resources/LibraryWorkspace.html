@@ -24,17 +24,9 @@
     <!-- 2. Center Main Area (Clean Paper List) -->
     <main class="center-pane">
         <header class="center-header">
-            <div class="header-left">
-                <button class="btn-primary" onclick="openCreatePaperModal()" style="height:32px; padding:0 14px; font-size:13.5px; border-radius:6px; display:inline-flex; align-items:center; gap:6px;">
-                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-                        <path d="M8 3v10M3 8h10"/>
-                    </svg>
-                    <span>导入论文</span>
-                </button>
-                <div class="header-title-wrap">
-                    <span class="header-lib-title" id="currentViewTitle">我的文库</span>
-                    <span class="header-item-count" id="currentViewCount">0 篇文献</span>
-                </div>
+            <div class="header-title-wrap">
+                <span class="header-lib-title" id="currentViewTitle">我的文库</span>
+                <span class="header-item-count" id="currentViewCount">0 篇文献</span>
             </div>
 
             <div class="header-controls">
@@ -43,13 +35,19 @@
                         <circle cx="6.5" cy="6.5" r="4.5"/>
                         <path d="M10 10l3.5 3.5"/>
                     </svg>
-                    <input type="text" id="searchInput" class="search-input" placeholder="所有字段和标签">
-                    <button class="search-funnel-btn" onclick="openSortAndViewMenu(event)" title="排序选项">
-                        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round">
-                            <path d="M1.5 2.5h13l-5 5.8v4.7l-3 1.5V8.3L1.5 2.5z"/>
-                        </svg>
-                    </button>
+                    <input type="search" id="searchInput" class="search-input" placeholder="搜索标题、作者、标签或笔记" autocomplete="off">
                 </div>
+                <button class="btn-ghost btn-icon" id="sortMenuButton" onclick="openSortAndViewMenu(event)" title="排序方式">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4.5 2.5v11M2 11l2.5 2.5L7 11M11.5 13.5v-11M9 5l2.5-2.5L14 5"/>
+                    </svg>
+                </button>
+                <button class="btn-primary" onclick="openCreatePaperModal()" title="导入本地 PDF 或 arXiv 论文">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                        <path d="M8 3v10M3 8h10"/>
+                    </svg>
+                    <span>导入论文</span>
+                </button>
             </div>
         </header>
         <div class="center-content" id="centerContent"></div>
