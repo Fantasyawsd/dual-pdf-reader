@@ -35,7 +35,7 @@ enum MarkdownNotesExporter {
         }
         for ann in sorted {
             md += "### \(ann.color.emoji) [\(ann.shortSourceBadge(in: paper)) · 第 \(ann.pageIndex + 1) 页]\n\n"
-            md += "> \(ann.selectedText.replacingOccurrences(of: "\n", with: " "))\n\n"
+            md += "> \(ann.displayText.replacingOccurrences(of: "\n", with: " "))\n\n"
             if !ann.markdownNote.isEmpty {
                 md += "\(ann.markdownNote)\n\n"
             }

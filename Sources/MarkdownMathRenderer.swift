@@ -35,8 +35,8 @@ enum MarkdownMathRenderer {
                     sideBadge: ann.shortSourceBadge(in: paper),
                     sideRaw: ann.effectivePDFId,
                     pageNumber: ann.pageIndex + 1,
-                    colorHex: ann.color.hexString,
-                    selectedText: ann.selectedText,
+                    colorHex: ann.colorHex ?? ann.color.hexString,
+                    selectedText: ann.displayText,
                     markdownNote: ann.markdownNote,
                     linkedURL: ann.linkedURL,
                     linkedTitle: ann.linkedTitle

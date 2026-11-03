@@ -105,6 +105,41 @@ enum HighlightColor: String, Codable, CaseIterable {
         case .pink:   return "🔴"
         }
     }
+
+    static func nearest(to color: NSColor) -> HighlightColor {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return .yellow }
+        return allCases.min { lhs, rhs in
+            let left = lhs.solidColor.usingColorSpace(.deviceRGB) ?? .yellow
+            let right = rhs.solidColor.usingColorSpace(.deviceRGB) ?? .yellow
+            return colorDistance(rgb, left) < colorDistance(rgb, right)
+        } ?? .yellow
+    }
+
+    private static func colorDistance(_ lhs: NSColor, _ rhs: NSColor) -> CGFloat {
+        pow(lhs.redComponent - rhs.redComponent, 2) +
+            pow(lhs.greenComponent - rhs.greenComponent, 2) +
+            pow(lhs.blueComponent - rhs.blueComponent, 2)
+    }
+}
+
+extension NSColor {
+    convenience init?(hexString: String) {
+        let value = hexString.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        guard value.count == 6 || value.count == 8, let number = UInt64(value, radix: 16) else { return nil }
+        let red = CGFloat((number >> (value.count == 8 ? 24 : 16)) & 0xFF) / 255
+        let green = CGFloat((number >> (value.count == 8 ? 16 : 8)) & 0xFF) / 255
+        let blue = CGFloat((number >> (value.count == 8 ? 8 : 0)) & 0xFF) / 255
+        let alpha = value.count == 8 ? CGFloat(number & 0xFF) / 255 : 1
+        self.init(calibratedRed: red, green: green, blue: blue, alpha: alpha)
+    }
+
+    var hexString: String {
+        let color = usingColorSpace(.deviceRGB) ?? .black
+        return String(format: "#%02X%02X%02X",
+                      Int((color.redComponent * 255).rounded()),
+                      Int((color.greenComponent * 255).rounded()),
+                      Int((color.blueComponent * 255).rounded()))
+    }
 }
 
 enum PDFSide: String, Codable {
@@ -138,6 +173,48 @@ struct RectCodable: Codable, Equatable {
     }
 }
 
+struct PointCodable: Codable, Equatable {
+    var x: Double
+    var y: Double
+
+    init(_ point: CGPoint) {
+        x = Double(point.x)
+        y = Double(point.y)
+    }
+
+    var cgPoint: CGPoint { CGPoint(x: x, y: y) }
+}
+
+enum PaperAnnotationKind: String, Codable, CaseIterable {
+    case highlight
+    case underline
+    case strikethrough
+    case ink
+    case text
+    case rectangle
+    case ellipse
+    case line
+    case arrow
+
+    var displayName: String {
+        switch self {
+        case .highlight: return "高亮"
+        case .underline: return "下划线"
+        case .strikethrough: return "删除线"
+        case .ink: return "画笔"
+        case .text: return "文本"
+        case .rectangle: return "矩形"
+        case .ellipse: return "椭圆"
+        case .line: return "直线"
+        case .arrow: return "箭头"
+        }
+    }
+
+    var isTextMarkup: Bool {
+        self == .highlight || self == .underline || self == .strikethrough
+    }
+}
+
 struct PaperAnnotation: Codable, Identifiable, Equatable {
     var id: String = UUID().uuidString
     var side: PDFSide
@@ -151,9 +228,26 @@ struct PaperAnnotation: Codable, Identifiable, Equatable {
     var createdAt: Date = Date()
     var additionalPageRegions: [AnnotationPageRegion]? = nil
     var pdfDocumentId: String? = nil // 所属本论文集内的 PDF 标识 ("original" / "translated" / 附加 PDF id)
+    var kind: PaperAnnotationKind? = nil
+    var colorHex: String? = nil
+    var strokeWidth: Double? = nil
+    var inkPaths: [[PointCodable]]? = nil
+    var startPoint: PointCodable? = nil
+    var endPoint: PointCodable? = nil
 
     var effectivePDFId: String {
         pdfDocumentId ?? side.rawValue
+    }
+
+    var effectiveKind: PaperAnnotationKind { kind ?? .highlight }
+
+    var displayText: String {
+        if !selectedText.isEmpty { return selectedText }
+        return "[\(effectiveKind.displayName)]"
+    }
+
+    var displayColor: NSColor {
+        colorHex.flatMap(NSColor.init(hexString:)) ?? color.nsColor
     }
 
     func shortSourceBadge(in paper: PaperItem? = nil) -> String {
