@@ -449,7 +449,9 @@ func runReaderToolbarTests(root: URL) throws {
     }
     dragGesture(from: center, to: NSPoint(x: center.x + 14, y: center.y + 9), tool: .pointer)
     let movedRectangle = rectangleID.flatMap { probeModels[$0] }
-    check(movedRectangle?.rects.first?.cgRect.minX == initialRectangle.minX + 14 &&
+    // Page/view coordinate round-trips introduce tiny float error; compare
+    // with a sub-point tolerance instead of exact equality.
+    check(abs((movedRectangle?.rects.first?.cgRect.minX ?? -999) - (initialRectangle.minX + 14)) < 0.01 &&
           movedRectangle?.id == rectangleID, "Pointer selection moves a rectangle model without changing its ID")
     if let movedRect = movedRectangle?.rects.first?.cgRect {
         let corner = NSPoint(x: movedRect.maxX, y: movedRect.minY)
