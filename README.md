@@ -1,3 +1,5 @@
+[![CI](https://github.com/Fantasyawsd/dual-pdf-reader/actions/workflows/ci.yml/badge.svg)](https://github.com/Fantasyawsd/dual-pdf-reader/actions/workflows/ci.yml)
+
 # DualPDFReader
 
 原生 macOS 双栏文献阅读器，使用 AppKit、PDFKit 和 WKWebView，无第三方运行时依赖。

@@ -50,7 +50,14 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
     <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 EOF
-codesign --force --deep --sign - "$APP_BUNDLE"
+SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+if ! codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_BUNDLE"; then
+    if [[ "$SIGN_IDENTITY" == "-" ]]; then
+        exit 1
+    fi
+    echo "签名身份 ${SIGN_IDENTITY} 不可用，改用 ad-hoc 签名" >&2
+    codesign --force --deep --sign - "$APP_BUNDLE"
+fi
 echo "构建成功: $PWD/$APP_BUNDLE（macOS ${MIN_MACOS}+）"
 
 case "$MODE" in
