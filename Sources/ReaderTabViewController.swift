@@ -3331,6 +3331,27 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 guard let col = col else { return }
                 self?.showExistingAnnotationPopover(annot, in: col.pdfView, at: pt)
             }
+            col.pdfView.onMarkupCreate = { [weak self, weak col] annotation in
+                guard let self, let col else { return }
+                self.persistMarkupCreate(annotation, in: col)
+            }
+            col.pdfView.onMarkupUpdate = { [weak self, weak col] annotation in
+                guard let self, let col else { return }
+                self.persistMarkupUpdate(annotation, in: col)
+            }
+            col.pdfView.onMarkupDelete = { [weak self] ids in
+                self?.persistMarkupDelete(ids)
+            }
+            col.pdfView.onMarkupVisibilityChanged = { [weak self, weak col] ids in
+                guard let self, let col else { return }
+                self.annotationRenderer.setHidden(ids, in: col)
+            }
+            col.pdfView.onMarkupStateChanged = { [weak col] in
+                guard let col else { return }
+                col.columnToolbar.setUndoRedoEnabled(
+                    canUndo: col.pdfView.canUndoMarkup,
+                    canRedo: col.pdfView.canRedoMarkup)
+            }
             col.pdfView.onBeforeInternalLinkJump = { [weak self, weak col] destPage, destPoint, isCmdPressed in
                 guard let self = self, let col = col else { return false }
                 return self.handleReferenceJump(from: col, toPage: destPage, point: destPoint, inOppositePaneOnly: isCmdPressed)
@@ -3746,7 +3767,43 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     private func applyAnnotationsToPDFViews() {
         guard let paper = currentPaper else { return }
-        for column in [leftCol, rightCol] { annotationRenderer.apply(paper.annotations, to: column) }
+        for column in [leftCol, rightCol] {
+            annotationRenderer.apply(paper.annotations, to: column)
+            column.pdfView.clearSelectedMarkupIfMissing()
+        }
+    }
+
+    private func persistMarkupCreate(_ annotation: PaperAnnotation, in column: CleanPDFColumnView) {
+        guard var paper = currentPaper else { return }
+        var annotation = annotation
+        annotation.side = column.side
+        annotation.pdfDocumentId = column.activePDFDocumentId
+        if let index = paper.annotations.firstIndex(where: { $0.id == annotation.id }) {
+            paper.annotations[index] = annotation
+        } else {
+            paper.annotations.append(annotation)
+        }
+        guard LibraryStore.shared.savePaper(paper, notify: true) else { return }
+        applyAnnotationsToPDFViews()
+    }
+
+    private func persistMarkupUpdate(_ annotation: PaperAnnotation, in column: CleanPDFColumnView) {
+        guard var paper = currentPaper,
+              let index = paper.annotations.firstIndex(where: { $0.id == annotation.id }) else { return }
+        var annotation = annotation
+        annotation.side = column.side
+        annotation.pdfDocumentId = column.activePDFDocumentId
+        paper.annotations[index] = annotation
+        guard LibraryStore.shared.savePaper(paper, notify: true) else { return }
+        applyAnnotationsToPDFViews()
+    }
+
+    private func persistMarkupDelete(_ ids: [String]) {
+        guard var paper = currentPaper else { return }
+        let idSet = Set(ids)
+        paper.annotations.removeAll { idSet.contains($0.id) }
+        guard LibraryStore.shared.savePaper(paper, notify: true) else { return }
+        applyAnnotationsToPDFViews()
     }
 
     private func showSelectionActionPopover(for pdfView: InteractivePDFView, selection: PDFSelection, rectInView: NSRect) {
@@ -3891,7 +3948,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         pdfView.clearSelection()
 
         let pdfBadge = annotation.shortSourceBadge(in: paper)
-        let compactExcerpt = annotation.selectedText
+        let compactExcerpt = annotation.displayText
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4258,6 +4315,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
               let idx = paper.annotations.firstIndex(where: { $0.id == parts[0] }),
               let newColor = HighlightColor(rawValue: parts[1]) else { return }
         paper.annotations[idx].color = newColor
+        paper.annotations[idx].colorHex = newColor.solidColor.hexString
         LibraryStore.shared.savePaper(paper, notify: true)
         selectionPopover.close()
     }
@@ -4299,6 +4357,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                   var paper = self.currentPaper,
                   let idx = paper.annotations.firstIndex(where: { $0.id == annot.id }) else { return false }
             paper.annotations[idx].color = chosenColor
+            paper.annotations[idx].colorHex = chosenColor.solidColor.hexString
             paper.annotations[idx].markdownNote = updatedMarkdown
             guard LibraryStore.shared.savePaper(paper, notify: true) else { return false }
             if !self.isDrawerOpen {
@@ -4571,6 +4630,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
         toolbar.onColorChanged = { [weak col] color in
             col?.pdfView.markupColor = color
+            col?.pdfView.updateSelectedMarkupColor(color)
         }
         toolbar.onUndo = { [weak col] in col?.pdfView.undoMarkup() }
         toolbar.onRedo = { [weak col] in col?.pdfView.redoMarkup() }

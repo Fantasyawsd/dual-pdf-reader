@@ -42,6 +42,21 @@ enum PDFMarkupTool: String, CaseIterable {
         self == .highlight || self == .underline || self == .strikethrough
     }
 
+    var annotationKind: PaperAnnotationKind {
+        switch self {
+        case .highlight: return .highlight
+        case .underline: return .underline
+        case .strikethrough: return .strikethrough
+        case .ink: return .ink
+        case .text: return .text
+        case .rectangle: return .rectangle
+        case .ellipse: return .ellipse
+        case .line: return .line
+        case .arrow: return .arrow
+        case .pointer, .hand, .eraser: return .highlight
+        }
+    }
+
     var displayName: String {
         switch self {
         case .pointer: return "指针选择"
