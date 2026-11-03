@@ -128,6 +128,46 @@ class ModernHoverButton: NSButton {
     }
 }
 
+final class ToolbarCapsuleView: NSView {
+    private let stackView = NSStackView()
+
+    override var wantsUpdateLayer: Bool { true }
+
+    init(views: [NSView]) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        layer?.masksToBounds = true
+
+        stackView.orientation = .horizontal
+        stackView.spacing = 0
+        stackView.alignment = .centerY
+        stackView.edgeInsets = NSEdgeInsets(top: 0, left: 2, bottom: 0, right: 2)
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        views.forEach { stackView.addArrangedSubview($0) }
+        addSubview(stackView)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 26),
+            stackView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stackView.topAnchor.constraint(equalTo: topAnchor),
+            stackView.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.5).cgColor
+        }
+    }
+}
+
 // MARK: - Custom Native Circular Color Swatch Button (Replaces Emoji Circles)
 final class HighlightSwatchButton: NSButton {
     let highlightColor: HighlightColor
@@ -862,4 +902,3 @@ final class CleanPDFColumnView: NSView {
         return found
     }
 }
-

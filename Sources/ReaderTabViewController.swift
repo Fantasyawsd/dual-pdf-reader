@@ -366,7 +366,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let topBar = NSVisualEffectView()
     private let outlineToggleBtn = ModernHoverButton()
     var leftSidebarToggleBtn: NSButton { outlineToggleBtn }
-    private let modeSeg = NSSegmentedControl(labels: ["仅原文", "仅译文", "双栏对照"], trackingMode: .selectOne, target: nil, action: nil)
+    private let modeSeg = NSSegmentedControl(labels: ["原文", "译文", "对照"], trackingMode: .selectOne, target: nil, action: nil)
     private let swapBtn = ModernHoverButton()
     var isSwapButtonHidden: Bool { swapBtn.isHidden }
     var dualSplitView: DualPDFSplitView { splitView }
@@ -379,7 +379,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let resetAlignBtn = ModernHoverButton()
 
     // 双栏各自独立的页码步进、跳转与缩放控制
-    private let leftColLabel = NSTextField(labelWithString: "左栏")
     let leftPrevPageBtn = ModernHoverButton()
     let leftPageJumpBtn = ModernHoverButton()
     let leftNextPageBtn = ModernHoverButton()
@@ -388,7 +387,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     let leftZoomInBtn = ModernHoverButton()
     private let leftControlsContainer = NSStackView()
 
-    private let rightColLabel = NSTextField(labelWithString: "右栏")
     let rightPrevPageBtn = ModernHoverButton()
     let rightPageJumpBtn = ModernHoverButton()
     let rightNextPageBtn = ModernHoverButton()
@@ -625,9 +623,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let barIconConfig = NSImage.SymbolConfiguration(pointSize: 14.0, weight: .medium)
         let barSubIconConfig = NSImage.SymbolConfiguration(pointSize: 13.0, weight: .medium)
 
-        outlineToggleBtn.bezelStyle = .texturedRounded
+        configureToolbarIconButton(outlineToggleBtn)
         outlineToggleBtn.controlSize = .small
         outlineToggleBtn.setButtonType(.pushOnPushOff)
+        outlineToggleBtn.isToggleButton = true
         outlineToggleBtn.state = .off
         outlineToggleBtn.image = NSImage(systemSymbolName: "list.bullet.indent", accessibilityDescription: "大纲与缩略图")?.withSymbolConfiguration(barIconConfig)
         outlineToggleBtn.toolTip = "大纲与缩略图 (⌘1)"
@@ -644,17 +643,16 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         modeSeg.target = self
         modeSeg.action = #selector(modeChangedAction)
         modeSeg.translatesAutoresizingMaskIntoConstraints = false
-        modeSeg.widthAnchor.constraint(equalToConstant: 226).isActive = true
+        modeSeg.widthAnchor.constraint(equalToConstant: 168).isActive = true
 
-        swapBtn.bezelStyle = .texturedRounded
+        configureToolbarIconButton(swapBtn)
         swapBtn.controlSize = .small
         swapBtn.image = NSImage(systemSymbolName: "arrow.left.arrow.right", accessibilityDescription: "左右互换")?.withSymbolConfiguration(barSubIconConfig)
         swapBtn.toolTip = "左右两栏位置互换 (⇧⌘X)"
         swapBtn.target = self
         swapBtn.action = #selector(swapColumnsAction)
 
-        syncScrollBtn.bezelStyle = .inline
-        syncScrollBtn.isBordered = false
+        configureToolbarButton(syncScrollBtn)
         syncScrollBtn.controlSize = .small
         syncScrollBtn.setButtonType(.pushOnPushOff)
         syncScrollBtn.state = isScrollSyncEnabled ? .on : .off
@@ -662,14 +660,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         syncScrollBtn.target = self
         syncScrollBtn.action = #selector(toggleSyncScrollAction)
         syncScrollBtn.translatesAutoresizingMaskIntoConstraints = false
-        syncScrollBtn.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        syncScrollBtn.heightAnchor.constraint(equalToConstant: 26).isActive = true
         syncScrollBtn.widthAnchor.constraint(greaterThanOrEqualToConstant: 58).isActive = true
         updateSyncButtonStyle()
 
-        resetAlignBtn.bezelStyle = .inline
+        configureToolbarButton(resetAlignBtn)
         resetAlignBtn.controlSize = .small
         resetAlignBtn.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
-        resetAlignBtn.contentTintColor = .controlAccentColor
         resetAlignBtn.title = "重置对齐"
         resetAlignBtn.toolTip = "重置双栏对齐偏移"
         resetAlignBtn.target = self
@@ -678,83 +675,69 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         // --- Group B (Center): 双栏各自独立的页码步进/跳转 & 缩放控制 ---
         func configureColumnControls(
-            label: NSTextField, labelTitle: String,
+            columnTitle: String,
             prevBtn: ModernHoverButton, pageBtn: ModernHoverButton, nextBtn: ModernHoverButton,
             zoomOut: ModernHoverButton, zoomFit: ModernHoverButton, zoomIn: ModernHoverButton,
             container: NSStackView,
             prevAction: Selector, nextAction: Selector, pageAction: Selector,
             zoomOutAction: Selector, zoomFitAction: Selector, zoomInAction: Selector
         ) {
-            label.stringValue = labelTitle
-            label.font = .systemFont(ofSize: 11, weight: .semibold)
-            label.textColor = .secondaryLabelColor
-
-            prevBtn.bezelStyle = .texturedRounded
-            prevBtn.controlSize = .small
+            configureToolbarIconButton(prevBtn)
             prevBtn.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "上一页")?.withSymbolConfiguration(barSubIconConfig)
-            prevBtn.toolTip = "\(labelTitle)上一页"
+            prevBtn.toolTip = "\(columnTitle)上一页"
             prevBtn.target = self
             prevBtn.action = prevAction
 
-            pageBtn.bezelStyle = .texturedRounded
+            configureToolbarButton(pageBtn)
             pageBtn.controlSize = .small
-            pageBtn.font = .monospacedDigitSystemFont(ofSize: 12.5, weight: .medium)
+            pageBtn.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             pageBtn.title = "1 / 1"
-            pageBtn.toolTip = "点击跳转\(labelTitle)指定页码"
+            pageBtn.toolTip = "点击跳转\(columnTitle)指定页码"
             pageBtn.target = self
             pageBtn.action = pageAction
 
-            nextBtn.bezelStyle = .texturedRounded
-            nextBtn.controlSize = .small
+            configureToolbarIconButton(nextBtn)
             nextBtn.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "下一页")?.withSymbolConfiguration(barSubIconConfig)
-            nextBtn.toolTip = "\(labelTitle)下一页"
+            nextBtn.toolTip = "\(columnTitle)下一页"
             nextBtn.target = self
             nextBtn.action = nextAction
 
-            zoomOut.bezelStyle = .texturedRounded
-            zoomOut.controlSize = .small
+            configureToolbarIconButton(zoomOut)
             zoomOut.image = NSImage(systemSymbolName: "minus", accessibilityDescription: "缩小")?.withSymbolConfiguration(barSubIconConfig)
-            zoomOut.toolTip = "缩小\(labelTitle)页面"
+            zoomOut.toolTip = "缩小\(columnTitle)页面"
             zoomOut.target = self
             zoomOut.action = zoomOutAction
 
-            zoomFit.bezelStyle = .texturedRounded
+            configureToolbarButton(zoomFit)
             zoomFit.controlSize = .small
-            zoomFit.title = "自适应"
-            zoomFit.toolTip = "\(labelTitle)自适应列宽"
+            zoomFit.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            zoomFit.title = "—"
+            zoomFit.toolTip = "\(columnTitle)自适应列宽"
             zoomFit.target = self
             zoomFit.action = zoomFitAction
 
-            zoomIn.bezelStyle = .texturedRounded
-            zoomIn.controlSize = .small
+            configureToolbarIconButton(zoomIn)
             zoomIn.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "放大")?.withSymbolConfiguration(barSubIconConfig)
-            zoomIn.toolTip = "放大\(labelTitle)页面"
+            zoomIn.toolTip = "放大\(columnTitle)页面"
             zoomIn.target = self
             zoomIn.action = zoomInAction
 
             container.subviews.forEach { $0.removeFromSuperview() }
             container.orientation = .horizontal
-            container.spacing = 4
+            container.spacing = 6
             container.alignment = .centerY
             container.translatesAutoresizingMaskIntoConstraints = false
 
-            container.addArrangedSubview(label)
-            container.addArrangedSubview(prevBtn)
-            container.addArrangedSubview(pageBtn)
-            container.addArrangedSubview(nextBtn)
-            container.addArrangedSubview(makeToolbarSeparator())
-            container.addArrangedSubview(zoomOut)
-            container.addArrangedSubview(zoomFit)
-            container.addArrangedSubview(zoomIn)
-            for button in [prevBtn, nextBtn, zoomOut, zoomIn] {
-                button.widthAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true
-            }
-            pageBtn.widthAnchor.constraint(greaterThanOrEqualToConstant: 76).isActive = true
-            zoomFit.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            pageBtn.heightAnchor.constraint(equalToConstant: 26).isActive = true
+            pageBtn.widthAnchor.constraint(greaterThanOrEqualToConstant: 64).isActive = true
+            zoomFit.heightAnchor.constraint(equalToConstant: 26).isActive = true
+            zoomFit.widthAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+            container.addArrangedSubview(ToolbarCapsuleView(views: [prevBtn, pageBtn, nextBtn]))
+            container.addArrangedSubview(ToolbarCapsuleView(views: [zoomOut, zoomFit, zoomIn]))
         }
 
         configureColumnControls(
-            label: leftColLabel, labelTitle: "左栏",
+            columnTitle: "左栏",
             prevBtn: leftPrevPageBtn, pageBtn: leftPageJumpBtn, nextBtn: leftNextPageBtn,
             zoomOut: leftZoomOutBtn, zoomFit: leftZoomFitBtn, zoomIn: leftZoomInBtn,
             container: leftControlsContainer,
@@ -767,7 +750,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         )
 
         configureColumnControls(
-            label: rightColLabel, labelTitle: "右栏",
+            columnTitle: "右栏",
             prevBtn: rightPrevPageBtn, pageBtn: rightPageJumpBtn, nextBtn: rightNextPageBtn,
             zoomOut: rightZoomOutBtn, zoomFit: rightZoomFitBtn, zoomIn: rightZoomInBtn,
             container: rightControlsContainer,
@@ -786,7 +769,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         searchField.target = self
         searchField.action = #selector(searchFieldReturnPressed)
         searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.widthAnchor.constraint(equalToConstant: 145).isActive = true
+        searchField.widthAnchor.constraint(equalToConstant: 180).isActive = true
 
         searchMatchLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         searchMatchLabel.textColor = .secondaryLabelColor
@@ -803,20 +786,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         searchNavSeg.action = #selector(searchNavClicked)
         searchNavSeg.isHidden = true
 
-        searchCloseBtn.bezelStyle = .inline
-        searchCloseBtn.isBordered = false
+        configureToolbarIconButton(searchCloseBtn)
         searchCloseBtn.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "关闭搜索")?
             .withSymbolConfiguration(.init(pointSize: 12.0, weight: .medium))
-        searchCloseBtn.normalTintColor = .secondaryLabelColor
         searchCloseBtn.hoverTintColor = .labelColor
-        searchCloseBtn.hoverBgColor = NSColor.textColor.withAlphaComponent(0.08)
         searchCloseBtn.cornerRadius = 4
         searchCloseBtn.toolTip = "关闭搜索 (Esc)"
         searchCloseBtn.target = self
         searchCloseBtn.action = #selector(closeSearchAction)
         searchCloseBtn.translatesAutoresizingMaskIntoConstraints = false
-        searchCloseBtn.widthAnchor.constraint(equalToConstant: 20).isActive = true
-        searchCloseBtn.heightAnchor.constraint(equalToConstant: 20).isActive = true
 
         searchContainer.subviews.forEach { $0.removeFromSuperview() }
         searchContainer.orientation = .horizontal
@@ -829,9 +807,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         searchContainer.addArrangedSubview(searchNavSeg)
         searchContainer.addArrangedSubview(searchCloseBtn)
 
-        searchToggleBtn.bezelStyle = .texturedRounded
+        configureToolbarIconButton(searchToggleBtn)
         searchToggleBtn.controlSize = .small
         searchToggleBtn.setButtonType(.pushOnPushOff)
+        searchToggleBtn.isToggleButton = true
         searchToggleBtn.state = .off
         searchToggleBtn.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "在文档中搜索")?.withSymbolConfiguration(barIconConfig)
         searchToggleBtn.toolTip = "在文档中搜索 (⌘F)"
@@ -840,9 +819,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         searchToggleBtn.target = self
         searchToggleBtn.action = #selector(toggleSearchFieldAction)
 
-        drawerToggleBtn.bezelStyle = .texturedRounded
+        configureToolbarIconButton(drawerToggleBtn)
         drawerToggleBtn.controlSize = .small
         drawerToggleBtn.setButtonType(.pushOnPushOff)
+        drawerToggleBtn.isToggleButton = true
         drawerToggleBtn.state = .off
         drawerToggleBtn.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "切换侧边栏")?.withSymbolConfiguration(barIconConfig)
         drawerToggleBtn.title = ""
@@ -942,6 +922,18 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             sep.trailingAnchor.constraint(equalTo: topBar.trailingAnchor)
         ])
         updateToolbarLayout()
+    }
+
+    private func configureToolbarButton(_ button: ModernHoverButton) {
+        button.isBordered = false
+        button.normalTintColor = .secondaryLabelColor
+    }
+
+    private func configureToolbarIconButton(_ button: ModernHoverButton) {
+        configureToolbarButton(button)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 26).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 26).isActive = true
     }
 
     private func makeToolbarSeparator() -> NSBox {
@@ -3478,6 +3470,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     @objc private func pdfScaleChanged(_ note: Notification) {
+        updateZoomIndicators()
         guard !isLoadingDocuments, !isChangingLayout, !isClosed, !isSyncingZoom,
               let srcPDFView = note.object as? PDFView else { return }
         let source = srcPDFView === leftCol.pdfView ? leftCol : rightCol
@@ -3514,12 +3507,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     private func updatePageIndicatorAndSaveProgress() {
+        updateZoomIndicators()
         updateNavigationSource()
         // 更新左栏页码
         if let leftDoc = toolbarLeftColumn.pdfView.document {
             let leftTotal = leftDoc.pageCount
             let leftIdx = toolbarLeftColumn.pdfView.currentPage.map { leftDoc.index(for: $0) } ?? 0
-            leftPageJumpBtn.title = "\(leftIdx + 1) / \(leftTotal) 页"
+            leftPageJumpBtn.title = "\(leftIdx + 1) / \(leftTotal)"
             leftPrevPageBtn.isEnabled = (leftIdx > 0)
             leftNextPageBtn.isEnabled = (leftIdx + 1 < leftTotal)
         } else {
@@ -3532,7 +3526,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         if let rightDoc = toolbarRightColumn.pdfView.document {
             let rightTotal = rightDoc.pageCount
             let rightIdx = toolbarRightColumn.pdfView.currentPage.map { rightDoc.index(for: $0) } ?? 0
-            rightPageJumpBtn.title = "\(rightIdx + 1) / \(rightTotal) 页"
+            rightPageJumpBtn.title = "\(rightIdx + 1) / \(rightTotal)"
             rightPrevPageBtn.isEnabled = (rightIdx > 0)
             rightNextPageBtn.isEnabled = (rightIdx + 1 < rightTotal)
         } else {
@@ -4460,6 +4454,23 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         applyDisplayMode(pdfMode)
     }
 
+    private func updateZoomIndicators() {
+        func update(_ button: ModernHoverButton, for column: CleanPDFColumnView) {
+            guard column.pdfView.document != nil else {
+                button.title = "—"
+                button.toolTip = "当前缩放 —，点击适应列宽"
+                return
+            }
+
+            let zoomPercent = Int((column.pdfView.scaleFactor * 100).rounded())
+            button.title = "\(zoomPercent)%"
+            button.toolTip = "当前缩放 \(zoomPercent)%，点击适应列宽"
+        }
+
+        update(leftZoomFitBtn, for: toolbarLeftColumn)
+        update(rightZoomFitBtn, for: toolbarRightColumn)
+    }
+
     func focusSearchField() {
         openSearchAction()
     }
@@ -4490,7 +4501,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             leftControlsContainer.isHidden = false
             rightControlsContainer.isHidden = true
             dualColumnControlsSep?.isHidden = true
-            leftColLabel.isHidden = true
         case 1:
             leftCol.isHidden = true
             rightCol.isHidden = false
@@ -4501,7 +4511,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             leftControlsContainer.isHidden = true
             rightControlsContainer.isHidden = false
             dualColumnControlsSep?.isHidden = true
-            rightColLabel.isHidden = true
         default:
             leftCol.isHidden = false
             rightCol.isHidden = false
@@ -4513,8 +4522,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             leftControlsContainer.isHidden = false
             rightControlsContainer.isHidden = false
             dualColumnControlsSep?.isHidden = false
-            leftColLabel.isHidden = false
-            rightColLabel.isHidden = false
             applyColumnSplitRatio()
         }
         updateToolbarLayout()
@@ -4551,24 +4558,22 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let isSync = (syncScrollBtn.state == .on)
         syncScrollBtn.wantsLayer = true
         syncScrollBtn.layer?.cornerRadius = 6
-        syncScrollBtn.layer?.borderWidth = 0.5
         if isSync {
-            syncScrollBtn.contentTintColor = .controlAccentColor
-            syncScrollBtn.layer?.backgroundColor = ZoteroTheme.activeRailItemBg.cgColor
-            syncScrollBtn.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.35).cgColor
+            syncScrollBtn.normalTintColor = .controlAccentColor
+            syncScrollBtn.normalBgColor = NSColor.controlAccentColor.withAlphaComponent(0.12)
             syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "双栏同步中")?
                 .withSymbolConfiguration(.init(pointSize: 11.5, weight: .semibold))
             syncScrollBtn.title = " 同步"
             syncScrollBtn.toolTip = "双栏同步滚动已开启 (点击关闭)\n小技巧：按住 ⌥ Option 键滚动任意一栏可微调双栏段落对齐差"
         } else {
-            syncScrollBtn.contentTintColor = .secondaryLabelColor
-            syncScrollBtn.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.08).cgColor
-            syncScrollBtn.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
+            syncScrollBtn.normalTintColor = .secondaryLabelColor
+            syncScrollBtn.normalBgColor = .clear
             syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "独立滚动")?
                 .withSymbolConfiguration(.init(pointSize: 11.5, weight: .regular))
             syncScrollBtn.title = " 独立"
             syncScrollBtn.toolTip = "双栏独立滚动 (同步已关闭，点击开启同步)"
         }
+        syncScrollBtn.updateColors()
     }
 
     @objc func toggleSyncScrollAction() {
