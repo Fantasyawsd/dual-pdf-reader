@@ -341,8 +341,8 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
                     sideRaw: a.effectivePDFId,
                     sideBadge: a.shortSourceBadge(in: p),
                     pageNumber: a.pageIndex + 1,
-                    colorHex: a.color.hexString,
-                    selectedText: a.selectedText,
+                    colorHex: a.colorHex ?? a.color.hexString,
+                    selectedText: a.displayText,
                     markdownNote: a.markdownNote,
                     linkedURL: a.linkedURL,
                     linkedTitle: a.linkedTitle,
@@ -901,4 +901,3 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         }
     }
 }
-
