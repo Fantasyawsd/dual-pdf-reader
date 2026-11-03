@@ -163,8 +163,8 @@ func runReaderToolbarTests(root: URL) throws {
             readerWindow.sendEvent(up)
         }
         settle(0.25)
-        check(page.annotations.contains { $0.type == "Square" && $0.userName == "DualPDF_Markup" },
-              "A shape gesture in the actual reader window creates an annotation")
+        check(store.paper(withId: paper.id)?.annotations.contains { $0.effectiveKind == .rectangle } == true,
+              "A shape gesture in the actual reader window persists a rectangle model")
     } else {
         check(false, "Reader integration shape gesture has a document page")
     }
@@ -238,8 +238,8 @@ func runReaderToolbarTests(root: URL) throws {
     settle(0.2)
     check(reader.leftCol.pdfView.scaleFactor >= 0.249, "Command zoom is floored at 0.25x")
 
-    // Real gesture pass: annotation tools must add native PDF annotations and
-    // push column-local undo history.
+    // Real gesture pass: annotation tools persist PaperAnnotation models and
+    // push column-local command history.
     let probeWindow = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 700, height: 900),
                                styleMask: [.titled], backing: .buffered, defer: false)
     let probeView = InteractivePDFView(frame: NSRect(x: 0, y: 0, width: 700, height: 900))
@@ -255,79 +255,187 @@ func runReaderToolbarTests(root: URL) throws {
         check(false, "Markup gesture probe page is available")
         return
     }
+    var probeModels: [String: PaperAnnotation] = [:]
+    var deleteBatches: [[String]] = []
+    var nextMarkupEventNumber = 1
+    probeView.onMarkupCreate = { model in
+        probeModels[model.id] = model
+        probeView.storedAnnotations = Array(probeModels.values)
+    }
+    probeView.onMarkupUpdate = { model in
+        probeModels[model.id] = model
+        probeView.storedAnnotations = Array(probeModels.values)
+    }
+    probeView.onMarkupDelete = { ids in
+        deleteBatches.append(ids)
+        ids.forEach { probeModels.removeValue(forKey: $0) }
+        probeView.storedAnnotations = Array(probeModels.values)
+    }
     func windowPoint(_ pagePoint: NSPoint) -> NSPoint {
         let viewPoint = probeView.convert(pagePoint, from: probePage)
         return probeView.convert(viewPoint, to: nil)
     }
-    func dragGesture(from start: NSPoint, to end: NSPoint, tool: PDFMarkupTool) {
+    func dragGesture(from start: NSPoint, to end: NSPoint, tool: PDFMarkupTool,
+                     modifiers: NSEvent.ModifierFlags = []) {
         probeView.markupTool = tool
         probeView.markupColor = .systemYellow
         let a = windowPoint(start)
         let b = windowPoint(end)
-        guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: a, modifierFlags: [], timestamp: 0,
-                                            windowNumber: probeWindow.windowNumber, context: nil, eventNumber: 1,
+        let downNumber = nextMarkupEventNumber
+        let moveNumber = downNumber + 1
+        let upNumber = downNumber + 2
+        nextMarkupEventNumber += 3
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: a, modifierFlags: modifiers, timestamp: timestamp,
+                                            windowNumber: probeWindow.windowNumber, context: nil, eventNumber: downNumber,
                                             clickCount: 1, pressure: 1),
-              let move = NSEvent.mouseEvent(with: .leftMouseDragged, location: b, modifierFlags: [], timestamp: 0,
-                                            windowNumber: probeWindow.windowNumber, context: nil, eventNumber: 2,
+              let move = NSEvent.mouseEvent(with: .leftMouseDragged, location: b, modifierFlags: modifiers, timestamp: timestamp + 0.001,
+                                            windowNumber: probeWindow.windowNumber, context: nil, eventNumber: moveNumber,
                                             clickCount: 1, pressure: 1),
-              let up = NSEvent.mouseEvent(with: .leftMouseUp, location: b, modifierFlags: [], timestamp: 0,
-                                          windowNumber: probeWindow.windowNumber, context: nil, eventNumber: 3,
+              let up = NSEvent.mouseEvent(with: .leftMouseUp, location: b, modifierFlags: modifiers, timestamp: timestamp + 0.002,
+                                          windowNumber: probeWindow.windowNumber, context: nil, eventNumber: upNumber,
                                           clickCount: 1, pressure: 0) else { return }
-        // Deliver through the window so PDFKit's private page views get a
-        // chance to swallow the event first. Calling the view directly hides
-        // regressions in hit testing, which previously made every markup tool
-        // inert in the real app.
-        probeWindow.sendEvent(down)
-        probeWindow.sendEvent(move)
-        probeWindow.sendEvent(up)
+        if tool.isTextMarkup {
+            // PDFKit's native text-selection handler tracks the gesture
+            // synchronously from mouseDown, so queue the remaining events.
+            NSApp.postEvent(move, atStart: false)
+            NSApp.postEvent(up, atStart: false)
+            probeWindow.sendEvent(down)
+        } else {
+            probeWindow.sendEvent(down)
+            probeWindow.sendEvent(move)
+            probeWindow.sendEvent(up)
+        }
         settle(0.12)
     }
     func clickGesture(at point: NSPoint, tool: PDFMarkupTool) {
         probeView.markupTool = tool
         let p = windowPoint(point)
-        guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: [], timestamp: 0,
-                                            windowNumber: probeWindow.windowNumber, context: nil, eventNumber: 1,
+        let downNumber = nextMarkupEventNumber
+        let upNumber = downNumber + 1
+        nextMarkupEventNumber += 2
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: [], timestamp: timestamp,
+                                            windowNumber: probeWindow.windowNumber, context: nil, eventNumber: downNumber,
                                             clickCount: 1, pressure: 1),
-              let up = NSEvent.mouseEvent(with: .leftMouseUp, location: p, modifierFlags: [], timestamp: 0,
-                                          windowNumber: probeWindow.windowNumber, context: nil, eventNumber: 2,
+              let up = NSEvent.mouseEvent(with: .leftMouseUp, location: p, modifierFlags: [], timestamp: timestamp + 0.001,
+                                          windowNumber: probeWindow.windowNumber, context: nil, eventNumber: upNumber,
                                           clickCount: 1, pressure: 0) else { return }
-        probeWindow.sendEvent(down)
-        probeWindow.sendEvent(up)
+        if tool.isTextMarkup {
+            NSApp.postEvent(up, atStart: false)
+            probeWindow.sendEvent(down)
+        } else {
+            probeWindow.sendEvent(down)
+            probeWindow.sendEvent(up)
+        }
         settle(0.12)
     }
-    func markupCount(_ type: String) -> Int {
-        probePage.annotations.filter { $0.type == type && $0.userName == "DualPDF_Markup" }.count
+    func markupCount(_ kind: PaperAnnotationKind) -> Int {
+        probeModels.values.filter { $0.effectiveKind == kind }.count
     }
 
     dragGesture(from: NSPoint(x: 40, y: 450), to: NSPoint(x: 240, y: 468), tool: .highlight)
-    check(markupCount("Highlight") == 1, "高亮 tool creates a native PDF highlight annotation")
+    check(markupCount(.highlight) == 1, "高亮 tool creates a persisted highlight model")
     check(probeView.canUndoMarkup, "Markup action enables this column's undo stack")
+    let highlightID = probeModels.values.first(where: { $0.effectiveKind == .highlight })?.id
     probeView.undo(nil)
-    check(markupCount("Highlight") == 0 && probeView.canRedoMarkup, "Standard undo removes the annotation and enables redo")
+    check(markupCount(.highlight) == 0 && probeView.canRedoMarkup, "Undo deletes the persisted markup model")
     probeView.redo(nil)
-    check(markupCount("Highlight") == 1, "Standard redo restores the annotation")
+    check(markupCount(.highlight) == 1 && probeModels[highlightID ?? ""]?.id == highlightID,
+          "Redo restores a highlight model with the same ID")
 
     dragGesture(from: NSPoint(x: 60, y: 300), to: NSPoint(x: 200, y: 380), tool: .rectangle)
-    check(markupCount("Square") == 1, "矩形 tool creates a rectangle annotation")
+    check(markupCount(.rectangle) == 1, "矩形 tool creates a rectangle model")
+    dragGesture(from: NSPoint(x: 260, y: 150), to: NSPoint(x: 300, y: 180),
+                tool: .rectangle, modifiers: [.shift])
+    let constrainedShape = probeModels.values.first {
+        $0.effectiveKind == .rectangle &&
+            abs(($0.rects.first?.cgRect.minX ?? 0) - 260) < 2
+    }?.rects.first?.cgRect
+    check(constrainedShape != nil && abs(constrainedShape!.width - constrainedShape!.height) < 0.1,
+          "Shift-drawing a rectangle constrains it to a square")
+    let rectangleID = probeModels.values.first(where: {
+        $0.effectiveKind == .rectangle && ($0.rects.first?.cgRect.minX ?? 1000) < 200
+    })?.id
+    guard let initialRectangle = rectangleID.flatMap({ probeModels[$0] })?.rects.first?.cgRect else {
+        check(false, "Rectangle model stores its geometry")
+        return
+    }
+    let center = NSPoint(x: initialRectangle.midX, y: initialRectangle.midY)
+    dragGesture(from: center, to: NSPoint(x: center.x + 14, y: center.y + 9), tool: .pointer)
+    let movedRectangle = rectangleID.flatMap { probeModels[$0] }
+    check(movedRectangle?.rects.first?.cgRect.minX == initialRectangle.minX + 14 &&
+          movedRectangle?.id == rectangleID, "Pointer selection moves a rectangle model without changing its ID")
+    if let movedRect = movedRectangle?.rects.first?.cgRect {
+        let corner = NSPoint(x: movedRect.maxX, y: movedRect.minY)
+        dragGesture(from: corner, to: NSPoint(x: corner.x + 18, y: corner.y - 7),
+                    tool: .pointer, modifiers: [.shift])
+    }
+    let resizedRectangle = rectangleID.flatMap { probeModels[$0] }?.rects.first?.cgRect
+    check(resizedRectangle != nil && abs(resizedRectangle!.width - resizedRectangle!.height) < 0.1,
+          "Shift-resizing a rectangle preserves its square aspect ratio")
+    let paletteUndoCount = probeView.markupUndoCount
+    probeView.updateSelectedMarkupColor(.systemRed)
+    check(probeView.markupUndoCount == paletteUndoCount + 1 &&
+          rectangleID.flatMap({ probeModels[$0] })?.colorHex != nil,
+          "Changing selected markup color is one model undo command")
+    probeView.undoMarkup()
+    check(rectangleID.flatMap({ probeModels[$0] })?.color == .nearest(to: .systemYellow),
+          "Undo restores the previous markup color")
+
+    let beforeDeleteID = rectangleID
+    let deleteEvent = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                       timestamp: 0, windowNumber: probeWindow.windowNumber, context: nil,
+                                       characters: "\u{7f}", charactersIgnoringModifiers: "\u{7f}",
+                                       isARepeat: false, keyCode: 51)
+    if let deleteEvent { probeView.keyDown(with: deleteEvent) }
+    check(beforeDeleteID != nil && beforeDeleteID.flatMap { probeModels[$0] } == nil,
+          "Delete removes the selected model")
+    probeView.undoMarkup()
+    check(beforeDeleteID.flatMap { probeModels[$0] }?.id == beforeDeleteID,
+          "Undo recreates a deleted markup with the same ID")
+
     clickGesture(at: NSPoint(x: 130, y: 340), tool: .eraser)
-    check(markupCount("Square") == 0, "橡皮擦 removes the markup under the pointer")
+    check(markupCount(.rectangle) == 1, "橡皮擦 removes the markup under the pointer")
+    probeView.undoMarkup()
+    check(markupCount(.rectangle) == 2, "Undo restores an erased model")
 
     probeView.addTextMarkupForTesting(text: "测试文本", page: probePage, at: NSPoint(x: 70, y: 250))
-    let freeText = probePage.annotations.first { $0.type == "FreeText" && $0.userName == "DualPDF_Markup" }
-    check(markupCount("FreeText") == 1 && freeText?.contents == "测试文本",
-          "文本 tool creates an editable free-text annotation with the entered content")
-    if let color = freeText?.fontColor?.usingColorSpace(.deviceRGB) {
-        let luminance = 0.2126 * color.redComponent + 0.7152 * color.greenComponent + 0.0722 * color.blueComponent
-        check(luminance < 0.6, "Text annotations darken bright highlight colors for readability on white paper")
-    } else {
-        check(false, "Text annotation exposes a readable font color")
-    }
+    let textModel = probeModels.values.first { $0.effectiveKind == .text }
+    check(markupCount(.text) == 1 && textModel?.selectedText == "测试文本",
+          "文本 tool persists editable text in a model")
     dragGesture(from: NSPoint(x: 60, y: 200), to: NSPoint(x: 170, y: 240), tool: .ink)
-    check(markupCount("Ink") == 1, "画笔 tool creates an ink annotation")
-    dragGesture(from: NSPoint(x: 40, y: 450), to: NSPoint(x: 240, y: 468), tool: .underline)
-    check(markupCount("Underline") == 1, "下划线 tool creates an underline annotation")
-    dragGesture(from: NSPoint(x: 40, y: 450), to: NSPoint(x: 240, y: 468), tool: .strikethrough)
-    check(markupCount("StrikeOut") == 1, "删除线 tool creates a strike-out annotation")
+    check(markupCount(.ink) == 1, "画笔 tool creates an ink model")
+    if let ink = probeModels.values.first(where: { $0.effectiveKind == .ink }),
+       let path = ink.inkPaths?.first {
+        let midpoint = NSPoint(x: (path[0].x + path[1].x) / 2, y: (path[0].y + path[1].y) / 2)
+        clickGesture(at: midpoint, tool: .pointer)
+        check(probeView.selectedMarkupId == ink.id, "Ink is selectable by its rendered stroke geometry")
+    } else {
+        check(false, "Ink model persists sampled path points")
+    }
+    dragGesture(from: NSPoint(x: 270, y: 150), to: NSPoint(x: 340, y: 180), tool: .arrow)
+    let arrowBefore = probeModels.values.first { $0.effectiveKind == .arrow }
+    if let arrow = arrowBefore, let end = arrow.endPoint?.cgPoint {
+        dragGesture(from: end, to: NSPoint(x: end.x + 12, y: end.y + 8), tool: .pointer)
+        let arrowAfter = probeModels[arrow.id]
+        check(arrowAfter?.endPoint != arrow.endPoint && arrowAfter?.startPoint == arrow.startPoint,
+              "Arrow endpoint handles update the model endpoint")
+    } else {
+        check(false, "Arrow tool persists both endpoints")
+    }
+
+    dragGesture(from: NSPoint(x: 360, y: 300), to: NSPoint(x: 400, y: 340), tool: .rectangle)
+    dragGesture(from: NSPoint(x: 420, y: 300), to: NSPoint(x: 460, y: 340), tool: .rectangle)
+    let batchesBeforeErase = deleteBatches.count
+    let undoBeforeErase = probeView.markupUndoCount
+    dragGesture(from: NSPoint(x: 380, y: 320), to: NSPoint(x: 440, y: 320), tool: .eraser)
+    check(deleteBatches.count == batchesBeforeErase + 1 && deleteBatches.last?.count == 2 &&
+          probeView.markupUndoCount == undoBeforeErase + 1,
+          "A drag eraser deletes multiple hit models in one batch")
+    probeView.undoMarkup()
+    check(probeModels.values.filter { $0.effectiveKind == .rectangle }.count >= 2,
+          "Undo restores a batched eraser deletion")
 
     // A persisted highlight is rendered by PDFKit, but its note popover is
     // owned by InteractivePDFView. PDFKit's page views must not swallow that
@@ -339,6 +447,7 @@ func runReaderToolbarTests(root: URL) throws {
                                  pdfDocumentId: "original")
     var clickedStoredAnnotation: PaperAnnotation?
     probeView.markupTool = .pointer
+    probeModels = [stored.id: stored]
     probeView.storedAnnotations = [stored]
     probeView.onAnnotationClicked = { annotation, _ in clickedStoredAnnotation = annotation }
     clickGesture(at: NSPoint(x: 140, y: 459), tool: .pointer)
