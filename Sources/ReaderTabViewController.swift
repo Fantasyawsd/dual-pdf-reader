@@ -3375,9 +3375,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 guard let col = col else { return }
                 self?.showExistingAnnotationPopover(annot, in: col.pdfView, at: pt)
             }
-            col.pdfView.onMarkupCreate = { [weak self, weak col] annotation in
+            col.pdfView.onMarkupCreate = { [weak self, weak col] annotations in
                 guard let self, let col else { return }
-                self.persistMarkupCreate(annotation, in: col)
+                self.persistMarkupCreate(annotations, in: col)
             }
             col.pdfView.onMarkupUpdate = { [weak self, weak col] annotation in
                 guard let self, let col else { return }
@@ -3879,15 +3879,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
     }
 
-    private func persistMarkupCreate(_ annotation: PaperAnnotation, in column: CleanPDFColumnView) {
-        guard var paper = currentPaper else { return }
-        var annotation = annotation
-        annotation.side = column.side
-        annotation.pdfDocumentId = column.activePDFDocumentId
-        if let index = paper.annotations.firstIndex(where: { $0.id == annotation.id }) {
-            paper.annotations[index] = annotation
-        } else {
-            paper.annotations.append(annotation)
+    private func persistMarkupCreate(_ annotations: [PaperAnnotation], in column: CleanPDFColumnView) {
+        guard !annotations.isEmpty, var paper = currentPaper else { return }
+        for source in annotations {
+            var annotation = source
+            annotation.side = column.side
+            annotation.pdfDocumentId = column.activePDFDocumentId
+            if let index = paper.annotations.firstIndex(where: { $0.id == annotation.id }) {
+                paper.annotations[index] = annotation
+            } else {
+                paper.annotations.append(annotation)
+            }
         }
         guard LibraryStore.shared.savePaper(paper, notify: true) else { return }
         applyAnnotationsToPDFViews()
