@@ -413,7 +413,7 @@ do {
     }
     let compressed = visibleButtons.filter { $0.bounds.width < 12 }
     check(compressed.isEmpty, "L05", "最小窗口双栏打开搜索，宽度不足12pt的顶栏按钮=\(compressed.map { "\($0.toolTip ?? $0.title):\($0.bounds.width)" })")
-    let primaryTitles = ["大纲目录", "双页并排", "单页/连续滚动", "自适应宽度", "抓手漫游", "指针选择"]
+    let primaryTitles = ["大纲目录", "单页/连续滚动", "自适应宽度", "抓手漫游", "指针选择"]
     let perColumnControlsFit = [reader.leftCol, reader.rightCol].allSatisfy { column -> Bool in
         let toolbar = column.columnToolbar
         let visibleButtons = descendants(toolbar).compactMap { $0 as? NSButton }.filter { button in

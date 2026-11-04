@@ -399,7 +399,6 @@ final class ColumnPageCapsuleView: NSVisualEffectView, NSTextFieldDelegate {
 
 final class ColumnToolbarView: NSVisualEffectView {
     var onOutline: (() -> Void)?
-    var onSpread: (() -> Void)?
     var onContinuous: (() -> Void)?
     var onFitWidth: (() -> Void)?
     var onSearch: (() -> Void)?
@@ -413,7 +412,6 @@ final class ColumnToolbarView: NSVisualEffectView {
 
     private(set) var mode: ColumnToolMode = .read
     let outlineButton = ModernHoverButton()
-    private let spreadButton = ModernHoverButton()
     private let continuousButton = ModernHoverButton()
     private let fitWidthButton = ModernHoverButton()
     private let handButton = ModernHoverButton()
@@ -485,7 +483,6 @@ final class ColumnToolbarView: NSVisualEffectView {
 
         let leftTools: [(ModernHoverButton, [String], String, Selector)] = [
             (outlineButton, ["list.bullet.indent", "list.bullet"], "大纲目录", #selector(outlineAction)),
-            (spreadButton, ["rectangle.split.2x1", "book"], "双页并排", #selector(spreadAction)),
             (continuousButton, ["rectangle.stack", "doc.plaintext"], "单页/连续滚动", #selector(continuousAction)),
             (fitWidthButton, ["arrow.left.and.right", "arrow.left.and.right.square"], "自适应宽度", #selector(fitWidthAction)),
             (handButton, ["hand.raised", "hand.point.up.left"], "抓手漫游", #selector(handAction)),
@@ -731,9 +728,7 @@ final class ColumnToolbarView: NSVisualEffectView {
     }
 
     func setViewMode(_ displayMode: PDFDisplayMode) {
-        let twoUp = (displayMode == .twoUp || displayMode == .twoUpContinuous)
         let continuous = (displayMode == .singlePageContinuous || displayMode == .twoUpContinuous)
-        spreadButton.state = twoUp ? .on : .off
         continuousButton.state = continuous ? .on : .off
         continuousButton.image = columnToolbarSymbol(continuous ? ["rectangle.stack", "doc.plaintext"] : ["rectangle.portrait", "doc"],
                                                       pointSize: 13, weight: .medium)
@@ -815,7 +810,6 @@ final class ColumnToolbarView: NSVisualEffectView {
     }
 
     @objc private func outlineAction() { onOutline?() }
-    @objc private func spreadAction() { onSpread?() }
     @objc private func continuousAction() { onContinuous?() }
     @objc private func fitWidthAction() { onFitWidth?() }
     @objc private func searchAction() { onSearch?() }
@@ -847,7 +841,6 @@ final class ColumnToolbarView: NSVisualEffectView {
     private func buildOverflowMenu() -> NSMenu {
         let menu = NSMenu(title: "更多工具")
         addOverflowItem(menu, title: "大纲目录", action: #selector(outlineAction), isOn: outlineButton.state == .on)
-        addOverflowItem(menu, title: "双页并排", action: #selector(spreadAction), isOn: spreadButton.state == .on)
         addOverflowItem(menu, title: "单页/连续滚动", action: #selector(continuousAction), isOn: continuousButton.state == .on)
         addOverflowItem(menu, title: "自适应宽度", action: #selector(fitWidthAction))
         addOverflowItem(menu, title: "抓手漫游", action: #selector(handAction), isOn: handButton.state == .on)

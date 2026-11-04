@@ -3479,9 +3479,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
               let source = [leftCol, rightCol].first(where: { $0.internalScrollView()?.contentView === clipView }),
               viewportCoordinator.receivedScroll(in: source) else { return }
         lastReadingColumn = source
-        updatePageIndicatorAndSaveProgress()
         source.revealPageCapsule()
         syncScroll(from: source, to: source === leftCol ? rightCol : leftCol)
+        // The target column moves programmatically inside syncScroll, where
+        // bounds notifications are suppressed. Refresh both capsules after
+        // that move so each column shows its own post-sync page.
+        updatePageIndicatorAndSaveProgress()
         scheduleReadingPositionSave(from: source)
     }
 
@@ -4709,14 +4712,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             self.lastReadingColumn = col
             self.updateNavigationSource()
             self.toggleOutlineSidebar(for: col)
-        }
-        toolbar.onSpread = { [weak self, weak col] in
-            guard let self = self, let col = col else { return }
-            self.beginLayoutChange()
-            col.toggleSpreadMode()
-            self.view.layoutSubtreeIfNeeded()
-            self.scheduleLayoutCompletion()
-            self.updatePageIndicatorAndSaveProgress()
         }
         toolbar.onContinuous = { [weak self, weak col] in
             guard let self = self, let col = col else { return }
