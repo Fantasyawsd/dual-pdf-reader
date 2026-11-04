@@ -386,8 +386,11 @@ final class InteractivePDFView: PDFView {
     var canRedoMarkup: Bool { !markupRedoStack.isEmpty }
     var markupUndoCount: Int { markupUndoStack.count }
     var markupRedoCount: Int { markupRedoStack.count }
-    /// Session-only DualPDF_Markup edits currently applied (not persisted to the library / PDF file).
-    var hasUnpersistedSessionMarkup: Bool { canUndoMarkup }
+    /// True only when DualPDF_Markup edits would be lost on tab close / quit.
+    /// After annotation persistence, create/update/delete are written immediately to
+    /// LibraryStore (or TransientStore for 未入库 papers). The undo stack is session
+    /// history only and must not trigger the discard warning.
+    var hasUnpersistedSessionMarkup: Bool { false }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1845,6 +1848,7 @@ final class CleanPDFColumnView: NSView {
     var onPageCapsuleCommit: ((Int) -> Void)?
     var onPageCapsuleStep: ((Int) -> Void)?
     var onToolbarLayoutChanged: (() -> Void)?
+    var onMarkupStateChanged: (() -> Void)?
     private var capsuleHideTicket = 0
     private var capsuleHotspotTrackingArea: NSTrackingArea?
 
@@ -1939,6 +1943,7 @@ final class CleanPDFColumnView: NSView {
             guard let self else { return }
             self.columnToolbar.setUndoRedoEnabled(canUndo: self.pdfView.canUndoMarkup,
                                                   canRedo: self.pdfView.canRedoMarkup)
+            self.onMarkupStateChanged?()
         }
         addSubview(columnToolbar)
 

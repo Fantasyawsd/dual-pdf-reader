@@ -59,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var testingFlushReadingState: (() -> Bool)? = nil
 
     /// Number of open reader tabs (all main windows + standalone reader windows) whose
-    /// DualPDF_Markup edits are session-only and would be lost on quit.
+    /// DualPDF_Markup edits are still unpersisted and would be lost on quit.
     func unpersistedSessionMarkupTabCount() -> Int {
         var seen = Set<ObjectIdentifier>()
         var controllers: [MultiTabMainWindowController] = []
@@ -233,6 +233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(withTitle: "当前栏自适应宽度", action: #selector(MultiTabMainWindowController.readerZoomFitShortcut), keyEquivalent: "0")
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(withTitle: "展开/收起右侧目录与笔记抽屉", action: #selector(MultiTabMainWindowController.readerToggleDrawerShortcut), keyEquivalent: "i")
+        let readerBarItem = NSMenuItem(title: "隐藏/显示阅读器顶栏", action: #selector(MultiTabMainWindowController.readerToggleTopBarShortcut), keyEquivalent: "t")
+        readerBarItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(readerBarItem)
 
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)

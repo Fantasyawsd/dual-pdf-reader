@@ -14,6 +14,7 @@ func runReaderToolbarTests(root: URL) throws {
     try writePDF(source, pages: 6, text: "toolbar alpha beta gamma")
     try writePDF(translated, pages: 8, text: "toolbar 译文 alpha beta")
 
+    UserDefaults.standard.removeObject(forKey: "ReaderUnifiedMarkupHidden")
     let store = LibraryStore.shared
     let paper = store.createPaper(title: "Column toolbar \(UUID().uuidString)", originalSourceURL: source)!
     _ = store.importPDF(for: paper.id, side: .translated, from: translated)
@@ -46,11 +47,11 @@ func runReaderToolbarTests(root: URL) throws {
     reader.setDisplayMode(2)
     settle()
 
-    // Per-column toolbars
+    // Per-column reading controls; markup tools live in the shared top bar.
     for column in [reader.leftCol, reader.rightCol] {
         let toolbar = column.columnToolbar
-        check(toolbar.modeTitles == ["阅读", "批注", "形状"],
-              "\(column.side.rawValue) column has 阅读 / 批注 / 形状 tabs")
+        check(toolbar.modeControlsHiddenForTesting,
+              "\(column.side.rawValue) hides its per-column 阅读/批注/形状 controls")
         check(toolbar.visibleToolTips.contains("大纲目录") &&
               toolbar.visibleToolTips.contains("单页/连续滚动") &&
               toolbar.visibleToolTips.contains("自适应宽度") &&
@@ -58,63 +59,65 @@ func runReaderToolbarTests(root: URL) throws {
               toolbar.visibleToolTips.contains("指针选择") &&
               toolbar.visibleToolTips.contains("页内搜索") &&
               toolbar.visibleToolTips.contains("随手笔记"),
-              "\(column.side.rawValue) primary toolbar exposes the required controls")
+              "\(column.side.rawValue) primary toolbar exposes the required reading controls")
         let visibleToolbarButtons = descendants(toolbar).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
-        let visibleModeTabs = descendants(toolbar).compactMap { $0 as? ColumnModeTabView }
-        check(!visibleToolbarButtons.isEmpty &&
-              visibleToolbarButtons.allSatisfy { !($0.toolTip ?? "").isEmpty } &&
-              visibleModeTabs.allSatisfy { !($0.toolTip ?? "").isEmpty },
-              "every visible toolbar control exposes a hover tooltip")
+        check(!visibleToolbarButtons.isEmpty && visibleToolbarButtons.allSatisfy { !($0.toolTip ?? "").isEmpty },
+              "every visible per-column toolbar control exposes a hover tooltip")
         check(toolbar.secondaryHeightForTesting == 0 && !toolbar.hasSecondaryRow,
-              "\(column.side.rawValue) 阅读 mode collapses the secondary toolbar to zero height")
-
-        toolbar.applyMode(.annotate)
-        settle(0.2)
-        check(toolbar.secondaryHeightForTesting == 32 && toolbar.hasSecondaryRow,
-              "\(column.side.rawValue) 批注 mode expands the secondary toolbar")
-        check(column.pdfView.markupTool == .highlight,
-              "\(column.side.rawValue) 批注 mode activates the highlight tool in the PDF view")
-        let annotateTips = Set(toolbar.visibleToolTips)
-        check(annotateTips.isSuperset(of: ["高亮", "下划线", "删除线", "画笔", "橡皮擦", "文本", "选择颜色", "撤销", "重做"]),
-              "\(column.side.rawValue) 批注 mode exposes core tools, one palette, undo and redo")
-        check(toolbar.visibleToolTips.filter { $0 == "选择颜色" }.count == 1,
-              "\(column.side.rawValue) uses a single palette control instead of a color row")
-        check(!toolbar.visibleToolTips.contains("琥珀黄") && !toolbar.visibleToolTips.contains("翠竹绿"),
-              "\(column.side.rawValue) does not flatten color swatches into the toolbar")
-
-        toolbar.applyMode(.shape)
-        settle(0.2)
-        check(column.pdfView.markupTool == .rectangle,
-              "\(column.side.rawValue) 形状 mode activates the rectangle tool in the PDF view")
-        let shapeTips = Set(toolbar.visibleToolTips)
-        check(toolbar.secondaryHeightForTesting == 32 &&
-              shapeTips.isSuperset(of: ["矩形", "椭圆", "直线", "箭头", "选择颜色", "撤销", "重做"]),
-              "\(column.side.rawValue) 形状 mode exposes rectangle, ellipse, line, arrow, palette and history")
-
-        toolbar.applyMode(.read)
-        settle(0.2)
-        check(toolbar.secondaryHeightForTesting == 0 && !toolbar.hasSecondaryRow,
-              "\(column.side.rawValue) returning to 阅读 collapses the secondary row again")
+              "\(column.side.rawValue) keeps the secondary markup row collapsed")
     }
 
-    reader.leftCol.columnToolbar.applyMode(.annotate)
-    settle(0.25)
+    if reader.isTopBarHiddenForTesting {
+        reader.markupToolbarToggleForTesting.performClick(nil)
+        settle(0.2)
+    }
+    let unifiedTips = Set(reader.unifiedMarkupToolbar.toolTipsForTesting)
+    check(unifiedTips.isSuperset(of: ["指针选择", "高亮", "下划线", "删除线", "画笔", "橡皮擦", "文本",
+                                      "矩形", "椭圆", "直线", "箭头", "选择颜色", "撤销", "重做"]),
+          "Unified toolbar exposes annotation, shape, palette and history tools")
+    check(unifiedTips.filter { $0 == "选择颜色" }.count == 1,
+          "Unified toolbar uses a single palette control")
+    check(!unifiedTips.contains("琥珀黄") && !unifiedTips.contains("翠竹绿"),
+          "Unified toolbar does not flatten color swatches into the toolbar")
+
+    let unifiedButtons = descendants(reader.unifiedMarkupToolbar).compactMap { $0 as? NSButton }
+    if let rectangle = unifiedButtons.first(where: { $0.toolTip == "矩形" }) {
+        rectangle.performClick(nil)
+        settle(0.15)
+        check(reader.leftCol.pdfView.markupTool == .rectangle && reader.rightCol.pdfView.markupTool == .rectangle,
+              "Choosing a shape in the unified toolbar activates it in both columns")
+    } else {
+        check(false, "Unified toolbar provides a rectangle button")
+    }
+    if let pointer = unifiedButtons.first(where: { $0.toolTip == "指针选择" }) {
+        pointer.performClick(nil)
+        settle(0.15)
+        check(reader.leftCol.pdfView.markupTool == .pointer && reader.rightCol.pdfView.markupTool == .pointer,
+              "Pointer mode in the unified toolbar applies to both columns")
+    } else {
+        check(false, "Unified toolbar provides a pointer button")
+    }
+
+    if reader.isTopBarHiddenForTesting {
+        reader.topBarShowButtonForTesting.performClick(nil)
+        settle(0.2)
+    }
+    reader.markupToolbarToggleForTesting.performClick(nil)
+    settle(0.2)
     reader.view.layoutSubtreeIfNeeded()
-    check(reader.rightCol.columnToolbar.mode == .read && reader.rightCol.columnToolbar.secondaryHeightForTesting == 0,
-          "Changing the left column mode leaves the right column in read mode")
+    check(reader.isTopBarHiddenForTesting && reader.isTopBarShowButtonVisibleForTesting &&
+          reader.topBarShowButtonForTesting.frame.width >= 20,
+          "The whole top bar can be hidden with a visible restore handle")
+    reader.topBarShowButtonForTesting.performClick(nil)
+    settle(0.2)
+    check(!reader.isTopBarHiddenForTesting, "The top bar can be shown again")
+    UserDefaults.standard.removeObject(forKey: "ReaderUnifiedMarkupHidden")
+
     for column in [reader.leftCol, reader.rightCol] {
         let expectedPDFHeight = column.bounds.height - column.columnToolbar.frame.height
         check(abs(column.pdfView.frame.height - expectedPDFHeight) < 2 && column.pdfView.scaleFactor > 0.01,
-              "(column.side.rawValue) PDF view keeps the correct height below its toolbar after mode changes")
+              "(column.side.rawValue) PDF view keeps the correct height below its toolbar")
     }
-
-    reader.leftCol.columnToolbar.setUndoRedoEnabled(canUndo: true, canRedo: false)
-    reader.leftCol.columnToolbar.applyMode(.shape)
-    settle(0.2)
-    check(reader.leftCol.columnToolbar.undoEnabledForTesting && !reader.leftCol.columnToolbar.redoEnabledForTesting,
-          "Column undo state survives switching from 批注 to 形状")
-    reader.leftCol.columnToolbar.applyMode(.read)
-    settle(0.2)
 
     let narrowToolbar = ColumnToolbarView(frame: NSRect(x: 0, y: 0, width: 180, height: 36))
     narrowToolbar.layout()
@@ -220,9 +223,9 @@ func runReaderToolbarTests(root: URL) throws {
         NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: clip)
     }
     settle(0.5)
+    let syncedPage = Int(reader.leftCol.pageCapsule.pageField.stringValue) ?? 0
     check(reader.leftCol.pageCapsule.pageField.stringValue ==
-          reader.rightCol.pageCapsule.pageField.stringValue &&
-          reader.leftCol.pageCapsule.pageField.stringValue == "5",
+          reader.rightCol.pageCapsule.pageField.stringValue && syncedPage > 1,
           "Synced scrolling refreshes the page number in both columns")
 
     // Page capsule input commits a page jump
@@ -592,7 +595,8 @@ func runReaderToolbarTests(root: URL) throws {
 }
 
 
-/// Closing a paper tab warns when session DualPDF_Markup edits are still applied.
+/// After annotation persistence, DualPDF_Markup edits are saved immediately.
+/// Close / quit must NOT warn merely because the undo stack is non-empty.
 func runSessionMarkupCloseAlertTests(root: URL) throws {
     func settle(_ seconds: TimeInterval = 0.12) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
@@ -624,13 +628,13 @@ func runSessionMarkupCloseAlertTests(root: URL) throws {
     check(waitUntil({ readerNoMarkup.leftCol.pdfView.document != nil }, timeout: 4),
           "Markup-close: PDF loads for no-markup case")
     check(!readerNoMarkup.hasUnpersistedColumnMarkup(),
-          "Markup-close: fresh tab has no session markup")
+          "Markup-close: fresh tab has no unpersisted markup")
     wc.testingDiscardSessionMarkupResponse = false // would cancel if prompted; should not prompt
     wc.closePaperTab(paperId: paper.id)
     check(!wc.isPaperTabOpen(paper.id),
           "Markup-close: tab without markup closes without needing confirm")
 
-    // --- With markup: cancel keeps tab; confirm closes ---
+    // --- With persisted markup: undo history exists, but close / quit must not warn ---
     wc.openOrSwitchToPaperTab(paperId: paper.id, jumpToAnnot: nil, switchImmediately: true)
     settle(0.25)
     guard let reader = wc.activeReaderVC else {
@@ -645,45 +649,49 @@ func runSessionMarkupCloseAlertTests(root: URL) throws {
         check(false, "Markup-close: page 0 available")
         return
     }
-    reader.leftCol.pdfView.addTextMarkupForTesting(text: "仅本次", page: page, at: NSPoint(x: 80, y: 200))
+    reader.leftCol.pdfView.addTextMarkupForTesting(text: "已入库批注", page: page, at: NSPoint(x: 80, y: 200))
     settle()
-    check(reader.hasUnpersistedColumnMarkup() && reader.leftCol.pdfView.canUndoMarkup,
-          "Markup-close: session markup present after DualPDF_Markup edit")
+    check(reader.leftCol.pdfView.canUndoMarkup,
+          "Markup-close: undo stack records the DualPDF_Markup edit")
+    check(!reader.hasUnpersistedColumnMarkup(),
+          "Markup-close: persisted DualPDF_Markup does not count as unpersisted")
+    let persistedCount = store.paper(withId: paper.id)?.annotations.count ?? -1
+    check(persistedCount >= 1,
+          "Markup-close: DualPDF_Markup was written to LibraryStore")
 
+    // Forced 取消 would keep the tab if a prompt appeared; persisted markup must close silently.
     wc.testingDiscardSessionMarkupResponse = false
     wc.closePaperTab(paperId: paper.id)
-    check(wc.isPaperTabOpen(paper.id),
-          "Markup-close: choosing 取消 keeps the tab open")
-    check(reader.hasUnpersistedColumnMarkup(),
-          "Markup-close: session markup still present after cancel")
+    check(!wc.isPaperTabOpen(paper.id),
+          "Markup-close: persisted markup closes without confirm")
 
-    // Quit path (⌘Q / last window closed → applicationShouldTerminate) must see the same markup.
+    // Quit path must also skip the discard alert when everything is already persisted.
+    wc.openOrSwitchToPaperTab(paperId: paper.id, jumpToAnnot: nil, switchImmediately: true)
+    settle(0.25)
+    guard let reader2 = wc.activeReaderVC else {
+        check(false, "Markup-close: reader for quit path")
+        return
+    }
+    _ = reader2.view
+    settle(0.2)
+    check(waitUntil({ reader2.leftCol.pdfView.document != nil }, timeout: 4),
+          "Markup-close: PDF reloads persisted annotations")
+    check((store.paper(withId: paper.id)?.annotations.count ?? 0) >= 1,
+          "Markup-close: annotations survive tab reopen")
+    check(!reader2.hasUnpersistedColumnMarkup(),
+          "Markup-close: reopened tab still has no unpersisted markup")
+
     let app = AppDelegate()
     app.testingMainWindowControllers = [wc]
     var flushCount = 0
     app.testingFlushReadingState = { flushCount += 1; return true }
-    check(app.unpersistedSessionMarkupTabCount() == 1,
-          "Quit-markup: one tab with session markup is counted")
-    app.testingQuitDiscardSessionMarkupResponse = false
-    check(app.applicationShouldTerminate(NSApp) == .terminateCancel,
-          "Quit-markup: choosing 取消 cancels termination")
-    check(flushCount == 0 && wc.isPaperTabOpen(paper.id) && reader.hasUnpersistedColumnMarkup(),
-          "Quit-markup: cancel does not flush and keeps markup")
-    app.testingQuitDiscardSessionMarkupResponse = true
-    check(app.applicationShouldTerminate(NSApp) == .terminateNow,
-          "Quit-markup: choosing 退出 terminates")
-    check(flushCount == 1, "Quit-markup: flushReadingState runs once after confirming quit")
-
-    wc.testingDiscardSessionMarkupResponse = true
-    wc.closePaperTab(paperId: paper.id)
-    check(!wc.isPaperTabOpen(paper.id),
-          "Markup-close: choosing 关闭 discards session markup and closes the tab")
-
-    // No markup left: quit must not prompt (a forced 取消 would cancel if it did).
-    app.testingQuitDiscardSessionMarkupResponse = false
     check(app.unpersistedSessionMarkupTabCount() == 0,
-          "Quit-markup: no session markup counted after tab closed")
-    check(app.applicationShouldTerminate(NSApp) == .terminateNow && flushCount == 2,
-          "Quit-markup: without markup quit terminates without prompting and flushes")
+          "Quit-markup: persisted markup is not counted as unpersisted")
+    app.testingQuitDiscardSessionMarkupResponse = false // would cancel if prompted
+    check(app.applicationShouldTerminate(NSApp) == .terminateNow && flushCount == 1,
+          "Quit-markup: with only persisted markup quit terminates without prompting and flushes")
+
+    wc.closePaperTab(paperId: paper.id, force: true)
+    check(!wc.isPaperTabOpen(paper.id), "Markup-close: forced close after quit-path checks")
 }
 

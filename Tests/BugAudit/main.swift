@@ -421,16 +421,20 @@ do {
         }
         let overflowOK = !toolbar.overflowButtonForTesting.isHidden &&
             Set(toolbar.overflowMenuTitlesForTesting()).isSuperset(of: primaryTitles)
-        let modeOK = toolbar.modeTabsVisibleForTesting || !toolbar.modeMenuButtonForTesting.isHidden
         let visibleFramesFit = visibleButtons.allSatisfy { button in
             let frame = button.convert(button.bounds, to: reader.view)
             return button.frame.width >= 24 &&
                 frame.minX >= 0 && frame.maxX <= reader.view.bounds.width && frame.maxY <= reader.view.bounds.height
         }
-        return (visibleButtons.count == primaryTitles.count || overflowOK) && modeOK && visibleFramesFit
+        return (visibleButtons.count == primaryTitles.count || overflowOK) && visibleFramesFit
     }
+    let unifiedButtons = descendants(reader.unifiedMarkupToolbar).compactMap { $0 as? NSButton }
+        .filter { !$0.isHiddenOrHasHiddenAncestor }
+    let unifiedOK = unifiedButtons.count >= 10 &&
+        unifiedButtons.contains { $0.toolTip == "高亮" } &&
+        unifiedButtons.contains { $0.toolTip == "矩形" }
     let capsulesFit = [reader.leftCol, reader.rightCol].allSatisfy { $0.pageCapsule.frame.width >= 140 }
-    check(perColumnControlsFit && capsulesFit, "L05-all-controls", "紧凑布局保留两栏全部视图/缩放入口与页码胶囊，窄栏自动收进溢出菜单")
+    check(perColumnControlsFit && unifiedOK && capsulesFit, "L05-all-controls", "紧凑布局保留两栏视图/缩放入口、统一批注工具栏与页码胶囊，窄栏自动收进溢出菜单")
     send("closeSearchAction", to: reader)
     reader.focusSearchField()
     let field = descendants(reader.view).compactMap { $0 as? NSSearchField }.first!
