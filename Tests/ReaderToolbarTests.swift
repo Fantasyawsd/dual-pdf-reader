@@ -380,6 +380,23 @@ func runReaderToolbarTests(root: URL) throws {
         probeModels.values.filter { $0.effectiveKind == kind }.count
     }
 
+    // Pointer mode routes page hits to InteractivePDFView for markup
+    // selection. Wheel events must still reach PDFKit's internal scroll view,
+    // otherwise the entire reader becomes unscrollable.
+    if let scroll = descendants(probeView).compactMap({ $0 as? NSScrollView }).first,
+       let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                        wheel1: -80, wheel2: 0, wheel3: 0),
+       let wheel = NSEvent(cgEvent: cg) {
+        probeView.markupTool = .pointer
+        let before = scroll.contentView.bounds.origin.y
+        probeView.scrollWheel(with: wheel)
+        settle(0.25)
+        let after = scroll.contentView.bounds.origin.y
+        check(after > before + 1, "Pointer mode keeps the PDF scrollable with the wheel")
+    } else {
+        check(false, "Scroll fixture exposes an NSScrollView and wheel event")
+    }
+
     dragGesture(from: NSPoint(x: 40, y: 450), to: NSPoint(x: 240, y: 468), tool: .highlight)
     check(markupCount(.highlight) == 1, "高亮 tool creates a persisted highlight model")
     check(probeView.canUndoMarkup, "Markup action enables this column's undo stack")

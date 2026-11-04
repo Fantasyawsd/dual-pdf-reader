@@ -429,7 +429,15 @@ final class InteractivePDFView: PDFView {
             return
         }
         let isOptionHeld = event.modifierFlags.contains(.option)
-        super.scrollWheel(with: event)
+        // In pointer mode hitTest routes page hits to this view so markup
+        // selection works. That also means wheel events no longer reach
+        // PDFKit's internal PDFScrollView on their own; PDFView.super does not
+        // scroll. Forward them explicitly or the reader becomes unscrollable.
+        if let scroll = internalScrollView() {
+            scroll.scrollWheel(with: event)
+        } else {
+            super.scrollWheel(with: event)
+        }
         if isOptionHeld {
             onOptionScrollPerformed?()
         }
