@@ -52,7 +52,6 @@ func runReaderToolbarTests(root: URL) throws {
         check(toolbar.modeTitles == ["阅读", "批注", "形状"],
               "\(column.side.rawValue) column has 阅读 / 批注 / 形状 tabs")
         check(toolbar.visibleToolTips.contains("大纲目录") &&
-              toolbar.visibleToolTips.contains("双页并排") &&
               toolbar.visibleToolTips.contains("单页/连续滚动") &&
               toolbar.visibleToolTips.contains("自适应宽度") &&
               toolbar.visibleToolTips.contains("抓手漫游") &&
@@ -119,7 +118,7 @@ func runReaderToolbarTests(root: URL) throws {
 
     let narrowToolbar = ColumnToolbarView(frame: NSRect(x: 0, y: 0, width: 180, height: 36))
     narrowToolbar.layout()
-    let narrowTitles = ["大纲目录", "双页并排", "单页/连续滚动", "自适应宽度", "抓手漫游", "指针选择"]
+    let narrowTitles = ["大纲目录", "单页/连续滚动", "自适应宽度", "抓手漫游", "指针选择"]
     check(!narrowToolbar.overflowButtonForTesting.isHidden &&
           !narrowToolbar.modeMenuButtonForTesting.isHidden &&
           Set(narrowToolbar.overflowMenuTitlesForTesting()).isSuperset(of: narrowTitles),
@@ -210,6 +209,21 @@ func runReaderToolbarTests(root: URL) throws {
     check(!capsule.isHidden && capsule.alphaValue > 0.9, "Hovering the page capsule cancels the hide timer")
     reader.leftCol.capsuleHoverChanged(false)
     check(waitUntil({ capsule.isHidden }, timeout: 3.0), "Leaving the capsule restarts the idle hide timer")
+
+    // Synced scrolling must refresh both capsules; moving the target column
+    // happens inside a suppressed viewport update, so it cannot rely on
+    // PDFKit's own bounds notification.
+    reader.setDisplayMode(2)
+    settle(0.3)
+    PDFScrollSynchronizer.scroll(to: 4.0, in: reader.leftCol)
+    if let clip = reader.leftCol.internalScrollView()?.contentView {
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: clip)
+    }
+    settle(0.5)
+    check(reader.leftCol.pageCapsule.pageField.stringValue ==
+          reader.rightCol.pageCapsule.pageField.stringValue &&
+          reader.leftCol.pageCapsule.pageField.stringValue == "5",
+          "Synced scrolling refreshes the page number in both columns")
 
     // Page capsule input commits a page jump
     reader.leftCol.pdfView.go(to: reader.leftCol.pdfView.document!.page(at: 0)!)
