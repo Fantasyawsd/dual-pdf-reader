@@ -424,6 +424,7 @@ final class MultiTabMainWindowController: NSWindowController {
     @objc func readerZoomOutShortcut() { activeReaderVC?.zoomOutActiveColumnAction() }
     @objc func readerZoomFitShortcut() { activeReaderVC?.zoomFitActiveColumnAction() }
     @objc func readerToggleDrawerShortcut() { activeReaderVC?.toggleRightDrawerAction() }
+    @objc func readerToggleTopBarShortcut() { activeReaderVC?.toggleReaderTopBarAction() }
 
     private func embedViewControllerView(_ subview: NSView) {
         subview.translatesAutoresizingMaskIntoConstraints = false

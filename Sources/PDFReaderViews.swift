@@ -1795,6 +1795,7 @@ final class CleanPDFColumnView: NSView {
     var onPageCapsuleCommit: ((Int) -> Void)?
     var onPageCapsuleStep: ((Int) -> Void)?
     var onToolbarLayoutChanged: (() -> Void)?
+    var onMarkupStateChanged: (() -> Void)?
     private var capsuleHideTicket = 0
     private var capsuleHotspotTrackingArea: NSTrackingArea?
 
@@ -1888,6 +1889,7 @@ final class CleanPDFColumnView: NSView {
             guard let self else { return }
             self.columnToolbar.setUndoRedoEnabled(canUndo: self.pdfView.canUndoMarkup,
                                                   canRedo: self.pdfView.canRedoMarkup)
+            self.onMarkupStateChanged?()
         }
         addSubview(columnToolbar)
 

@@ -97,6 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(withTitle: "当前栏自适应宽度", action: #selector(MultiTabMainWindowController.readerZoomFitShortcut), keyEquivalent: "0")
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(withTitle: "展开/收起右侧目录与笔记抽屉", action: #selector(MultiTabMainWindowController.readerToggleDrawerShortcut), keyEquivalent: "i")
+        let readerBarItem = NSMenuItem(title: "隐藏/显示阅读器顶栏", action: #selector(MultiTabMainWindowController.readerToggleTopBarShortcut), keyEquivalent: "t")
+        readerBarItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(readerBarItem)
 
         // 5. 标签页与窗口菜单
         let windowMenuItem = NSMenuItem()

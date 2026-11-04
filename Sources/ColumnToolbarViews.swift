@@ -446,6 +446,8 @@ final class ColumnToolbarView: NSVisualEffectView {
     private var isUpdatingMode = false
     private var canUndoMarkup = false
     private var canRedoMarkup = false
+    private var unifiedMarkupEnabled = false
+    private var tabsZeroWidthConstraint: NSLayoutConstraint?
 
     var secondaryHeightForTesting: CGFloat { secondaryHeightConstraint.constant }
     var selectedToolForTesting: PDFMarkupTool { selectedTool }
@@ -465,6 +467,7 @@ final class ColumnToolbarView: NSVisualEffectView {
     var overflowButtonForTesting: ModernHoverButton { overflowButton }
     var modeMenuButtonForTesting: ModernHoverButton { modeMenuButton }
     var modeTabsVisibleForTesting: Bool { !tabsGroup.isHidden }
+    var modeControlsHiddenForTesting: Bool { tabsGroup.isHidden && secondaryRow.isHidden }
     var undoEnabledForTesting: Bool { undoButton?.isEnabled ?? false }
     var redoEnabledForTesting: Bool { redoButton?.isEnabled ?? false }
     func overflowMenuTitlesForTesting() -> [String] {
@@ -650,18 +653,28 @@ final class ColumnToolbarView: NSVisualEffectView {
         guard width > 0 else { return }
         let showLeft = width >= 370
         let showRight = width >= 420
-        let showTabs = width >= 240
-        let showModeMenu = !showTabs
-        let showOverflow = !showLeft || !showRight || !showTabs
+        let showTabs = !unifiedMarkupEnabled && width >= 240
+        let showModeMenu = !unifiedMarkupEnabled && !showTabs
+        let showOverflow = !showLeft || !showRight || (!unifiedMarkupEnabled && !showTabs)
         leftGroup.isHidden = !showLeft
         rightGroup.isHidden = !showRight
-        tabsGroup.isHidden = !showTabs
-        modeMenuButton.isHidden = !showModeMenu
+        if unifiedMarkupEnabled {
+            tabsGroup.isHidden = true
+            modeMenuButton.isHidden = true
+            tabsLeadingConstraint?.isActive = false
+            tabsCenterXConstraint?.isActive = false
+            rightLimitConstraint?.isActive = false
+            overflowTabsLimitConstraint?.isActive = false
+            modeMenuOverflowLimitConstraint?.isActive = false
+        } else {
+            tabsGroup.isHidden = !showTabs
+            modeMenuButton.isHidden = !showModeMenu
+            tabsLeadingConstraint?.isActive = showLeft && showTabs
+            rightLimitConstraint?.isActive = showRight
+            overflowTabsLimitConstraint?.isActive = showOverflow && showTabs
+            modeMenuOverflowLimitConstraint?.isActive = showOverflow && showModeMenu
+        }
         overflowButton.isHidden = !showOverflow
-        tabsLeadingConstraint?.isActive = showLeft && showTabs
-        rightLimitConstraint?.isActive = showRight
-        overflowTabsLimitConstraint?.isActive = showOverflow && showTabs
-        modeMenuOverflowLimitConstraint?.isActive = showOverflow && showModeMenu
         if let undoButton { undoButton.isHidden = width < 280 }
         if let redoButton { redoButton.isHidden = width < 280 }
         paletteButton.isHidden = width < 260
@@ -680,6 +693,32 @@ final class ColumnToolbarView: NSVisualEffectView {
         secondaryRow.edgeInsets = compact
             ? NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
             : NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
+    }
+
+    /// The shared top toolbar now owns annotation/shape tools, so each column
+    /// keeps only its reading controls.
+    func setUnifiedMarkupEnabled(_ enabled: Bool) {
+        unifiedMarkupEnabled = enabled
+        if enabled {
+            if tabsZeroWidthConstraint == nil {
+                tabsZeroWidthConstraint = tabsGroup.widthAnchor.constraint(equalToConstant: 0)
+            }
+            tabsZeroWidthConstraint?.isActive = true
+            tabsGroup.isHidden = true
+            modeMenuButton.isHidden = true
+            tabsCenterXConstraint?.isActive = false
+            tabsLeadingConstraint?.isActive = false
+            rightLimitConstraint?.isActive = false
+            overflowTabsLimitConstraint?.isActive = false
+            modeMenuOverflowLimitConstraint?.isActive = false
+            secondaryRow.isHidden = true
+            secondaryHeightConstraint.constant = 0
+        } else {
+            tabsZeroWidthConstraint?.isActive = false
+        }
+        needsLayout = true
+        updateResponsiveVisibility()
+        onLayoutChanged?()
     }
 
     func applyMode(_ newMode: ColumnToolMode) {
@@ -802,7 +841,7 @@ final class ColumnToolbarView: NSVisualEffectView {
     }
 
     private func updateSecondaryHeight() {
-        let collapsed = mode == .read
+        let collapsed = unifiedMarkupEnabled || mode == .read
         secondaryRow.isHidden = collapsed
         secondaryHeightConstraint.constant = collapsed ? 0 : 32
         needsLayout = true
