@@ -184,7 +184,9 @@ final class MultiTabMainWindowController: NSWindowController {
               change?.fields.contains(.metadata) == true || change == nil else { return }
         // 清理已被删除的论文标签页（临时打开的加密文档不依赖文献库，勿误关）
         let removedIds = orderedTabPaperIds.filter { id in
-            if openReaderTabs[id]?.isTransientOpen == true { return false }
+            if openReaderTabs[id]?.isTransientOpen == true || LibraryStore.shared.isTransientPaper(id: id) {
+                return false
+            }
             return change?.resetsLibrary == true || LibraryStore.shared.paper(withId: id) == nil
         }
         for rid in removedIds {
@@ -248,9 +250,6 @@ final class MultiTabMainWindowController: NSWindowController {
 
     func closePaperTab(paperId: String) {
         guard let vc = openReaderTabs.removeValue(forKey: paperId) else { return }
-        if vc.isTransientOpen {
-            LibraryStore.shared.unregisterTransientPaper(id: paperId)
-        }
         vc.prepareForClose()
         if vc.isViewLoaded { vc.view.removeFromSuperview() }
         orderedTabIds.removeAll { $0 == paperId }
@@ -269,9 +268,6 @@ final class MultiTabMainWindowController: NSWindowController {
         for pid in toClose {
             cachedTabViews.removeValue(forKey: pid)
             if let vc = openReaderTabs.removeValue(forKey: pid) {
-                if vc.isTransientOpen {
-                    LibraryStore.shared.unregisterTransientPaper(id: pid)
-                }
                 vc.prepareForClose()
                 if vc.isViewLoaded { vc.view.removeFromSuperview() }
             }
@@ -303,6 +299,7 @@ final class MultiTabMainWindowController: NSWindowController {
             } else {
                 let paper = openReaderTabs[tabId]?.currentPaper ?? LibraryStore.shared.paper(withId: tabId)
                 guard let paper else { continue }
+                let isTransient = paper.isTransient || LibraryStore.shared.isTransientPaper(id: paper.id)
                 tabView = cachedTabViews[tabId] ?? ZoteroTabItemView(
                     tabId: tabId,
                     title: paper.title,
@@ -311,12 +308,21 @@ final class MultiTabMainWindowController: NSWindowController {
                     isActive: isTabActive,
                     closable: true
                 )
+                tabView.titleText = paper.title
+                tabView.badgeText = isTransient ? "未入库" : nil
+                tabView.badgeUsesAccent = isTransient && paper.transientHasNotes
                 tabView.onSelect = { [weak self] id in self?.switchToTab(id: id) }
                 tabView.onClose = { [weak self] id in self?.closePaperTab(paperId: id) }
                 tabView.onCloseOthers = { [weak self] id in self?.closeOtherPaperTabs(keeping: id) }
+                tabView.onSaveToLibrary = isTransient ? { [weak self] pid in
+                    self?.presentSaveToLibrary(for: pid)
+                } : nil
                 tabView.onRevealInFinder = { [weak self] pid in
                     if let source = self?.openReaderTabs[pid]?.transientSourceURL {
                         NSWorkspace.shared.activateFileViewerSelecting([source])
+                    } else if LibraryStore.shared.isTransientPaper(id: pid),
+                              let url = TransientStore.shared.sourceURL(for: pid) {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
                     } else {
                         NSWorkspace.shared.open(LibraryStore.shared.folderURL(for: pid))
                     }
@@ -617,8 +623,16 @@ extension MultiTabMainWindowController {
                 }
             case .missing:
                 if origin == .openRecent {
-                    let remove = DocumentOpenAlerts.presentMissingRecent(name: url.lastPathComponent)
-                    if remove { Self.removeRecentDocument(url) }
+                    let key = FileIdentity.docKey(for: url)
+                    if let transient = TransientStore.shared.paper(withId: key), transient.transientHasNotes {
+                        let export = DocumentOpenAlerts.presentMissingTransientWithNotes(name: url.lastPathComponent)
+                        if export {
+                            libraryVC.exportTransientNotesPublic(transient)
+                        }
+                    } else {
+                        let remove = DocumentOpenAlerts.presentMissingRecent(name: url.lastPathComponent)
+                        if remove { Self.removeRecentDocument(url) }
+                    }
                 } else {
                     failures.append((url.lastPathComponent, "文件可能已被移动或删除。"))
                 }
@@ -695,15 +709,14 @@ extension MultiTabMainWindowController {
         }
 
         for batch in batches {
-            // P0-2: replace import with TransientStore
-            if let created = LibraryStore.shared.smartCreatePaperFromPDFs(batch) {
+            if let created = TransientStore.shared.openPDFs(batch) {
                 openOrSwitchToPaperTab(paperId: created.id, jumpToAnnot: nil, switchImmediately: true)
                 for u in batch {
                     NSDocumentController.shared.noteNewRecentDocumentURL(u)
                 }
             } else {
                 for u in batch {
-                    failures.append((u.lastPathComponent, "无法导入到文献库"))
+                    failures.append((u.lastPathComponent, "无法打开文档"))
                 }
             }
         }
@@ -730,16 +743,119 @@ extension MultiTabMainWindowController {
             return
         }
 
-        let session = TransientOpenSession(sourceURL: sourceURL, document: document)
-        LibraryStore.shared.registerTransientPaper(id: session.id)
-        let readerVC = ReaderTabViewController(paperId: session.id, transientSession: session)
-        readerVC.onRequestOpenPaperTab = { [weak self] targetId in
-            self?.openOrSwitchToPaperTab(paperId: targetId, jumpToAnnot: nil, switchImmediately: true)
+        guard let created = TransientStore.shared.openPDFs([sourceURL], unlockedDocument: document) else {
+            DocumentOpenAlerts.presentSimple(
+                title: DocumentOpenCopy.cannotOpenTitle(sourceURL.lastPathComponent),
+                body: "无法建立临时阅读会话。",
+                revealURL: sourceURL,
+                window: window
+            )
+            return
         }
-        openReaderTabs[session.id] = readerVC
-        orderedTabIds.append(session.id)
-        switchToTab(id: session.id)
+        openOrSwitchToPaperTab(paperId: created.id, jumpToAnnot: nil, switchImmediately: true)
         showStatusBanner(DocumentOpenCopy.encryptedNotImported)
+    }
+
+
+    // MARK: - P0-2 Save to library
+
+    @objc func saveToLibraryShortcutAction() {
+        let id = activeTabId
+        guard id != "__LIBRARY__" else { return }
+        guard let paper = LibraryStore.shared.paper(withId: id), paper.isTransient || LibraryStore.shared.isTransientPaper(id: id) else {
+            return
+        }
+        presentSaveToLibrary(for: id)
+    }
+
+    @objc func revealInLibraryShortcutAction() {
+        let id = activeTabId
+        guard id != "__LIBRARY__" else { return }
+        guard let paper = LibraryStore.shared.paper(withId: id), !(paper.isTransient || LibraryStore.shared.isTransientPaper(id: id)) else { return }
+        switchToTab(id: "__LIBRARY__")
+        libraryVC.selectPaperInUI(id)
+    }
+
+    func presentSaveToLibrary(for paperId: String) {
+        guard let paper = LibraryStore.shared.paper(withId: paperId),
+              paper.isTransient || LibraryStore.shared.isTransientPaper(id: paperId) else { return }
+        guard let win = window else { return }
+
+        let cats = LibraryStore.shared.allCategories()
+        let lastCat = UserDefaults.standard.string(forKey: "DualPDF_LastPromoteCategory")
+        let preferred = (lastCat.flatMap { cats.contains($0) ? $0 : nil }) ?? cats.first ?? "未分类"
+        let fields = TransientStore.PromoteFields(
+            title: paper.title,
+            authors: paper.authors,
+            year: paper.year,
+            venue: paper.venue,
+            category: preferred
+        )
+        let sheet = SaveToLibrarySheetController(fields: fields, categories: cats.isEmpty ? [preferred] : cats)
+        let sheetWin = NSWindow(contentViewController: sheet)
+        sheetWin.title = "存入文献库"
+        sheetWin.styleMask = [.titled]
+        sheet.onCancel = { [weak win, weak sheetWin] in
+            if let sheetWin { win?.endSheet(sheetWin, returnCode: .cancel) }
+        }
+        sheet.onSubmit = { [weak self, weak win, weak sheetWin] submitted in
+            guard let self, let sheetWin else { return }
+            win?.endSheet(sheetWin, returnCode: .OK)
+            self.performPromote(paperId: paperId, fields: submitted)
+        }
+        win.beginSheet(sheetWin)
+    }
+
+    private func performPromote(paperId: String, fields: TransientStore.PromoteFields) {
+        UserDefaults.standard.set(fields.category, forKey: "DualPDF_LastPromoteCategory")
+        // Capture scroll before migration.
+        openReaderTabs[paperId]?.prepareForPromoteSnapshot()
+        switch TransientStore.shared.promoteToLibrary(id: paperId, fields: fields) {
+        case .success(let created):
+            adoptPromotedTab(from: paperId, to: created)
+            libraryVC.refreshAllUI()
+        case .failure(let error):
+            let alert = NSAlert()
+            alert.messageText = "无法存入文献库"
+            alert.informativeText = "\(error.localizedDescription)。你的笔记仍保存在本机，未丢失。"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "好")
+            if let win = window { alert.beginSheetModal(for: win) }
+            else { alert.runModal() }
+        }
+    }
+
+    private func adoptPromotedTab(from oldId: String, to created: PaperItem) {
+        guard let vc = openReaderTabs.removeValue(forKey: oldId) else {
+            openOrSwitchToPaperTab(paperId: created.id, jumpToAnnot: nil, switchImmediately: true)
+            return
+        }
+        vc.adoptLibraryPaper(id: created.id)
+        openReaderTabs[created.id] = vc
+        if let idx = orderedTabIds.firstIndex(of: oldId) {
+            orderedTabIds[idx] = created.id
+        }
+        if activeTabId == oldId { activeTabId = created.id }
+        cachedTabViews.removeValue(forKey: oldId)
+        rebuildTabBarUI()
+        switchToTab(id: created.id)
+    }
+
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        let sel = menuItem.action
+        let id = activeTabId
+        let isReader = id != "__LIBRARY__"
+        let transient = isReader && (
+            LibraryStore.shared.isTransientPaper(id: id) ||
+            (LibraryStore.shared.paper(withId: id)?.isTransient == true)
+        )
+        if sel == #selector(saveToLibraryShortcutAction) {
+            return isReader && transient
+        }
+        if sel == #selector(revealInLibraryShortcutAction) {
+            return isReader && !transient && LibraryStore.shared.paper(withId: id) != nil
+        }
+        return true
     }
 
     private func openTabId(containingFile url: URL) -> String? {

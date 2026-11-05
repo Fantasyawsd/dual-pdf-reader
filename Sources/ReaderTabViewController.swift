@@ -408,6 +408,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let searchCloseBtn = ModernHoverButton()
     private let searchContainer = NSStackView()
     private let drawerToggleBtn = ModernHoverButton()
+    private let saveToLibraryBtn = ModernHoverButton()
+    private let transientStatusLabel = NSTextField(labelWithString: "未入库")
 
     // 左侧浮动覆盖式边栏（大纲目录与页面预览，无碰撞直接覆盖）
     private let leftOverlaySidebar = NSVisualEffectView()
@@ -543,14 +545,18 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     var currentPaper: PaperItem? {
-        if let transientSession {
-            return transientSession.makeSyntheticPaper()
-        }
-        return LibraryStore.shared.paper(withId: paperId)
+        LibraryStore.shared.paper(withId: paperId)
     }
 
-    var isTransientOpen: Bool { transientSession != nil }
-    var transientSourceURL: URL? { transientSession?.sourceURL }
+    var isTransientOpen: Bool {
+        if transientSession != nil { return true }
+        if let paper = currentPaper { return paper.isTransient }
+        return LibraryStore.shared.isTransientPaper(id: paperId)
+    }
+    var transientSourceURL: URL? {
+        if let transientSession { return transientSession.sourceURL }
+        return TransientStore.shared.sourceURL(for: paperId)
+    }
 
     deinit {
         searchTask?.cancel()
@@ -613,6 +619,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         root.onGeometryDidChange = { [weak self] in self?.scheduleLayoutCompletion() }
         root.onLayout = { [weak self] in self?.updateToolbarLayout() }
         loadPaperDocuments()
+        refreshTransientChrome()
 
         NotificationCenter.default.addObserver(
             self,
@@ -877,8 +884,26 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         centerBarStack.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(centerBarStack)
 
+        configureToolbarButton(saveToLibraryBtn)
+        saveToLibraryBtn.controlSize = .small
+        saveToLibraryBtn.image = NSImage(systemSymbolName: "tray.and.arrow.down", accessibilityDescription: "存入文献库")?.withSymbolConfiguration(barIconConfig)
+        saveToLibraryBtn.title = "存入文献库"
+        saveToLibraryBtn.imagePosition = .imageLeading
+        saveToLibraryBtn.toolTip = "存入文献库 (⌘S)"
+        saveToLibraryBtn.target = self
+        saveToLibraryBtn.action = #selector(saveToLibraryAction)
+        saveToLibraryBtn.isHidden = true
+        saveToLibraryBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        transientStatusLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        transientStatusLabel.textColor = .secondaryLabelColor
+        transientStatusLabel.isHidden = true
+        transientStatusLabel.setContentHuggingPriority(.required, for: .horizontal)
+
         let rightBarStack = toolbarRightStack
         [
+            transientStatusLabel,
+            saveToLibraryBtn,
             searchContainer,
             searchToggleBtn,
             drawerToggleBtn
@@ -3649,15 +3674,54 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
     }
 
+
+    @objc private func saveToLibraryAction() {
+        (view.window?.windowController as? MultiTabMainWindowController)?.presentSaveToLibrary(for: paperId)
+    }
+
+    func prepareForPromoteSnapshot() {
+        persistReaderState(from: primaryActiveColumn())
+        LibraryStore.shared.flushReadingState()
+    }
+
+    func adoptLibraryPaper(id newId: String) {
+        let oldId = paperId
+        // C3: keep unlocked PDFDocument across promote (re-key if needed).
+        if TransientStore.shared.unlockedDocument(for: newId) == nil {
+            TransientStore.shared.transferUnlockedDocument(from: oldId, to: newId)
+        }
+        transientSession = nil
+        paperId = newId
+        // Prevent didBecomeActiveTab from treating library PDF paths as a "file change"
+        // and reloading a locked document from disk.
+        if let paper = currentPaper {
+            loadedPDFFiles = pdfFileVersions(in: paper)
+        }
+        refreshTransientChrome()
+        // Keep current PDFView documents and viewportStates; only rebind identity.
+        updateRightSidebarMetadataUI()
+        updateDrawerBadgeTitles()
+    }
+
+    private func refreshTransientChrome() {
+        let transient = isTransientOpen
+        saveToLibraryBtn.isHidden = !transient
+        transientStatusLabel.isHidden = !transient
+        if transient {
+            let hasNotes = currentPaper?.transientHasNotes == true
+            transientStatusLabel.textColor = hasNotes ? .controlAccentColor : .secondaryLabelColor
+            transientStatusLabel.font = .systemFont(ofSize: 11, weight: hasNotes ? .semibold : .medium)
+        }
+        updateToolbarLayout()
+    }
+
     func didBecomeActiveTab() {
         guard !isClosed else { return }
         applyPendingLibraryChanges()
         if let paper = currentPaper, self.pdfFileVersions(in: paper) != loadedPDFFiles {
             loadPaperDocuments()
         }
-        if transientSession == nil {
-            LibraryStore.shared.updateReadingState(for: paperId) { $0.lastOpenedAt = Date() }
-        }
+        LibraryStore.shared.updateReadingState(for: paperId) { $0.lastOpenedAt = Date() }
         updateRightSidebarMetadataUI()
         updateDrawerBadgeTitles()
         beginLayoutChange()
@@ -3726,10 +3790,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let effectivePDFId = validPDFIds.contains(requestedPDFId) ? requestedPDFId : col.side.rawValue
         col.pdfView.highlightedSelections = nil
         col.pdfView.clearSelection()
-        if let transient = transientSession, effectivePDFId == PDFSide.original.rawValue || col.side == .original {
-            ReaderTabViewController.stripLinkAnnotationBorders(in: transient.document)
+        if let unlocked = TransientStore.shared.unlockedDocument(for: paperId) ?? transientSession?.document,
+           (effectivePDFId == PDFSide.original.rawValue || col.side == .original) {
+            ReaderTabViewController.stripLinkAnnotationBorders(in: unlocked)
             col.applyContentSource(.pdf(id: PDFSide.original.rawValue), paper: paper, hasPDFDocument: true)
-            col.pdfView.document = transient.document
+            col.pdfView.document = unlocked
             let saved = viewportStates[col.side.rawValue]
             if saved?.pdfDocumentId != PDFSide.original.rawValue {
                 viewportStates[col.side.rawValue] = PDFColumnReadingState(pdfDocumentId: PDFSide.original.rawValue, continuousPage: 0)
@@ -3759,7 +3824,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let fields = pendingLibraryFields
         pendingLibraryFields = []
         guard !fields.isEmpty else { return }
-        if fields.contains(.pdf) { loadPaperDocuments(); return }
+        if fields.contains(.pdf) {
+            // C3: after promoting an unlocked encrypted PDF, keep the in-memory document.
+            if TransientStore.shared.unlockedDocument(for: paperId) != nil,
+               leftCol.pdfView.document != nil || rightCol.pdfView.document != nil {
+                updateRightSidebarMetadataUI()
+                return
+            }
+            loadPaperDocuments(); return
+        }
         if fields.contains(.metadata) {
             updateRightSidebarMetadataUI()
         }

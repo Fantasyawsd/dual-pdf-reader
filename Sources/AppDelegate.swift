@@ -137,6 +137,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RecentMenuRefreshDelegate.shared.appDelegate = self
 
         fileMenu.addItem(NSMenuItem.separator())
+        let saveLib = NSMenuItem(title: "存入文献库…", action: #selector(MultiTabMainWindowController.saveToLibraryShortcutAction), keyEquivalent: "s")
+        fileMenu.addItem(saveLib)
+        let showInLib = NSMenuItem(title: "在文献库中显示", action: #selector(MultiTabMainWindowController.revealInLibraryShortcutAction), keyEquivalent: "l")
+        showInLib.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(showInLib)
+        fileMenu.addItem(NSMenuItem.separator())
         let revealItem = NSMenuItem(title: "在 Finder 中显示文献库", action: #selector(MultiTabMainWindowController.revealVaultInFinderShortcut), keyEquivalent: "R")
         revealItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(revealItem)

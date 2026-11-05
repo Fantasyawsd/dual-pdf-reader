@@ -16,8 +16,8 @@ function escapeJSAttr(str) {
 
 let state = __INITIAL_STATE_JSON__;
 let ui = {
-    filterKind: 'all',     // 'all' | 'recent' | 'favorites' | 'notes' | 'status:unread' | 'status:reading' | 'status:completed' | 'cat:...'
-    filterTitle: '我的文库',
+    filterKind: 'recent',  // 'recent' | 'all' | 'favorites' | 'notes' | 'status:...' | 'cat:...'
+    filterTitle: '最近',
     activeTag: null,
     tagFilterQuery: '',
     searchQuery: '',
@@ -77,11 +77,18 @@ window.updateLibraryState = function(newState) {
     state = newState;
     if (ui.filterKind.startsWith('cat:') && !(state.categories || []).includes(ui.filterKind.slice(4))) {
         ui.filterKind = 'all';
-        ui.filterTitle = '我的文库';
+        ui.filterTitle = '全部文献';
         ui.activeTag = null;
     }
+    // Default source: 最近; when empty fall back to 全部文献.
+    const recentLen = (state.recentPapers || []).length;
+    if (ui.filterKind === 'recent' && recentLen === 0) {
+        ui.filterKind = 'all';
+        ui.filterTitle = '全部文献';
+    }
     if (!state.selectedPaperId && state.papers && state.papers.length > 0) {
-        state.selectedPaperId = state.papers[0].id;
+        const lib = state.papers.filter(p => !p.isTransient);
+        if (lib.length > 0) state.selectedPaperId = lib[0].id;
     }
     renderAll();
 };
@@ -95,7 +102,7 @@ window.openCreatePaperModal = function() {
     document.getElementById('mTitle').value = '';
     document.getElementById('mAuthors').value = '';
     document.getElementById('mYear').value = new Date().getFullYear().toString();
-    document.getElementById('mVenue').value = 'arXiv';
+    document.getElementById('mVenue').value = '';
     const defaultCat = ui.filterKind.startsWith('cat:') ? ui.filterKind.slice(4) : '大模型架构 (LLM)';
     document.getElementById('mCategory').value = defaultCat;
     document.getElementById('mTags').value = '';
@@ -481,7 +488,8 @@ function openPaperContextMenu(paperId, evt) {
         evt.stopPropagation();
     }
     selectPaper(paperId, true);
-    const p = (state.papers || []).find(item => item.id === paperId);
+    const p = (state.papers || []).find(item => item.id === paperId)
+        || (state.recentPapers || []).find(item => item.id === paperId);
     if (!p) return;
     const menu = document.getElementById('ctxMenu');
     const pidAttr = escapeJSAttr(p.id);
@@ -490,10 +498,20 @@ function openPaperContextMenu(paperId, evt) {
     const arxivAction = hasArxiv ? `closeContextMenu(); sendBridge({action:'openArxivURL', paperId:'${pidAttr}'})` : '';
     const hjfyAction = hasArxiv ? `closeContextMenu(); sendBridge({action:'openHjfyURL', paperId:'${pidAttr}'})` : '';
 
+    const saveTransientItem = p.isTransient
+        ? `<div class="ctx-item" onclick="closeContextMenu(); sendBridge({action:'saveTransientToLibrary', paperId:'${pidAttr}'})"><span>存入文献库</span></div>`
+        : '';
+    const removeRecentItem = ui.filterKind === 'recent'
+        ? `<div class="ctx-item" onclick="closeContextMenu(); sendBridge({action:'removeFromRecent', paperId:'${pidAttr}'})"><span>从最近中移除</span></div>`
+        : '';
+    const transientRecentSep = (saveTransientItem || removeRecentItem) ? '<div class="ctx-sep"></div>' : '';
     menu.innerHTML = `
         <div class="ctx-item" onclick="openPaperDual('${pidAttr}', event)"><span>在新标签页打开论文</span><span>↩</span></div>
         <div class="ctx-item" onclick="closeContextMenu(); sendBridge({action:'openInNewWindow', paperId:'${pidAttr}'})"><span>在新窗口打开论文</span></div>
         <div class="ctx-sep"></div>
+        ${saveTransientItem}
+        ${removeRecentItem}
+        ${transientRecentSep}
         <div class="ctx-item" onclick="closeContextMenu(); sendBridge({action:'importAttachment', paperId:'${pidAttr}'})"><span>导入附件…</span></div>
         <div class="ctx-item" onclick="closeContextMenu(); sendBridge({action:'importTranslatedPDF', paperId:'${pidAttr}'})"><span>导入中文 pdf…</span></div>
         <div class="ctx-sep"></div>
@@ -509,7 +527,9 @@ function openPaperContextMenu(paperId, evt) {
         <div class="ctx-sep"></div>
         <div class="ctx-item" onclick="closeContextMenu(); openEditMetaModal('${pidAttr}')"><span>编辑条目元数据…</span></div>
         <div class="ctx-sep"></div>
-        <div class="ctx-item danger" onclick="closeContextMenu(); sendBridge({action:'deletePaper', paperId:'${pidAttr}'})"><span>删除条目…</span></div>
+        ${p.isTransient
+            ? `<div class="ctx-item" onclick="closeContextMenu(); sendBridge({action:'exportTransientNotes', paperId:'${pidAttr}'})"><span>导出笔记…</span></div>`
+            : `<div class="ctx-item danger" onclick="closeContextMenu(); sendBridge({action:'deletePaper', paperId:'${pidAttr}'})"><span>删除条目…</span></div>`}
     `;
     menu.classList.add('open');
     const x = evt ? Math.min(evt.clientX, window.innerWidth - 240) : 200;
@@ -652,14 +672,18 @@ function handlePaperDrop(targetPaperId, evt) {
 }
 
 function getFilteredPapers() {
-    const papers = (state.papers || []).slice();
-    let list = papers.filter(p => {
-        if (ui.filterKind === 'recent') return !!p.lastOpenedTimestamp && p.lastOpenedTimestamp > p.addedTimestamp;
-        if (ui.filterKind === 'favorites') return p.isFavorite;
-        if (ui.filterKind.startsWith('status:')) return p.statusRaw === ui.filterKind.slice(7);
-        if (ui.filterKind.startsWith('cat:')) return p.category === ui.filterKind.slice(4);
-        return true;
-    });
+    let list;
+    if (ui.filterKind === 'recent') {
+        list = (state.recentPapers || []).slice();
+    } else {
+        const papers = (state.papers || []).slice().filter(p => !p.isTransient);
+        list = papers.filter(p => {
+            if (ui.filterKind === 'favorites') return p.isFavorite;
+            if (ui.filterKind.startsWith('status:')) return p.statusRaw === ui.filterKind.slice(7);
+            if (ui.filterKind.startsWith('cat:')) return p.category === ui.filterKind.slice(4);
+            return true;
+        });
+    }
 
     if (ui.activeTag) {
         list = list.filter(p => (p.tags || []).includes(ui.activeTag) || p.category === ui.activeTag);
@@ -741,36 +765,40 @@ function renderSidebar() {
         </div>
     ` : '';
 
-    const papers = state.papers || [];
+    const papers = (state.papers || []).filter(p => !p.isTransient);
+    const recent = state.recentPapers || [];
     const totalCount = papers.length;
-    const recentCount = papers.filter(p => !!p.lastOpenedTimestamp && p.lastOpenedTimestamp > p.addedTimestamp).length;
+    const recentCount = recent.length;
     const favoriteCount = papers.filter(p => p.isFavorite).length;
     const noteCount = papers.reduce((sum, p) => sum + (p.annotations || []).length, 0);
-    const smartRowHTML = (kind, title, iconSVG, count) => `
-        <div class="smart-row ${ui.filterKind === kind ? 'active' : ''}" onclick="setFilter('${kind}', '${title}')">
+    // Dot / P0-spec v1.1: sidebar hosts SOURCES only — never individual file rows.
+    const sourceRowHTML = (kind, title, iconSVG, count) => `
+        <div class="smart-row source-row ${ui.filterKind === kind ? 'active' : ''}" onclick="setFilter('${kind}', '${title}')" data-source="${kind}">
             <span class="smart-icon">${iconSVG}</span>
             <span class="smart-label">${title}</span>
             ${count > 0 ? `<span class="smart-count">${count}</span>` : ''}
         </div>
     `;
+    const clockIcon = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.6"/></svg>';
 
     document.getElementById('sidebarScroll').innerHTML = `
-        <div class="tree-row ${ui.filterKind === 'all' ? 'active' : ''}" onclick="setFilter('all', '我的文库')">
+        <div class="sidebar-section-label">来源</div>
+        ${sourceRowHTML('recent', '最近', clockIcon, recentCount)}
+        <div class="sidebar-section-label">文献库</div>
+        <div class="tree-row ${ui.filterKind === 'all' ? 'active' : ''}" onclick="setFilter('all', '全部文献')" data-source="all">
             <span class="tree-twisty" onclick="toggleRootTree(event)">${ui.treeExpanded ? '▾' : '▸'}</span>
             <span class="tree-icon">
                 <svg width="19" height="19" viewBox="0 0 16 16" fill="none" stroke="#5A72C8" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M2 6h12M3.2 6v6.5M6.4 6v6.5M9.6 6v6.5M12.8 6v6.5M1.5 12.8h13M8 2L1.5 6h13L8 2z"/>
                 </svg>
             </span>
-            <span class="tree-label">我的文库</span>
+            <span class="tree-label">全部文献</span>
             <span class="smart-count">${totalCount}</span>
         </div>
         ${childrenBlock}
         ${categoryQuery ? '' : `
-        <div class="sidebar-section-label">快速访问</div>
-        ${smartRowHTML('recent', '最近阅读', '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.6"/></svg>', recentCount)}
-        ${smartRowHTML('favorites', '已加星标', '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M8 1.8l1.9 3.9 4.2.6-3 3 .7 4.2L8 11.5l-3.8 2 .7-4.2-3-3 4.2-.6L8 1.8z"/></svg>', favoriteCount)}
-        ${smartRowHTML('notes', '全部笔记', '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2.5l2.5 2.5L6 12.5H3.5V10L11 2.5z"/></svg>', noteCount)}
+        ${sourceRowHTML('favorites', '已加星标', '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M8 1.8l1.9 3.9 4.2.6-3 3 .7 4.2L8 11.5l-3.8 2 .7-4.2-3-3 4.2-.6L8 1.8z"/></svg>', favoriteCount)}
+        ${sourceRowHTML('notes', '全部笔记', '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2.5l2.5 2.5L6 12.5H3.5V10L11 2.5z"/></svg>', noteCount)}
         `}
     `;
 }
@@ -875,7 +903,17 @@ function renderZoteroTableHTML(list) {
         if (p.year) metaParts.push(`<span>${escapeHTML(p.year)}</span>`);
         if (p.venue) metaParts.push(`<span>${escapeHTML(p.venue)}</span>`);
         if (p.arxivId) metaParts.push(`<span class="row-meta-mono">arXiv:${escapeHTML(p.arxivId)}</span>`);
-        const metaHTML = metaParts.join('<span class="row-meta-dot">·</span>');
+        let metaHTML = metaParts.join('<span class="row-meta-dot">·</span>');
+        if (!metaHTML) {
+            metaHTML = '<span class="row-meta-muted">未识别作者信息</span>';
+        }
+        if (p.isTransient) {
+            const badgeClass = p.transientHasNotes ? 'transient-badge accent' : 'transient-badge';
+            metaHTML += `<span class="${badgeClass}">未入库</span>`;
+        }
+        if (p.isSourceMissing) {
+            metaHTML += `<span class="transient-badge missing">源文件不可用</span>`;
+        }
         const noteCount = paperTotalNoteCount(p);
         const statusPill = p.statusRaw === 'reading'
             ? '<span class="status-pill reading">在读</span>'
@@ -1410,3 +1448,14 @@ document.addEventListener('keydown', (e) => {
 });
 
 renderAll();
+
+;(function bootstrapDefaultSource() {
+    const recentLen = (state.recentPapers || []).length;
+    if (recentLen === 0) {
+        ui.filterKind = 'all';
+        ui.filterTitle = '全部文献';
+    } else {
+        ui.filterKind = 'recent';
+        ui.filterTitle = '最近';
+    }
+})();

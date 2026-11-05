@@ -463,9 +463,21 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
     var onClose: ((String) -> Void)?
     var onCloseOthers: ((String) -> Void)?
     var onRevealInFinder: ((String) -> Void)?
+    var onSaveToLibrary: ((String) -> Void)?
+    var titleText: String {
+        get { titleLabel.stringValue }
+        set { titleLabel.stringValue = newValue }
+    }
+    var badgeText: String? {
+        didSet { applyBadge() }
+    }
+    var badgeUsesAccent: Bool = false {
+        didSet { applyBadge() }
+    }
 
     private let iconView = NonDraggableImageView()
     private let titleLabel = NonDraggableTextField(labelWithString: "")
+    private let badgeLabel = NonDraggableTextField(labelWithString: "")
     let closeButton = NSButton()
     private let tabBackgroundLayer = CAShapeLayer()
     private let dividerLayer = CALayer()
@@ -562,6 +574,13 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
+        badgeLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        badgeLabel.textColor = .secondaryLabelColor
+        badgeLabel.backgroundColor = .clear
+        badgeLabel.isHidden = true
+        badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(badgeLabel)
+
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 32),
             widthAnchor.constraint(greaterThanOrEqualToConstant: isClosable ? 104 : 150),
@@ -573,7 +592,9 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
             iconView.heightAnchor.constraint(equalToConstant: 16),
 
             titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 5),
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            badgeLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
+            badgeLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
 
         if isClosable {
@@ -590,7 +611,8 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
             updateCloseButtonAppearance()
 
             NSLayoutConstraint.activate([
-                titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -2),
+                titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: badgeLabel.leadingAnchor, constant: -4),
+                badgeLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -2),
                 closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -3),
                 closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
                 closeButton.widthAnchor.constraint(equalToConstant: 20),
@@ -599,13 +621,27 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
         } else {
             closeButton.isHidden = true
             NSLayoutConstraint.activate([
-                titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10)
+                titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: badgeLabel.leadingAnchor, constant: -4),
+                badgeLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10)
             ])
         }
 
         setContentHuggingPriority(.defaultLow, for: .horizontal)
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         updateTabBackground()
+    }
+
+    private func applyBadge() {
+        guard badgeLabel.superview != nil else { return }
+        if let text = badgeText, !text.isEmpty {
+            badgeLabel.stringValue = text
+            badgeLabel.isHidden = false
+            badgeLabel.textColor = badgeUsesAccent ? .controlAccentColor : .secondaryLabelColor
+            badgeLabel.font = .systemFont(ofSize: 10, weight: badgeUsesAccent ? .semibold : .medium)
+        } else {
+            badgeLabel.isHidden = true
+            badgeLabel.stringValue = ""
+        }
     }
 
     private func buildTabContextMenu() -> NSMenu {
@@ -618,11 +654,22 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
         closeOthersItem.target = self
         m.addItem(closeOthersItem)
 
+        if onSaveToLibrary != nil {
+            m.addItem(NSMenuItem.separator())
+            let saveItem = NSMenuItem(title: "存入文献库…", action: #selector(saveToLibraryClicked), keyEquivalent: "")
+            saveItem.target = self
+            m.addItem(saveItem)
+        }
+
         m.addItem(NSMenuItem.separator())
         let revealItem = NSMenuItem(title: "在 Finder 中显示该论文文件夹", action: #selector(revealClicked), keyEquivalent: "")
         revealItem.target = self
         m.addItem(revealItem)
         return m
+    }
+
+    @objc private func saveToLibraryClicked() {
+        onSaveToLibrary?(tabId)
     }
 
     override func layout() {
