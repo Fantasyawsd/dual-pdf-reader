@@ -23,7 +23,7 @@ if [[ "$MODE" == "--test" || "$MODE" == "--ui-test" ]]; then
         [[ "$source" == "Sources/main.swift" ]] || TEST_SOURCES+=("$source")
     done
     if [[ "$MODE" == "--test" ]]; then
-        swiftc "${TEST_SOURCES[@]}" Tests/FunctionalGapTests.swift Tests/main.swift -target "$TARGET" "${FRAMEWORKS[@]}" -o "$BUILD_DIR/RegressionTests"
+        swiftc "${TEST_SOURCES[@]}" Tests/FunctionalGapTests.swift Tests/P0SystemOpenTests.swift Tests/main.swift -target "$TARGET" "${FRAMEWORKS[@]}" -o "$BUILD_DIR/RegressionTests"
         "$BUILD_DIR/RegressionTests"
     else
         swiftc "${TEST_SOURCES[@]}" Tests/LegacyUITests.swift Tests/UI/main.swift -target "$TARGET" "${FRAMEWORKS[@]}" -o "$BUILD_DIR/UITests"
@@ -48,6 +48,22 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
     <key>LSMinimumSystemVersion</key><string>${MIN_MACOS}</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>PDF Document</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.adobe.pdf</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>pdf</string>
+            </array>
+        </dict>
+    </array>
 </dict></plist>
 EOF
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"

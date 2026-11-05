@@ -1,11 +1,13 @@
 import Cocoa
+import PDFKit
 import UniformTypeIdentifiers
 
 final class MultiTabMainWindowController: NSWindowController {
     let tabBarScrollView = HorizontalTabScrollView()
     let tabBarDocumentView = DraggableTabDocumentView()
     let tabBarStack = NonDraggableStackView()
-    private let contentHostView = NSView()
+    private let contentHostView = FileDropHostView()
+    private var statusBanner: WindowStatusBannerController?
 
     let libraryVC = LibraryViewController()
     private var openReaderTabs: [String: ReaderTabViewController] = [:]
@@ -40,7 +42,9 @@ final class MultiTabMainWindowController: NSWindowController {
         setupWindowUI()
         setupTabDragging()
         setupCallbacks()
-        switchToTab(id: "__LIBRARY__")
+        setupWindowFileDrop()
+        statusBanner = WindowStatusBannerController(host: window?.contentView)
+        // Library tab is selected by AppDelegate after launch unless opening documents.
     }
 
     required init?(coder: NSCoder) {
@@ -54,6 +58,9 @@ final class MultiTabMainWindowController: NSWindowController {
         titleTabBar.material = .titlebar
         titleTabBar.blendingMode = .withinWindow
         titleTabBar.translatesAutoresizingMaskIntoConstraints = false
+        titleTabBar.onURLsDropped = { [weak self] urls in
+            self?.openDocuments(urls, origin: .windowDrop)
+        }
 
         let nonDraggableClip = NonDraggableClipView()
         nonDraggableClip.drawsBackground = false
@@ -357,9 +364,8 @@ final class MultiTabMainWindowController: NSWindowController {
         panel.title = "快速选择 1 个或 2 个 PDF 文件创建双栏对照阅读"
         panel.allowedContentTypes = [.pdf]
         panel.allowsMultipleSelection = true
-        if panel.runModal() == .OK,
-           let created = LibraryStore.shared.smartCreatePaperFromPDFs(panel.urls) {
-            openOrSwitchToPaperTab(paperId: created.id, jumpToAnnot: nil, switchImmediately: true)
+        if panel.runModal() == .OK {
+            openDocuments(panel.urls, origin: .openPanel)
         }
     }
 
@@ -438,3 +444,298 @@ final class MultiTabMainWindowController: NSWindowController {
 }
 
 // MARK: - App Delegate
+
+
+// MARK: - Window file drop host
+
+final class FileDropHostView: NSView {
+    var onURLsDropped: (([URL]) -> Void)?
+    private let hoverOverlay = DropHoverOverlayView(message: DocumentOpenCopy.dropToOpenHint)
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+        hoverOverlay.isHidden = true
+        hoverOverlay.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hoverOverlay)
+        NSLayoutConstraint.activate([
+            hoverOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hoverOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+            hoverOverlay.topAnchor.constraint(equalTo: topAnchor),
+            hoverOverlay.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard hasPDF(sender) else { return [] }
+        hoverOverlay.isHidden = false
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard hasPDF(sender) else {
+            hoverOverlay.isHidden = true
+            return []
+        }
+        hoverOverlay.isHidden = false
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        hoverOverlay.isHidden = true
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { hasPDF(sender) }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        hoverOverlay.isHidden = true
+        let urls = readURLs(sender)
+        guard !urls.isEmpty else { return false }
+        onURLsDropped?(urls)
+        return true
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        hoverOverlay.isHidden = true
+    }
+
+    private func hasPDF(_ sender: NSDraggingInfo) -> Bool { !readURLs(sender).isEmpty }
+
+    private func readURLs(_ sender: NSDraggingInfo) -> [URL] {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingFileURLsOnly: true
+        ]) as? [URL] else { return [] }
+        return urls
+    }
+}
+
+final class DropHoverOverlayView: NSView {
+    private let label = NSTextField(labelWithString: "")
+    init(message: String) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor
+        layer?.borderWidth = 2
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        label.stringValue = message
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.textColor = .controlAccentColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+extension MultiTabMainWindowController {
+    fileprivate func setupWindowFileDrop() {
+        contentHostView.onURLsDropped = { [weak self] urls in
+            self?.openDocuments(urls, origin: .windowDrop)
+        }
+    }
+
+    func showStatusBanner(_ text: String) {
+        statusBanner?.show(text)
+    }
+
+    func flashTab(id: String) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        guard let tab = cachedTabViews[id] else { return }
+        tab.flashFocusHighlight()
+    }
+
+    /// Unified document open entry (Finder / Dock / ⌘O / Recent / window drop).
+    func openDocuments(_ urls: [URL], origin: OpenOrigin) {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        var nonPDFCount = 0
+        var ready: [URL] = []
+        var failures: [(name: String, reason: String)] = []
+        var pendingiCloud: [URL] = []
+
+        for url in urls {
+            switch DocumentValidation.classify(url) {
+            case .ok(let u):
+                ready.append(u)
+            case .nonPDF:
+                nonPDFCount += 1
+                if urls.count == 1 {
+                    DocumentOpenAlerts.presentSimple(
+                        title: DocumentOpenCopy.cannotOpenTitle(url.lastPathComponent),
+                        body: DocumentOpenCopy.onlyPDF,
+                        revealURL: nil,
+                        window: window
+                    )
+                    return
+                }
+            case .missing:
+                if origin == .openRecent {
+                    let remove = DocumentOpenAlerts.presentMissingRecent(name: url.lastPathComponent)
+                    if remove { Self.removeRecentDocument(url) }
+                } else {
+                    failures.append((url.lastPathComponent, "文件可能已被移动或删除。"))
+                }
+            case .unreadable:
+                if urls.count == 1 {
+                    DocumentOpenAlerts.presentSimple(
+                        title: DocumentOpenCopy.noPermissionTitle(url.lastPathComponent),
+                        body: DocumentOpenCopy.noPermissionBody,
+                        revealURL: url,
+                        window: window
+                    )
+                    return
+                }
+                failures.append((url.lastPathComponent, "没有权限读取"))
+            case .corrupt:
+                if urls.count == 1 {
+                    DocumentOpenAlerts.presentSimple(
+                        title: DocumentOpenCopy.cannotOpenTitle(url.lastPathComponent),
+                        body: DocumentOpenCopy.corruptBody,
+                        revealURL: url,
+                        window: window
+                    )
+                    return
+                }
+                failures.append((url.lastPathComponent, "文件可能已损坏或不是有效的 PDF。"))
+            case .locked(let u, let doc):
+                if DocumentOpenAlerts.presentPassword(for: u, document: doc, window: window) != nil {
+                    if let unlocked = Self.writeUnlockedTemporaryPDF(from: doc, named: u.lastPathComponent) {
+                        ready.append(unlocked)
+                    } else {
+                        ready.append(u)
+                    }
+                } else {
+                    failures.append((u.lastPathComponent, "未解锁受密码保护的文档"))
+                }
+            case .iCloudPending(let u):
+                pendingiCloud.append(u)
+            case .failure(_, let reason):
+                failures.append((url.lastPathComponent, reason))
+            }
+        }
+
+        if nonPDFCount > 0 && !ready.isEmpty {
+            showStatusBanner(DocumentOpenCopy.ignoredNonPDF(nonPDFCount))
+        }
+
+        for cloudURL in pendingiCloud {
+            beginiCloudOpen(cloudURL)
+        }
+
+        // Dedup against open tabs / library papers first.
+        var toCreate: [URL] = []
+        for url in ready {
+            if let openId = openTabId(containingFile: url) {
+                switchToTab(id: openId)
+                flashTab(id: openId)
+                NSDocumentController.shared.noteNewRecentDocumentURL(url)
+                continue
+            }
+            if let paper = LibraryStore.shared.paperContainingFile(identicalTo: url) {
+                openOrSwitchToPaperTab(paperId: paper.id, jumpToAnnot: nil, switchImmediately: true)
+                flashTab(id: paper.id)
+                NSDocumentController.shared.noteNewRecentDocumentURL(url)
+                continue
+            }
+            toCreate.append(url)
+        }
+
+        let (batches, ignored) = DocumentOpenPlanner.tabBatches(from: toCreate, maxFiles: 10)
+        if ignored > 0 {
+            showStatusBanner(DocumentOpenCopy.tabLimit)
+        }
+
+        for batch in batches {
+            // P0-2: replace import with TransientStore
+            if let created = LibraryStore.shared.smartCreatePaperFromPDFs(batch) {
+                openOrSwitchToPaperTab(paperId: created.id, jumpToAnnot: nil, switchImmediately: true)
+                for u in batch {
+                    NSDocumentController.shared.noteNewRecentDocumentURL(u)
+                }
+            } else {
+                for u in batch {
+                    failures.append((u.lastPathComponent, "无法导入到文献库"))
+                }
+            }
+        }
+
+        if !failures.isEmpty {
+            if failures.count == 1, ready.isEmpty, batches.isEmpty, pendingiCloud.isEmpty {
+                // already presented single-file alerts above when possible
+            }
+            DocumentOpenAlerts.presentCombinedFailures(failures)
+        }
+
+        if let app = NSApp.delegate as? AppDelegate {
+            app.rebuildRecentMenu()
+        }
+        _ = origin
+    }
+
+    private func openTabId(containingFile url: URL) -> String? {
+        for paperId in orderedTabPaperIds {
+            guard let paper = LibraryStore.shared.paper(withId: paperId) else { continue }
+            for descriptor in paper.allPDFDescriptors {
+                guard let pdfURL = LibraryStore.shared.pdfURL(for: paper, pdfId: descriptor.id) else { continue }
+                if FileIdentity.sameFile(pdfURL, url) { return paperId }
+            }
+        }
+        return nil
+    }
+
+    private func beginiCloudOpen(_ url: URL) {
+        showStatusBanner(DocumentOpenCopy.iCloudDownloading(url.lastPathComponent))
+        do {
+            try FileManager.default.startDownloadingUbiquitousItem(at: url)
+        } catch {
+            showStatusBanner(DocumentOpenCopy.iCloudFailed(url.lastPathComponent))
+            return
+        }
+        let name = url.lastPathComponent
+        var attempts = 0
+        Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] timer in
+            attempts += 1
+            let status = (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]).ubiquitousItemDownloadingStatus) ?? .notDownloaded
+            if status == .current {
+                timer.invalidate()
+                self?.openDocuments([url], origin: .systemOpen)
+            } else if attempts >= 45 {
+                timer.invalidate()
+                self?.showStatusBanner(DocumentOpenCopy.iCloudFailed(name))
+            }
+        }
+    }
+
+
+    private static func writeUnlockedTemporaryPDF(from document: PDFDocument, named name: String) -> URL? {
+        guard let data = document.dataRepresentation() else { return nil }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("DualPDF-Unlocked", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent(name)
+        do {
+            try data.write(to: dest, options: .atomic)
+            return dest
+        } catch {
+            return nil
+        }
+    }
+
+    static func removeRecentDocument(_ url: URL) {
+        let remaining = NSDocumentController.shared.recentDocumentURLs.filter {
+            !FileIdentity.sameFile($0, url) && $0.standardizedFileURL != url.standardizedFileURL
+        }
+        NSDocumentController.shared.clearRecentDocuments(nil)
+        for item in remaining.reversed() {
+            NSDocumentController.shared.noteNewRecentDocumentURL(item)
+        }
+        if let app = NSApp.delegate as? AppDelegate {
+            app.rebuildRecentMenu()
+        }
+    }
+}

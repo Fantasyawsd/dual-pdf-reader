@@ -2,12 +2,32 @@ import Cocoa
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MultiTabMainWindowController?
+    private var didReceiveOpenURLs = false
+    private var recentMenu: NSMenu?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
-        mainWindowController = MultiTabMainWindowController()
-        mainWindowController?.showWindow(self)
+        let wc = MultiTabMainWindowController()
+        mainWindowController = wc
+        wc.showWindow(self)
         NSApp.activate(ignoringOtherApps: true)
+
+        // Cold start: application(_:open:) arrives after didFinishLaunching on the same run loop.
+        // Defer library selection so a document launch never flashes the library first.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if !self.didReceiveOpenURLs {
+                self.mainWindowController?.switchToTab(id: "__LIBRARY__")
+            }
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        didReceiveOpenURLs = true
+        guard let wc = mainWindowController else { return }
+        wc.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        wc.openDocuments(urls, origin: .systemOpen)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -16,6 +36,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         LibraryStore.shared.flushReadingState() ? .terminateNow : .terminateCancel
+    }
+
+    @objc func openRecentDocumentAction(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        mainWindowController?.window?.makeKeyAndOrderFront(nil)
+        mainWindowController?.openDocuments([url], origin: .openRecent)
+    }
+
+    @objc func clearRecentDocumentsAction(_ sender: Any?) {
+        NSDocumentController.shared.clearRecentDocuments(sender)
+        rebuildRecentMenu()
+    }
+
+    @objc func rebuildRecentMenu() {
+        guard let recentMenu else { return }
+        recentMenu.removeAllItems()
+        let urls = Array(NSDocumentController.shared.recentDocumentURLs.prefix(10))
+        if urls.isEmpty {
+            let empty = NSMenuItem(title: "无记录", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            recentMenu.addItem(empty)
+        } else {
+            for url in urls {
+                let item = NSMenuItem(
+                    title: url.lastPathComponent,
+                    action: #selector(openRecentDocumentAction(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = url
+                item.toolTip = url.path
+                recentMenu.addItem(item)
+            }
+        }
+        recentMenu.addItem(NSMenuItem.separator())
+        let clear = NSMenuItem(
+            title: "清除菜单",
+            action: #selector(clearRecentDocumentsAction(_:)),
+            keyEquivalent: ""
+        )
+        clear.target = self
+        clear.isEnabled = !urls.isEmpty
+        recentMenu.addItem(clear)
     }
 
     private func setupMainMenu() {
@@ -42,6 +105,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenuItem.submenu = fileMenu
         fileMenu.addItem(withTitle: "新建 / 导入论文条目…", action: #selector(MultiTabMainWindowController.newPaperShortcutAction), keyEquivalent: "n")
         fileMenu.addItem(withTitle: "快速选择 PDF 双栏打开…", action: #selector(MultiTabMainWindowController.quickOpenPDFShortcutAction), keyEquivalent: "o")
+
+        let recentRoot = NSMenuItem(title: "打开最近使用", action: nil, keyEquivalent: "")
+        let recentSub = NSMenu(title: "打开最近使用")
+        recentRoot.submenu = recentSub
+        recentMenu = recentSub
+        fileMenu.addItem(recentRoot)
+        rebuildRecentMenu()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(rebuildRecentMenu),
+            name: NSNotification.Name("NSRecentDocumentsDidChange"),
+            object: nil
+        )
+        // Fallback refresh when menu opens
+        fileMenu.delegate = RecentMenuRefreshDelegate.shared
+        RecentMenuRefreshDelegate.shared.appDelegate = self
+
         fileMenu.addItem(NSMenuItem.separator())
         let revealItem = NSMenuItem(title: "在 Finder 中显示文献库", action: #selector(MultiTabMainWindowController.revealVaultInFinderShortcut), keyEquivalent: "R")
         revealItem.keyEquivalentModifierMask = [.command, .shift]
@@ -123,3 +203,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private final class RecentMenuRefreshDelegate: NSObject, NSMenuDelegate {
+    static let shared = RecentMenuRefreshDelegate()
+    weak var appDelegate: AppDelegate?
+
+    func menuWillOpen(_ menu: NSMenu) {
+        appDelegate?.rebuildRecentMenu()
+    }
+}

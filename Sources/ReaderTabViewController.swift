@@ -3352,8 +3352,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 guard let self = self, let col = col else { return }
                 self.handleDroppedPDFOnColumn(url, col: col)
             }
+            let multiDropHandler: ([URL]) -> Void = { [weak self, weak col] urls in
+                guard let self = self, let col = col, let first = urls.first else { return }
+                self.handleDroppedPDFOnColumn(first, col: col)
+                if urls.count >= 2 {
+                    self.presentColumnDropLimitBanner(openedName: first.lastPathComponent)
+                }
+            }
             col.onFileDropped = dropHandler
+            col.onFilesDropped = multiDropHandler
             col.pdfView.onFileDropped = dropHandler
+            col.pdfView.onFilesDropped = multiDropHandler
             col.pdfView.onOptionScrollPerformed = { [weak self] in
                 self?.recordOptionScrollCalibrationOffset()
             }
@@ -4750,6 +4759,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         panel.allowedContentTypes = [.pdf]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         handleDroppedPDFOnColumn(url, col: col, targetPDFId: activePDFId)
+    }
+
+    private func presentColumnDropLimitBanner(openedName: String) {
+        if let wc = view.window?.windowController as? MultiTabMainWindowController {
+            wc.showStatusBanner(DocumentOpenCopy.columnOnlyOne(openedName))
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = DocumentOpenCopy.columnOnlyOne(openedName)
+        alert.addButton(withTitle: "好")
+        alert.runModal()
     }
 
     private func handleDroppedPDFOnColumn(_ url: URL, col: CleanPDFColumnView, targetPDFId: String? = nil) {

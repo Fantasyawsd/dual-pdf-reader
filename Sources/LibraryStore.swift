@@ -167,6 +167,18 @@ final class LibraryStore {
 
     func paper(withId id: String) -> PaperItem? { pendingReadingUpdates[id] ?? papersByID[id] }
 
+    /// Find a library paper that already stores a PDF with the same file identity as `url`.
+    func paperContainingFile(identicalTo url: URL) -> PaperItem? {
+        for paper in papers {
+            for descriptor in paper.allPDFDescriptors {
+                guard let pdfURL = pdfURL(for: paper, pdfId: descriptor.id) else { continue }
+                if FileIdentity.sameFile(pdfURL, url) { return paper }
+            }
+        }
+        return nil
+    }
+
+
     @discardableResult
     func savePaper(_ paper: PaperItem, notify: Bool = true) -> Bool {
         commitPapers([paper], notify: notify)
