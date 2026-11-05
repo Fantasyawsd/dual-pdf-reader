@@ -472,6 +472,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let searchController = PDFSearchController()
     private var searchTask: DispatchWorkItem?
     private weak var lastReadingColumn: CleanPDFColumnView?
+    /// Column whose markup undo stack the unified toolbar should target.
+    private weak var lastMarkupEditColumn: CleanPDFColumnView?
     private var isSwapped = false
     /// 左右两栏页内相对偏移量（rightRatio - leftRatio），支持按住 ⌥ Option 滚动实时微调校准并持久化
     private(set) var pageRatioOffset: Double = 0.0
@@ -672,8 +674,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     func removeRightComparePDFGoingToSingle() {
         isAwaitingCompare = false
         isSameDocumentDualView = false
-        if rightCol.activePDFDocumentId == PDFSide.translated.rawValue {
+        // Spec S3→S1「移除此 PDF」: unbind the compare document from the paper
+        // so boundPDFCount returns to 1 (show「添加对照 PDF」), matching translated removal.
+        let rightId = rightCol.activePDFDocumentId
+        if rightId == PDFSide.translated.rawValue {
             LibraryStore.shared.removeTranslatedPDF(for: paperId)
+        } else if rightId != PDFSide.original.rawValue {
+            _ = LibraryStore.shared.removeAdditionalPDF(from: paperId, pdfId: rightId)
         }
         rightCol.pdfView.document = nil
         rightCol.configureDefaultEmptyState()
@@ -683,6 +690,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         loadPaperDocuments()
         persistReaderState(from: primaryActiveColumn())
     }
+
+    func removeRightComparePDFGoingToSingleForTesting() { removeRightComparePDFGoingToSingle() }
 
     func closeSameDocumentSecondView() {
         isSameDocumentDualView = false
@@ -708,6 +717,23 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         guard let url = urls.first else { return false }
         guard (currentPaper?.boundPDFCount ?? 0) <= 1 || isAwaitingCompare else { return false }
         addComparePDF(from: url)
+        return true
+    }
+
+    /// Shared decision for column/PDFView file drops (window host uses the same wants* check).
+    func prefersSideBySideCompareDrop(for info: NSDraggingInfo) -> Bool {
+        let pointInReader = view.convert(info.draggingLocation, from: nil)
+        return wantsSideBySideCompareDrop(atLocationInView: pointInReader)
+    }
+
+    /// Test/sim hook: route a drop at a reader-local point through the same S1 right-third logic.
+    @discardableResult
+    func routeColumnPDFDropForTesting(urls: [URL], atLocationInReader point: NSPoint, column: CleanPDFColumnView) -> Bool {
+        if wantsSideBySideCompareDrop(atLocationInView: point) {
+            return handleSideBySideCompareDrop(urls: urls)
+        }
+        guard let url = urls.first else { return false }
+        handleDroppedPDFOnColumn(url, col: column)
         return true
     }
 
@@ -1219,12 +1245,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
         unifiedMarkupToolbar.onUndo = { [weak self] in
             guard let self = self else { return }
-            self.primaryActiveColumn().pdfView.undoMarkup()
+            self.markupUndoTargetColumn().pdfView.undoMarkup()
             self.refreshUnifiedMarkupState()
         }
         unifiedMarkupToolbar.onRedo = { [weak self] in
             guard let self = self else { return }
-            self.primaryActiveColumn().pdfView.redoMarkup()
+            self.markupUndoTargetColumn().pdfView.redoMarkup()
             self.refreshUnifiedMarkupState()
         }
         refreshUnifiedMarkupState()
@@ -1262,9 +1288,38 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     func refreshUnifiedMarkupState() {
-        let column = primaryActiveColumn()
+        let column = markupUndoTargetColumn()
         unifiedMarkupToolbar.setUndoRedoEnabled(canUndo: column.pdfView.canUndoMarkup,
                                                canRedo: column.pdfView.canRedoMarkup)
+    }
+
+    private func markupUndoTargetColumn() -> CleanPDFColumnView {
+        if let column = lastMarkupEditColumn, !column.isHidden, column.pdfView.document != nil {
+            return column
+        }
+        if let column = lastReadingColumn, !column.isHidden, column.pdfView.document != nil {
+            return column
+        }
+        return primaryActiveColumn()
+    }
+
+    func performUnifiedMarkupUndoForTesting() {
+        markupUndoTargetColumn().pdfView.undoMarkup()
+        refreshUnifiedMarkupState()
+    }
+
+    func performUnifiedMarkupRedoForTesting() {
+        markupUndoTargetColumn().pdfView.redoMarkup()
+        refreshUnifiedMarkupState()
+    }
+
+    var isScrollSyncEnabledForTesting: Bool { isScrollSyncEnabled }
+
+    func setScrollSyncEnabledForTesting(_ enabled: Bool) {
+        isScrollSyncEnabled = enabled
+        syncScrollBtn.state = enabled ? .on : .off
+        updateSyncButtonStyle()
+        persistReaderState(from: primaryActiveColumn())
     }
 
     private func makeToolbarSeparator() -> NSBox {
@@ -3716,6 +3771,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                       let url = LibraryStore.shared.pdfURL(for: paper, pdfId: col.activePDFDocumentId) else { return }
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             }
+            let prefersCompare: (NSDraggingInfo) -> Bool = { [weak self] info in
+                self?.prefersSideBySideCompareDrop(for: info) ?? false
+            }
+            let sideBySideDrop: ([URL]) -> Void = { [weak self] urls in
+                _ = self?.handleSideBySideCompareDrop(urls: urls)
+            }
             let dropHandler: (URL) -> Void = { [weak self, weak col] url in
                 guard let self = self, let col = col else { return }
                 if self.isAwaitingCompare, col === self.rightCol {
@@ -3730,15 +3791,31 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             }
             let multiDropHandler: ([URL]) -> Void = { [weak self, weak col] urls in
                 guard let self = self, let col = col, let first = urls.first else { return }
+                if self.isAwaitingCompare, col === self.rightCol {
+                    self.addComparePDF(from: first)
+                    return
+                }
                 self.handleDroppedPDFOnColumn(first, col: col)
                 if urls.count >= 2 {
                     self.presentColumnDropLimitBanner(openedName: first.lastPathComponent)
                 }
             }
+            col.prefersSideBySideCompareDrop = prefersCompare
+            col.onSideBySideCompareDrop = sideBySideDrop
             col.onFileDropped = dropHandler
             col.onFilesDropped = multiDropHandler
+            col.pdfView.prefersSideBySideCompareDrop = prefersCompare
+            col.pdfView.onSideBySideCompareDrop = sideBySideDrop
             col.pdfView.onFileDropped = dropHandler
             col.pdfView.onFilesDropped = multiDropHandler
+            col.pdfView.onFileDragHoverChanged = { [weak col] active, message in
+                guard let col else { return }
+                if active {
+                    col.showFileDropOverlay(message: message)
+                } else {
+                    col.hideFileDropOverlay()
+                }
+            }
             col.pdfView.onOptionScrollPerformed = { [weak self] in
                 self?.recordOptionScrollCalibrationOffset()
             }
@@ -3752,14 +3829,20 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             }
             col.pdfView.onMarkupCreate = { [weak self, weak col] annotations in
                 guard let self, let col else { return }
+                self.lastMarkupEditColumn = col
+                self.lastReadingColumn = col
                 self.persistMarkupCreate(annotations, in: col)
             }
             col.pdfView.onMarkupUpdate = { [weak self, weak col] annotation in
                 guard let self, let col else { return }
+                self.lastMarkupEditColumn = col
+                self.lastReadingColumn = col
                 self.persistMarkupUpdate(annotation, in: col)
             }
-            col.pdfView.onMarkupDelete = { [weak self] ids in
-                self?.persistMarkupDelete(ids)
+            col.pdfView.onMarkupDelete = { [weak self, weak col] ids in
+                guard let self else { return }
+                if let col { self.lastMarkupEditColumn = col; self.lastReadingColumn = col }
+                self.persistMarkupDelete(ids)
             }
             col.pdfView.onMarkupVisibilityChanged = { [weak self, weak col] ids in
                 guard let self, let col else { return }
@@ -4045,9 +4128,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             rightCol.applyContentSource(.pdf(id: pdfId), paper: paper, hasPDFDocument: true)
             rightCol.pdfView.document = leftDoc
             rightCol.cornerButton.title = "同一文档 ▾"
-            isScrollSyncEnabled = false
-            syncScrollBtn.state = .off
-            syncScrollBtn.toolTip = "同一文档双视图：两栏独立滚动"
+            // Keep restored/user sync; only openSameDocumentInRightColumn defaults sync off.
+            syncScrollBtn.state = isScrollSyncEnabled ? .on : .off
+            syncScrollBtn.toolTip = isScrollSyncEnabled
+                ? "同步左右栏滚动位置"
+                : "同一文档双视图：两栏独立滚动"
+            updateSyncButtonStyle()
             modeSeg.selectedSegment = 2
             applyDisplayMode(2)
         }
@@ -5187,13 +5273,18 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             self.leftCol.pdfView.updateSelectedMarkupColor(color)
             self.rightCol.pdfView.updateSelectedMarkupColor(color)
         }
-        toolbar.onUndo = { [weak self] in
-            self?.primaryActiveColumn().pdfView.undoMarkup()
-            self?.refreshUnifiedMarkupState()
+        toolbar.onUndo = { [weak self, weak col] in
+            guard let self else { return }
+            // Prefer this column when its own undo button is clicked.
+            if let col { self.lastMarkupEditColumn = col }
+            self.markupUndoTargetColumn().pdfView.undoMarkup()
+            self.refreshUnifiedMarkupState()
         }
-        toolbar.onRedo = { [weak self] in
-            self?.primaryActiveColumn().pdfView.redoMarkup()
-            self?.refreshUnifiedMarkupState()
+        toolbar.onRedo = { [weak self, weak col] in
+            guard let self else { return }
+            if let col { self.lastMarkupEditColumn = col }
+            self.markupUndoTargetColumn().pdfView.redoMarkup()
+            self.refreshUnifiedMarkupState()
         }
         toolbar.setViewMode(col.pdfView.displayMode)
         toolbar.setOutlineActive(isLeftOverlayOpen)
@@ -5240,18 +5331,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                   let characters = event.charactersIgnoringModifiers?.lowercased(),
                   characters == "z" else { return event }
             guard !self.readerIsEditingText() else { return event }
-            let column: CleanPDFColumnView?
-            if let last = self.lastReadingColumn, !last.isHidden {
-                column = last
-            } else {
-                column = self.primaryActiveColumn()
-            }
-            guard let column, !column.isHidden, column.pdfView.document != nil else { return event }
+            let column = self.markupUndoTargetColumn()
+            guard !column.isHidden, column.pdfView.document != nil else { return event }
             if event.modifierFlags.contains(.shift) {
                 column.pdfView.redoMarkup()
             } else {
                 column.pdfView.undoMarkup()
             }
+            self.refreshUnifiedMarkupState()
             return nil
         }
     }

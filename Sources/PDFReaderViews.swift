@@ -321,6 +321,11 @@ final class InteractivePDFView: PDFView {
     var onBeforeInternalLinkJump: ((PDFPage, NSPoint, Bool) -> Bool)?
     var onFileDropped: ((URL) -> Void)?
     var onFilesDropped: (([URL]) -> Void)?
+    /// Returns true when this drop should open side-by-side compare instead of replacing the column.
+    var prefersSideBySideCompareDrop: ((NSDraggingInfo) -> Bool)?
+    var onSideBySideCompareDrop: (([URL]) -> Void)?
+    /// (active, message) — parent column shows the hover overlay above the PDFView.
+    var onFileDragHoverChanged: ((Bool, String) -> Void)?
     var onOptionScrollPerformed: (() -> Void)?
     var onContextMenuTranslate: ((String) -> Void)?
     var onContextMenuHighlight: ((PDFSelection, HighlightColor) -> Void)?
@@ -667,13 +672,39 @@ final class InteractivePDFView: PDFView {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if extractPDFURL(from: sender) != nil { return .copy }
-        return super.draggingEntered(sender)
+        return updatePDFFileDragHover(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        return updatePDFFileDragHover(sender)
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onFileDragHoverChanged?(false, "")
+        super.draggingExited(sender)
+    }
+
+    private func updatePDFFileDragHover(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !extractPDFURLs(from: sender).isEmpty else {
+            onFileDragHoverChanged?(false, "")
+            return super.draggingEntered(sender)
+        }
+        let sideBySide = prefersSideBySideCompareDrop?(sender) == true
+        let message = sideBySide
+            ? DocumentOpenCopy.dropSideBySideCompareHint
+            : DocumentOpenCopy.dropOnColumnHint
+        onFileDragHoverChanged?(true, message)
+        return .copy
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onFileDragHoverChanged?(false, "")
         let pdfs = extractPDFURLs(from: sender)
         guard !pdfs.isEmpty else { return super.performDragOperation(sender) }
+        if prefersSideBySideCompareDrop?(sender) == true {
+            onSideBySideCompareDrop?(pdfs)
+            return true
+        }
         if let onFilesDropped {
             onFilesDropped(pdfs)
         } else {
@@ -1554,6 +1585,11 @@ extension InteractivePDFView {
         onMarkupStateChanged?()
     }
 
+    /// Seeds a create command onto this column's undo stack (regression tests).
+    func seedMarkupCreateForTesting(_ annotation: PaperAnnotation) {
+        commitCreate(annotation)
+    }
+
     func clearSelectedMarkupIfMissing() {
         guard let selectedMarkupId,
               storedAnnotations.contains(where: { $0.id == selectedMarkupId }) else {
@@ -1870,6 +1906,8 @@ final class CleanPDFColumnView: NSView {
     var onRevealPDFInFinder: ((PDFSide) -> Void)?
     var onFileDropped: ((URL) -> Void)?
     var onFilesDropped: (([URL]) -> Void)?
+    var prefersSideBySideCompareDrop: ((NSDraggingInfo) -> Bool)?
+    var onSideBySideCompareDrop: (([URL]) -> Void)?
     var onOpenSameDocumentRequested: (() -> Void)?
     var onReturnToSingleColumnRequested: (() -> Void)?
     var onRemoveComparePDFRequested: (() -> Void)?
@@ -2126,13 +2164,11 @@ final class CleanPDFColumnView: NSView {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if !extractPDFURLs(from: sender).isEmpty {
-            dropCard.isEmphasizedCard = true
-            ensureColumnDropOverlay()
-            columnDropOverlay.isHidden = false
-            return .copy
-        }
-        return []
+        return updateColumnFileDragHover(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        return updateColumnFileDragHover(sender)
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -2140,11 +2176,41 @@ final class CleanPDFColumnView: NSView {
         columnDropOverlay.isHidden = true
     }
 
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    func showFileDropOverlay(message: String) {
+        dropCard.isEmphasizedCard = true
+        ensureColumnDropOverlay()
+        columnDropOverlay.setMessage(message)
+        columnDropOverlay.isHidden = false
+        // Keep overlay above the PDFView so host-intercepted drags stay visible.
+        addSubview(columnDropOverlay, positioned: .above, relativeTo: nil)
+    }
+
+    func hideFileDropOverlay() {
         dropCard.isEmphasizedCard = false
         columnDropOverlay.isHidden = true
+    }
+
+    private func updateColumnFileDragHover(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !extractPDFURLs(from: sender).isEmpty else {
+            hideFileDropOverlay()
+            return []
+        }
+        let sideBySide = prefersSideBySideCompareDrop?(sender) == true
+        let message = sideBySide
+            ? DocumentOpenCopy.dropSideBySideCompareHint
+            : DocumentOpenCopy.dropOnColumnHint
+        showFileDropOverlay(message: message)
+        return .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        hideFileDropOverlay()
         let pdfs = extractPDFURLs(from: sender)
         guard !pdfs.isEmpty else { return false }
+        if prefersSideBySideCompareDrop?(sender) == true {
+            onSideBySideCompareDrop?(pdfs)
+            return true
+        }
         if let onFilesDropped {
             onFilesDropped(pdfs)
         } else {

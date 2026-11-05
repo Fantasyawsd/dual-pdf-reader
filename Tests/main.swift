@@ -993,9 +993,14 @@ do {
 
 do {
     try runP0TransientLibraryTests()
-try runP0CompareModeTests(root: root)
 } catch {
     check(false, "P0-2 transient library tests threw \(error)")
+}
+
+do {
+    try runP0CompareModeTests(root: root)
+} catch {
+    check(false, "P0-3 compare mode tests threw \(error)")
 }
 
 try runReaderCoreTests(root: root)

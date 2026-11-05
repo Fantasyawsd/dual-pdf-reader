@@ -56,6 +56,32 @@ func runP0CompareModeTests(root: URL) throws {
     check(reader1.syncScrollBtn.state == .off, "S4 sync off")
     check(reader1.rightCol.cornerButton.title.contains("同一文档"), "S4 badge 同一文档")
 
+    // Unified undo must target the column that last edited (right), not only primary/left.
+    var rightAnn = PaperAnnotation(
+        side: .original, pageIndex: 0, rects: [RectCodable(NSRect(x: 20, y: 40, width: 50, height: 14))],
+        selectedText: "p0-3-right-mark", color: .yellow, markdownNote: "", linkedURL: nil, linkedTitle: nil,
+        pdfDocumentId: reader1.leftCol.activePDFDocumentId)
+    rightAnn.kind = .highlight
+    let rightUndoBefore = reader1.rightCol.pdfView.markupUndoCount
+    reader1.rightCol.pdfView.seedMarkupCreateForTesting(rightAnn)
+    settle(0.15)
+    check(reader1.rightCol.pdfView.markupUndoCount == rightUndoBefore + 1, "S4 right column owns its undo entry")
+    check(reader1.leftCol.pdfView.canUndoMarkup == false || reader1.leftCol.pdfView.markupUndoCount == 0
+          || reader1.leftCol.pdfView.markupUndoCount == rightUndoBefore,
+          "S4 left undo stack unchanged by right edit")
+    let annotsAfterRightEdit = store.paper(withId: single.id)?.annotations.count ?? 0
+    reader1.performUnifiedMarkupUndoForTesting()
+    settle(0.15)
+    let annotsAfterUnifiedUndo = store.paper(withId: single.id)?.annotations.count ?? 0
+    check(annotsAfterUnifiedUndo == annotsAfterRightEdit - 1,
+          "S4 unified undo clears right-column markup (before=\(annotsAfterRightEdit) after=\(annotsAfterUnifiedUndo))")
+    check(!reader1.rightCol.pdfView.canUndoMarkup, "S4 right undo stack empty after unified undo")
+
+    // User turns sync on while in S4 — restore must keep it (not force off).
+    reader1.setScrollSyncEnabledForTesting(true)
+    settle(0.1)
+    check(reader1.isScrollSyncEnabledForTesting, "S4 user enabled sync")
+
     let beforeCount = store.paper(withId: single.id)?.annotations.count ?? 0
     var ann = PaperAnnotation(
         side: .original, pageIndex: 0, rects: [RectCodable(NSRect(x: 10, y: 10, width: 40, height: 12))],
@@ -75,7 +101,7 @@ func runP0CompareModeTests(root: URL) throws {
     let sharedDoc = reader1.leftCol.pdfView.document!
     let page0 = sharedDoc.page(at: 0)!
     let dualPDFAnnots = page0.annotations.filter { $0.userName == "DualPDF_CustomAnnot" }.count
-    check(dualPDFAnnots <= max(afterCount, 1) + 2, "S4 PDFKit annots not duplicated explosively")
+    check(dualPDFAnnots == 1, "S4 PDFKit annots exact once on shared page (got \(dualPDFAnnots))")
 
     // Persist S4 and reopen
     reader1.prepareForClose()
@@ -88,6 +114,7 @@ func runP0CompareModeTests(root: URL) throws {
     settle(0.25)
     check(reopened.isSameDocumentDualViewForTesting, "S4 restored")
     check(reopened.leftCol.pdfView.document === reopened.rightCol.pdfView.document, "S4 restored shared doc")
+    check(reopened.isScrollSyncEnabledForTesting, "S4 restore keeps user sync on")
 
     // --- S2 does not persist ---
     let single2URL = root.appendingPathComponent("p0-3-single2.pdf")
@@ -161,4 +188,92 @@ func runP0CompareModeTests(root: URL) throws {
     rp.setDisplayMode(2)
     settle(0.15)
     check(!rp.leftCol.isHidden && !rp.rightCol.isHidden, "S3 dual restored")
+
+    // --- S1 right-third drop → S3 compare (must not replace left doc) ---
+    let dropBase = root.appendingPathComponent("p0-3-drop-base.pdf")
+    let dropCompare = root.appendingPathComponent("p0-3-drop-compare.pdf")
+    let dropReplace = root.appendingPathComponent("p0-3-drop-replace.pdf")
+    try writePDF(dropBase, pages: 2, text: "p0-3 drop base UNIQUE_BASE")
+    try writePDF(dropCompare, pages: 2, text: "p0-3 drop compare UNIQUE_COMPARE")
+    try writePDF(dropReplace, pages: 2, text: "p0-3 drop replace UNIQUE_REPLACE")
+    let dropPaper = store.createPaper(title: "P0-3 drop \(UUID().uuidString)", originalSourceURL: dropBase)!
+    let dropReader = ReaderTabViewController(paperId: dropPaper.id)
+    defer { dropReader.prepareForClose() }
+    dropReader.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
+    dropReader.view.layoutSubtreeIfNeeded()
+    settle(0.35)
+    check(waitReady(dropReader), "drop fixture loads")
+    settle(0.15)
+    check(dropReader.rightCol.isHidden, "drop fixture starts S1")
+    let originalDoc = dropReader.leftCol.pdfView.document
+    let rightThird = NSPoint(x: dropReader.view.bounds.width * 0.85, y: dropReader.view.bounds.height * 0.5)
+    let routedCompare = dropReader.routeColumnPDFDropForTesting(
+        urls: [dropCompare], atLocationInReader: rightThird, column: dropReader.leftCol)
+    settle(0.35)
+    check(routedCompare, "right-third drop routes")
+    check(!dropReader.rightCol.isHidden && dropReader.rightCol.pdfView.document != nil,
+          "right-third drop enters S3 with right PDF")
+    check(dropReader.leftCol.pdfView.document === originalDoc,
+          "right-third drop does not replace left document")
+    check((store.paper(withId: dropPaper.id)?.boundPDFCount ?? 0) >= 2,
+          "right-third drop binds a second PDF")
+
+    // Fresh S1 for left-two-thirds replace behavior
+    let dropPaper2 = store.createPaper(title: "P0-3 drop2 \(UUID().uuidString)", originalSourceURL: dropBase)!
+    let dropReader2 = ReaderTabViewController(paperId: dropPaper2.id)
+    defer { dropReader2.prepareForClose() }
+    dropReader2.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
+    dropReader2.view.layoutSubtreeIfNeeded()
+    settle(0.35)
+    check(waitReady(dropReader2), "left-two-thirds fixture loads")
+    let beforeReplaceDoc = dropReader2.leftCol.pdfView.document
+    let leftTwoThirds = NSPoint(x: dropReader2.view.bounds.width * 0.2, y: dropReader2.view.bounds.height * 0.5)
+    let routedReplace = dropReader2.routeColumnPDFDropForTesting(
+        urls: [dropReplace], atLocationInReader: leftTwoThirds, column: dropReader2.leftCol)
+    settle(0.35)
+    check(routedReplace, "left-two-thirds drop routes")
+    check(dropReader2.rightCol.isHidden, "left-two-thirds drop stays S1 (no compare)")
+    check(dropReader2.leftCol.pdfView.document !== nil, "left-two-thirds drop keeps a left document")
+    check(dropReader2.leftCol.pdfView.document !== beforeReplaceDoc,
+          "left-two-thirds drop replaces the left PDFDocument instance")
+    check((store.paper(withId: dropPaper2.id)?.boundPDFCount ?? 0) == 1,
+          "left-two-thirds drop does not add a compare PDF")
+
+    // Esc from S2
+    dropReader2.enterCompareEmptyStateForTesting()
+    settle(0.15)
+    check(dropReader2.isAwaitingCompareForTesting, "⌘3/S2 via enterCompare")
+    dropReader2.handleCompareEscapeKey()
+    settle(0.15)
+    check(!dropReader2.isAwaitingCompareForTesting && dropReader2.rightCol.isHidden, "Esc returns S2→S1")
+
+    // ⌘3 path = setDisplayMode(2) while single → S2
+    dropReader2.setDisplayMode(2)
+    settle(0.15)
+    check(dropReader2.isAwaitingCompareForTesting, "⌘3/setDisplayMode(2) enters S2")
+    check(dropReader2.rightCol.emptyStateTitleForTesting == "添加一份 PDF 进行对照", "⌘3 S2 title")
+
+    // removeRightComparePDF removes additional from paper
+    let addA = root.appendingPathComponent("p0-3-rm-a.pdf")
+    let addB = root.appendingPathComponent("p0-3-rm-b.pdf")
+    try writePDF(addA, pages: 1, text: "rm-a")
+    try writePDF(addB, pages: 1, text: "rm-b")
+    let rmPaper = store.createPaper(title: "P0-3 rm \(UUID().uuidString)", originalSourceURL: addA)!
+    let added = store.addAdditionalPDF(to: rmPaper.id, from: addB, title: "附录B")!
+    let rmReader = ReaderTabViewController(paperId: rmPaper.id)
+    defer { rmReader.prepareForClose() }
+    rmReader.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
+    rmReader.view.layoutSubtreeIfNeeded()
+    settle(0.3)
+    rmReader.setColumnSource(rmReader.rightCol, source: .pdf(id: added.id))
+    rmReader.setDisplayMode(2)
+    settle(0.2)
+    check((store.paper(withId: rmPaper.id)?.additionalPDFs?.contains { $0.id == added.id }) == true,
+          "additional present before remove")
+    rmReader.removeRightComparePDFGoingToSingleForTesting()
+    settle(0.25)
+    check(rmReader.rightCol.isHidden, "remove compare returns S1")
+    check((store.paper(withId: rmPaper.id)?.additionalPDFs ?? []).isEmpty,
+          "移除此 PDF deletes additional from paper")
+    check((store.paper(withId: rmPaper.id)?.boundPDFCount ?? 0) == 1, "bound count back to 1")
 }
