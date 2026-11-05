@@ -355,6 +355,8 @@ final class ZoteroSidebarHeaderView: NSView {
 // MARK: - Reader Tab View Controller (Minimalist, Modern macOS Dual-Pane Reader)
 final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WKScriptMessageHandler {
     private(set) var paperId: String
+    /// When set, the tab shows an in-memory unlocked PDF and is never written to the library.
+    private var transientSession: TransientOpenSession?
     var onRequestOpenPaperTab: ((String) -> Void)?
 
     let leftCol = CleanPDFColumnView(side: .original)
@@ -530,8 +532,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private weak var translationPreviewWebView: WKWebView?
     private weak var translationProviderLabel: NSTextField?
 
-    init(paperId: String) {
+    init(paperId: String, transientSession: TransientOpenSession? = nil) {
         self.paperId = paperId
+        self.transientSession = transientSession
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -540,8 +543,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     var currentPaper: PaperItem? {
+        if let transientSession {
+            return transientSession.makeSyntheticPaper()
+        }
         return LibraryStore.shared.paper(withId: paperId)
     }
+
+    var isTransientOpen: Bool { transientSession != nil }
+    var transientSourceURL: URL? { transientSession?.sourceURL }
 
     deinit {
         searchTask?.cancel()
@@ -3646,7 +3655,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         if let paper = currentPaper, self.pdfFileVersions(in: paper) != loadedPDFFiles {
             loadPaperDocuments()
         }
-        LibraryStore.shared.updateReadingState(for: paperId) { $0.lastOpenedAt = Date() }
+        if transientSession == nil {
+            LibraryStore.shared.updateReadingState(for: paperId) { $0.lastOpenedAt = Date() }
+        }
         updateRightSidebarMetadataUI()
         updateDrawerBadgeTitles()
         beginLayoutChange()
@@ -3715,6 +3726,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let effectivePDFId = validPDFIds.contains(requestedPDFId) ? requestedPDFId : col.side.rawValue
         col.pdfView.highlightedSelections = nil
         col.pdfView.clearSelection()
+        if let transient = transientSession, effectivePDFId == PDFSide.original.rawValue || col.side == .original {
+            ReaderTabViewController.stripLinkAnnotationBorders(in: transient.document)
+            col.applyContentSource(.pdf(id: PDFSide.original.rawValue), paper: paper, hasPDFDocument: true)
+            col.pdfView.document = transient.document
+            let saved = viewportStates[col.side.rawValue]
+            if saved?.pdfDocumentId != PDFSide.original.rawValue {
+                viewportStates[col.side.rawValue] = PDFColumnReadingState(pdfDocumentId: PDFSide.original.rawValue, continuousPage: 0)
+            }
+            col.pdfView.autoScales = viewportStates[col.side.rawValue]?.autoScales ?? true
+            return
+        }
         if let url = LibraryStore.shared.pdfURL(for: paper, pdfId: effectivePDFId),
            let doc = PDFDocument(url: url) {
             ReaderTabViewController.stripLinkAnnotationBorders(in: doc)

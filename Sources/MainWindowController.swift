@@ -182,8 +182,11 @@ final class MultiTabMainWindowController: NSWindowController {
         let change = notification.userInfo?["change"] as? LibraryChange
         guard change?.resetsLibrary == true || change?.fields.contains(.membership) == true ||
               change?.fields.contains(.metadata) == true || change == nil else { return }
-        // 清理已被删除的论文标签页
-        let removedIds = orderedTabPaperIds.filter { change?.resetsLibrary == true || LibraryStore.shared.paper(withId: $0) == nil }
+        // 清理已被删除的论文标签页（临时打开的加密文档不依赖文献库，勿误关）
+        let removedIds = orderedTabPaperIds.filter { id in
+            if openReaderTabs[id]?.isTransientOpen == true { return false }
+            return change?.resetsLibrary == true || LibraryStore.shared.paper(withId: id) == nil
+        }
         for rid in removedIds {
             closePaperTab(paperId: rid)
         }
@@ -292,7 +295,8 @@ final class MultiTabMainWindowController: NSWindowController {
                 )
                 tabView.onSelect = { [weak self] id in self?.switchToTab(id: id) }
             } else {
-                guard let paper = LibraryStore.shared.paper(withId: tabId) else { continue }
+                let paper = openReaderTabs[tabId]?.currentPaper ?? LibraryStore.shared.paper(withId: tabId)
+                guard let paper else { continue }
                 tabView = cachedTabViews[tabId] ?? ZoteroTabItemView(
                     tabId: tabId,
                     title: paper.title,
@@ -304,8 +308,12 @@ final class MultiTabMainWindowController: NSWindowController {
                 tabView.onSelect = { [weak self] id in self?.switchToTab(id: id) }
                 tabView.onClose = { [weak self] id in self?.closePaperTab(paperId: id) }
                 tabView.onCloseOthers = { [weak self] id in self?.closeOtherPaperTabs(keeping: id) }
-                tabView.onRevealInFinder = { pid in
-                    NSWorkspace.shared.open(LibraryStore.shared.folderURL(for: pid))
+                tabView.onRevealInFinder = { [weak self] pid in
+                    if let source = self?.openReaderTabs[pid]?.transientSourceURL {
+                        NSWorkspace.shared.activateFileViewerSelecting([source])
+                    } else {
+                        NSWorkspace.shared.open(LibraryStore.shared.folderURL(for: pid))
+                    }
                 }
             }
 
@@ -532,6 +540,32 @@ final class DropHoverOverlayView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
+
+/// Shared in-flight iCloud downloads (cannot store in a class extension).
+private enum iCloudDownloadRegistry {
+    struct Job {
+        let url: URL
+        let origin: OpenOrigin
+        let startedAt: Date
+    }
+    static var jobs: [String: Job] = [:]
+    static let timeout: TimeInterval = 120
+}
+
+/// One-shot latch so either the coordinator callback or the timeout wins.
+private final class iCloudCoordinateState: @unchecked Sendable {
+    private var finished = false
+    private let lock = NSLock()
+    /// Returns true the first time it is called; false afterwards.
+    func completeIfNeeded() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if finished { return false }
+        finished = true
+        return true
+    }
+}
+
 extension MultiTabMainWindowController {
     fileprivate func setupWindowFileDrop() {
         contentHostView.onURLsDropped = { [weak self] urls in
@@ -539,8 +573,8 @@ extension MultiTabMainWindowController {
         }
     }
 
-    func showStatusBanner(_ text: String) {
-        statusBanner?.show(text)
+    func showStatusBanner(_ text: String, duration: TimeInterval? = 4, retry: (() -> Void)? = nil) {
+        statusBanner?.show(text, duration: duration, retry: retry)
     }
 
     func flashTab(id: String) {
@@ -558,6 +592,7 @@ extension MultiTabMainWindowController {
         var ready: [URL] = []
         var failures: [(name: String, reason: String)] = []
         var pendingiCloud: [URL] = []
+        var unlockedTransient: [(URL, PDFDocument)] = []
 
         for url in urls {
             switch DocumentValidation.classify(url) {
@@ -604,12 +639,9 @@ extension MultiTabMainWindowController {
                 }
                 failures.append((url.lastPathComponent, "文件可能已损坏或不是有效的 PDF。"))
             case .locked(let u, let doc):
+                // Unlock in memory only — never write plaintext to disk / library.
                 if DocumentOpenAlerts.presentPassword(for: u, document: doc, window: window) != nil {
-                    if let unlocked = Self.writeUnlockedTemporaryPDF(from: doc, named: u.lastPathComponent) {
-                        ready.append(unlocked)
-                    } else {
-                        ready.append(u)
-                    }
+                    unlockedTransient.append((u, doc))
                 } else {
                     failures.append((u.lastPathComponent, "未解锁受密码保护的文档"))
                 }
@@ -625,7 +657,12 @@ extension MultiTabMainWindowController {
         }
 
         for cloudURL in pendingiCloud {
-            beginiCloudOpen(cloudURL)
+            beginiCloudOpen(cloudURL, origin: origin)
+        }
+
+        for (sourceURL, document) in unlockedTransient {
+            openTransientUnlocked(sourceURL: sourceURL, document: document)
+            NSDocumentController.shared.noteNewRecentDocumentURL(sourceURL)
         }
 
         // Dedup against open tabs / library papers first.
@@ -666,20 +703,44 @@ extension MultiTabMainWindowController {
         }
 
         if !failures.isEmpty {
-            if failures.count == 1, ready.isEmpty, batches.isEmpty, pendingiCloud.isEmpty {
-                // already presented single-file alerts above when possible
-            }
             DocumentOpenAlerts.presentCombinedFailures(failures)
         }
 
         if let app = NSApp.delegate as? AppDelegate {
             app.rebuildRecentMenu()
         }
-        _ = origin
+    }
+
+    /// Open an already-unlocked PDFDocument without writing plaintext anywhere on disk.
+    func openTransientUnlocked(sourceURL: URL, document: PDFDocument) {
+        if let openId = openTabId(containingFile: sourceURL) {
+            switchToTab(id: openId)
+            flashTab(id: openId)
+            return
+        }
+        if let paper = LibraryStore.shared.paperContainingFile(identicalTo: sourceURL) {
+            openOrSwitchToPaperTab(paperId: paper.id, jumpToAnnot: nil, switchImmediately: true)
+            flashTab(id: paper.id)
+            return
+        }
+
+        let session = TransientOpenSession(sourceURL: sourceURL, document: document)
+        let readerVC = ReaderTabViewController(paperId: session.id, transientSession: session)
+        readerVC.onRequestOpenPaperTab = { [weak self] targetId in
+            self?.openOrSwitchToPaperTab(paperId: targetId, jumpToAnnot: nil, switchImmediately: true)
+        }
+        openReaderTabs[session.id] = readerVC
+        orderedTabIds.append(session.id)
+        switchToTab(id: session.id)
+        showStatusBanner(DocumentOpenCopy.encryptedNotImported)
     }
 
     private func openTabId(containingFile url: URL) -> String? {
         for paperId in orderedTabPaperIds {
+            if let source = openReaderTabs[paperId]?.transientSourceURL,
+               FileIdentity.sameFile(source, url) {
+                return paperId
+            }
             guard let paper = LibraryStore.shared.paper(withId: paperId) else { continue }
             for descriptor in paper.allPDFDescriptors {
                 guard let pdfURL = LibraryStore.shared.pdfURL(for: paper, pdfId: descriptor.id) else { continue }
@@ -689,43 +750,96 @@ extension MultiTabMainWindowController {
         return nil
     }
 
-    private func beginiCloudOpen(_ url: URL) {
-        showStatusBanner(DocumentOpenCopy.iCloudDownloading(url.lastPathComponent))
+    // MARK: - iCloud coordinated download
+
+    private func iCloudJobKey(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private func beginiCloudOpen(_ url: URL, origin: OpenOrigin) {
+        let key = iCloudJobKey(url)
+        if iCloudDownloadRegistry.jobs[key] != nil {
+            refreshiCloudBanner()
+            return
+        }
+        iCloudDownloadRegistry.jobs[key] = .init(url: url, origin: origin, startedAt: Date())
+        refreshiCloudBanner()
+
         do {
             try FileManager.default.startDownloadingUbiquitousItem(at: url)
         } catch {
-            showStatusBanner(DocumentOpenCopy.iCloudFailed(url.lastPathComponent))
-            return
+            // Still attempt coordinated read — some items need coordinator only.
+            NSLog("[DualPDF][B3] startDownloadingUbiquitousItem failed: %@", error.localizedDescription)
         }
-        let name = url.lastPathComponent
-        var attempts = 0
-        Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] timer in
-            attempts += 1
-            let status = (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]).ubiquitousItemDownloadingStatus) ?? .notDownloaded
-            if status == .current {
-                timer.invalidate()
-                self?.openDocuments([url], origin: .systemOpen)
-            } else if attempts >= 45 {
-                timer.invalidate()
-                self?.showStatusBanner(DocumentOpenCopy.iCloudFailed(name))
+
+        let capturedURL = url
+        let capturedOrigin = origin
+        // coordinate(reading:) is synchronous and will wait for the ubiquitous download.
+        // Race it against a ≥2 minute timeout on a parallel queue.
+        let state = iCloudCoordinateState()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var coordError: NSError?
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var preparedURL: URL?
+            coordinator.coordinate(readingItemAt: capturedURL, options: [], error: &coordError) { newURL in
+                if FileManager.default.isReadableFile(atPath: newURL.path) {
+                    preparedURL = newURL
+                }
+            }
+            let success = preparedURL != nil && coordError == nil
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard state.completeIfNeeded() else { return } // timed out already
+                iCloudDownloadRegistry.jobs.removeValue(forKey: key)
+                if success, let preparedURL {
+                    self.refreshiCloudBanner()
+                    self.openDocuments([preparedURL], origin: capturedOrigin)
+                } else {
+                    NSLog("[DualPDF][B3] iCloud open failed for %@ err=%@", capturedURL.lastPathComponent, String(describing: coordError))
+                    self.refreshiCloudBanner()
+                    self.showStatusBanner(
+                        DocumentOpenCopy.iCloudFailed(capturedURL.lastPathComponent),
+                        duration: nil,
+                        retry: { [weak self] in
+                            self?.beginiCloudOpen(capturedURL, origin: capturedOrigin)
+                        }
+                    )
+                }
             }
         }
-    }
-
-
-    private static func writeUnlockedTemporaryPDF(from document: PDFDocument, named name: String) -> URL? {
-        guard let data = document.dataRepresentation() else { return nil }
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("DualPDF-Unlocked", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let dest = dir.appendingPathComponent(name)
-        do {
-            try data.write(to: dest, options: .atomic)
-            return dest
-        } catch {
-            return nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + iCloudDownloadRegistry.timeout) { [weak self] in
+            guard let self else { return }
+            guard state.completeIfNeeded() else { return } // coordinator finished first
+            iCloudDownloadRegistry.jobs.removeValue(forKey: key)
+            NSLog("[DualPDF][B3] iCloud open timed out for %@", capturedURL.lastPathComponent)
+            self.refreshiCloudBanner()
+            self.showStatusBanner(
+                DocumentOpenCopy.iCloudFailed(capturedURL.lastPathComponent),
+                duration: nil,
+                retry: { [weak self] in
+                    self?.beginiCloudOpen(capturedURL, origin: capturedOrigin)
+                }
+            )
         }
     }
 
+    private func refreshiCloudBanner() {
+        let jobs = Array(iCloudDownloadRegistry.jobs.values)
+        guard !jobs.isEmpty else {
+            // Leave failure/retry banners alone; only clear when transitioning from downloading.
+            return
+        }
+        if jobs.count == 1 {
+            showStatusBanner(DocumentOpenCopy.iCloudDownloading(jobs[0].url.lastPathComponent), duration: nil)
+        } else {
+            showStatusBanner(DocumentOpenCopy.iCloudDownloadingMany(jobs.count), duration: nil)
+        }
+    }
+
+    /// Remove a recent-document entry.
+    /// Note: NSDocumentController has no public API to delete a single URL, so we clear
+    /// the whole list and re-add the rest. That clears-then-re-adds sequence can reshuffle
+    /// the Recent menu order relative to the system’s original ordering.
     static func removeRecentDocument(_ url: URL) {
         let remaining = NSDocumentController.shared.recentDocumentURLs.filter {
             !FileIdentity.sameFile($0, url) && $0.standardizedFileURL != url.standardizedFileURL
@@ -738,4 +852,5 @@ extension MultiTabMainWindowController {
             app.rebuildRecentMenu()
         }
     }
+
 }

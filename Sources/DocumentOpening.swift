@@ -25,9 +25,12 @@ enum DocumentOpenCopy {
     static let tabLimit = "一次最多打开 10 个文件，其余已忽略。"
     static func multiFailTitle(_ count: Int) -> String { "有 \(count) 个文件无法打开" }
     static func iCloudDownloading(_ name: String) -> String { "正在从 iCloud 下载“\(name)”…" }
+    static func iCloudDownloadingMany(_ count: Int) -> String { "正在下载 \(count) 个文件" }
     static func iCloudFailed(_ name: String) -> String { "无法从 iCloud 下载“\(name)”。请检查网络后重试。" }
+    static let iCloudRetry = "重试"
     static let dropOnColumnHint = "松开以在此栏打开"
     static let dropToOpenHint = "松开以打开"
+    static let encryptedNotImported = "已临时打开加密 PDF（未写入文献库，明文不落盘）。"
 }
 
 enum DocumentValidation {
@@ -50,7 +53,6 @@ enum DocumentValidation {
     }
 
     static func classify(_ url: URL) -> Outcome {
-        let name = url.lastPathComponent
         let values: URLResourceValues
         do {
             values = try url.resourceValues(forKeys: [
@@ -89,7 +91,6 @@ enum DocumentValidation {
         if doc.pageCount == 0 {
             return .corrupt(url)
         }
-        _ = name
         return .ok(url)
     }
 }
@@ -153,23 +154,27 @@ enum DocumentOpenAlerts {
 }
 
 /// Lightweight bottom banner hosted on a window content view.
+/// Supports an optional retry action and sticky multi-download summaries.
 final class WindowStatusBannerController {
     private weak var host: NSView?
     private var banner: NSView?
     private var hideWork: DispatchWorkItem?
+    private var retryHandler: (() -> Void)?
 
     init(host: NSView?) {
         self.host = host
     }
 
-    func show(_ text: String, duration: TimeInterval = 4) {
+    func show(_ text: String, duration: TimeInterval? = 4, retry: (() -> Void)? = nil) {
         guard let host else { return }
         hideWork?.cancel()
         banner?.removeFromSuperview()
+        retryHandler = retry
 
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 12.5, weight: .medium)
         label.textColor = .labelColor
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.translatesAutoresizingMaskIntoConstraints = false
 
         let box = NSView()
@@ -179,25 +184,57 @@ final class WindowStatusBannerController {
         box.layer?.borderWidth = 1
         box.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.35).cgColor
         box.translatesAutoresizingMaskIntoConstraints = false
-        box.addSubview(label)
+
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.spacing = 10
+        row.alignment = .centerY
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addArrangedSubview(label)
+
+        if retry != nil {
+            let button = NSButton(title: DocumentOpenCopy.iCloudRetry, target: self, action: #selector(retryTapped))
+            button.bezelStyle = .rounded
+            button.font = .systemFont(ofSize: 12, weight: .semibold)
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            row.addArrangedSubview(button)
+        }
+
+        box.addSubview(row)
         host.addSubview(box)
 
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 14),
-            label.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -14),
-            label.topAnchor.constraint(equalTo: box.topAnchor, constant: 8),
-            label.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -8),
+            row.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -14),
+            row.topAnchor.constraint(equalTo: box.topAnchor, constant: 8),
+            row.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -8),
             box.centerXAnchor.constraint(equalTo: host.centerXAnchor),
             box.bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -18),
             box.widthAnchor.constraint(lessThanOrEqualTo: host.widthAnchor, constant: -40)
         ])
         banner = box
 
-        let work = DispatchWorkItem { [weak self] in
-            self?.banner?.removeFromSuperview()
-            self?.banner = nil
+        if let duration {
+            let work = DispatchWorkItem { [weak self] in
+                self?.banner?.removeFromSuperview()
+                self?.banner = nil
+                self?.retryHandler = nil
+            }
+            hideWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
         }
-        hideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+    }
+
+    func dismiss() {
+        hideWork?.cancel()
+        banner?.removeFromSuperview()
+        banner = nil
+        retryHandler = nil
+    }
+
+    @objc private func retryTapped() {
+        let handler = retryHandler
+        dismiss()
+        handler?()
     }
 }
