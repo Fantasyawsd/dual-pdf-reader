@@ -762,6 +762,8 @@ let dualRightAfter = testReader.rightCol.frame.width
 check(abs(dualLeftAfter - dualRightAfter) <= 2.0 && abs(dualLeftAfter - dualLeftBefore) <= 2.0, "Dual PDF columns restore to full width 50/50 when right drawer is closed")
 
 // Custom ratio preservation on divider drag
+testReader.setDisplayMode(2)
+testReader.view.layoutSubtreeIfNeeded()
 testReader.setColumnSplitRatioForTesting(0.65)
 testReader.applyColumnSplitRatio()
 testReader.view.layoutSubtreeIfNeeded()

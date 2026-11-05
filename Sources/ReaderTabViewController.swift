@@ -5062,11 +5062,19 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     private func applyDisplayModeAnimated(_ segment: Int) {
         let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = reduce ? 0 : 0.15
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            self.applyDisplayMode(segment)
+        if reduce {
+            applyDisplayMode(segment)
+            return
         }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            self.applyDisplayMode(segment)
+            self.view.layoutSubtreeIfNeeded()
+        }
+        view.layoutSubtreeIfNeeded()
+        finishPendingLayout()
     }
 
     private func applyDisplayMode(_ segment: Int) {
