@@ -3,6 +3,7 @@ import PDFKit
 import WebKit
 import JavaScriptCore
 
+print("ENV os=\(ProcessInfo.processInfo.operatingSystemVersionString) screens=\(NSScreen.screens.map { "\($0.frame)@\($0.backingScaleFactor)" })")
 var passed = 0
 var failed = 0
 func check(_ condition: @autoclosure () throws -> Bool, _ name: String) {
@@ -10,6 +11,12 @@ func check(_ condition: @autoclosure () throws -> Bool, _ name: String) {
         if try condition() { passed += 1; print("PASS: \(name)") }
         else { failed += 1; print("FAIL: \(name)") }
     } catch { failed += 1; print("FAIL: \(name): \(error)") }
+}
+func geometryDiagnostics(_ column: CleanPDFColumnView) -> String {
+    let scroll = column.internalScrollView()
+    return "col=\(column.frame) pdf=\(column.pdfView.frame) scale=\(column.pdfView.scaleFactor) auto=\(column.pdfView.autoScales) " +
+        "clip=\(scroll?.contentView.bounds ?? .zero) doc=\(scroll?.documentView?.frame ?? .zero) flipped=\(scroll?.documentView?.isFlipped ?? false) " +
+        "window=\(column.window != nil) backing=\(column.window?.backingScaleFactor ?? -1)"
 }
 func waitUntil(_ condition: () -> Bool, timeout: TimeInterval = 4) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)

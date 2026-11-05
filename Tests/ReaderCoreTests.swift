@@ -4,7 +4,11 @@ import PDFKit
 func runReaderCoreTests(root: URL) throws {
     func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.08)) }
     func position(_ column: CleanPDFColumnView) -> Double { PDFScrollSynchronizer.continuousPosition(in: column) ?? -100 }
-    func samePosition(_ column: CleanPDFColumnView, _ expected: Double) -> Bool { abs(position(column) - expected) < 0.025 }
+    func samePosition(_ column: CleanPDFColumnView, _ expected: Double) -> Bool {
+        let ok = abs(position(column) - expected) < 0.025
+        if !ok { print("  DIAG position=\(position(column)) expected=\(expected) \(geometryDiagnostics(column))") }
+        return ok
+    }
     func sync(_ reader: ReaderTabViewController, _ enabled: Bool) {
         reader.syncScrollBtn.state = enabled ? .on : .off
         reader.toggleSyncScrollAction()

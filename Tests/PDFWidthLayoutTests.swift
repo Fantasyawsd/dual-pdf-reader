@@ -22,7 +22,9 @@ func runPDFWidthLayoutTests(root: URL) throws {
         let width = viewport(column).width
         let expected = width - 2 * min(8, width * 0.1)
         let actual = pages(column).map(\.width).max() ?? 0
-        return centered(column) && abs(actual - expected) < 1 && column.viewportLayout.fitsWidth
+        let ok = centered(column) && abs(actual - expected) < 1 && column.viewportLayout.fitsWidth
+        if !ok { print("  DIAG fit viewport=\(viewport(column)) pageW=\(actual) expectedW=\(expected) fits=\(column.viewportLayout.fitsWidth) \(geometryDiagnostics(column))") }
+        return ok
     }
 
     let source = root.appendingPathComponent("width-portrait.pdf")
