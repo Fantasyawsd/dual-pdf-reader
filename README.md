@@ -30,6 +30,10 @@
 | `PDFMetadataExtractor` / `PDFSummaryCache` | 元数据识别、后台缩略图、缓存失效 |
 | `LibraryViewController` / `LibraryWorkspacePage` | 文献库桥接、页面状态与资源组装 |
 | `ReaderTabViewController` / `PDFReaderViews` | 阅读交互和原生 PDF 控件 |
+| `PDFViewportCoordinator` | 布局事务、延迟任务失效、各栏阅读锚点和文档对校准 |
+| `PDFViewportLayout` | 按实际栏宽计算缩放、处理旋转和裁切框、统一页面水平居中 |
+| `ReaderLayoutViews` | 根视图与两级分隔线的几何变化通知及尺寸约束 |
+| `ColumnToolbarViews` | 左右栏独立工具栏、阅读/批注/形状选项卡、调色盘与底部页码胶囊 |
 | `PDFScrollSynchronizer` | 连续页坐标、双栏同步、阅读位置恢复 |
 | `PDFAnnotationService` | 跨页选区转换与增量高亮更新 |
 | `PDFSearchController` | 可取消的 PDFKit 异步搜索 |
@@ -48,6 +52,10 @@
 - 同名附件放入独立目录；相关论文的双向元数据在单次操作失败时回滚。删除论文移至 Finder 废纸篓。
 - 阅读滚动在 400 毫秒内合并保存；切换标签页、关闭标签页及退出应用前立即提交。强制终止进程可能丢失最近尚未提交的阅读位置。
 - 每栏分别保存当前 PDF、阅读位置、缩放模式和倍率；阅读模式、同步开关、互换和用户分栏比例也随论文保存。旧元数据可继续读取。布局变化会暂时隔离同步通知，完成后恢复各栏位置；隐藏栏不会覆盖阅读进度。
+- 拖动分隔线、开关侧栏、缩放及空白点击保持各栏自己的阅读锚点；布局恢复不额外触发双栏对齐。页尾受尺寸限制时保留期望锚点，恢复空间后还原。同步由滚动、导航和开启同步发起。
+- 每次打开阅读器、显示隐藏栏或改变栏宽，PDF 都按该栏可用宽度重新适配并水平居中；拖动过程中实时更新。右侧栏打开时压缩整个 PDF 画布，保留两栏的比例，分隔线允许在 5%–95% 之间调整。
+- 两栏的手动缩放独立于滚动同步，始终保持页面水平居中。按钮、右键菜单和触控板只缩放操作的那一栏；快捷键只缩放当前活动栏。开启同步保留各栏自己的倍率和适配模式。后续拖动分隔线、开关侧栏或切换单双栏会重新适配宽度。
+- 对齐校准按两栏实际 PDF ID 成对保存；切换附加 PDF 后使用该文档对的偏移。同一阅读会话中，各栏切换过的 PDF 分别保留位置和缩放。
 - 新增功能应通过 `LibraryChange` 标记受影响论文和字段，避免触发所有阅读器的全量刷新。
 
 首次启动优先使用已选择的文献库，再查找 app 或工作目录旁已有的 `PaperLibrary`，最后使用文稿目录下的 `DualPDF_PaperLibrary`。代码不包含个人开发目录。
@@ -59,3 +67,7 @@
 阅读标签页在激活时加载 PDF。高亮按批注 ID 比较，仅更新修改或删除的对象。笔记与关联抽屉在打开后刷新；搜索输入延迟 200 毫秒启动，并取消之前的查询。
 
 测试覆盖文件失败回滚、同名附件、旧元数据兼容、阅读进度合并、跨页批注、异步搜索取消、资源释放、Markdown 代码块保护和元数据延迟保存。测试使用生成的 PDF 和临时文献库，不修改个人文献。
+
+`Tests/ReaderCoreTests.swift` 覆盖布局事务、快速连续操作、加载期间导航、后台标签隔离、页尾钳制和文档对校准；`Tests/PDFWidthLayoutTests.swift` 直接测量渲染页面的宽度和中心，覆盖实时拖拽、极窄栏、横版、旋转、裁切框和侧栏压缩。真实鼠标拖拽及空白点击回归位于 `Tests/BugAudit/main.swift`。当前布局行为与验证记录见 [PDF_WIDTH_LAYOUT.md](docs/PDF_WIDTH_LAYOUT.md)，前一轮事务重构记录见 [PDF_VIEWPORT_REFACTOR.md](docs/PDF_VIEWPORT_REFACTOR.md)。
+
+两栏独立缩放的后续修正和验证记录见 [INDEPENDENT_COLUMN_ZOOM.md](docs/INDEPENDENT_COLUMN_ZOOM.md)。栏内工具栏、页码胶囊与鼠标所在栏 ⌘+滚轮缩放的实现记录见 [READER_COLUMN_TOOLBARS.md](docs/READER_COLUMN_TOOLBARS.md)。

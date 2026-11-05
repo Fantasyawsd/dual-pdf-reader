@@ -12,6 +12,8 @@ final class MultiTabMainWindowController: NSWindowController {
     let libraryVC = LibraryViewController()
     private var openReaderTabs: [String: ReaderTabViewController] = [:]
     private var orderedTabIds: [String] = ["__LIBRARY__"]
+    /// Test seam for the session-markup discard alert. `true` = 关闭, `false` = 取消; `nil` = show NSAlert.
+    var testingDiscardSessionMarkupResponse: Bool? = nil
     private(set) var activeTabId: String = "__LIBRARY__"
     private var cachedTabViews: [String: ZoteroTabItemView] = [:]
 
@@ -21,6 +23,10 @@ final class MultiTabMainWindowController: NSWindowController {
 
     var activeReaderVC: ReaderTabViewController? {
         return openReaderTabs[activeTabId]
+    }
+
+    func isPaperTabOpen(_ paperId: String) -> Bool {
+        openReaderTabs[paperId] != nil
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -190,7 +196,7 @@ final class MultiTabMainWindowController: NSWindowController {
             return change?.resetsLibrary == true || LibraryStore.shared.paper(withId: id) == nil
         }
         for rid in removedIds {
-            closePaperTab(paperId: rid)
+            closePaperTab(paperId: rid, force: true)
         }
         rebuildTabBarUI()
     }
@@ -248,7 +254,27 @@ final class MultiTabMainWindowController: NSWindowController {
         }
     }
 
-    func closePaperTab(paperId: String) {
+    /// Open tabs whose session DualPDF_Markup edits would be lost if the app quit now.
+    func unpersistedSessionMarkupTabCount() -> Int {
+        openReaderTabs.values.filter { $0.hasUnpersistedColumnMarkup() }.count
+    }
+
+    func closePaperTab(paperId: String, force: Bool = false) {
+        guard let vc = openReaderTabs[paperId] else { return }
+        if !force && vc.hasUnpersistedColumnMarkup() {
+            let discard: Bool
+            if let forced = testingDiscardSessionMarkupResponse {
+                discard = forced
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "此 PDF 上的批注仅本次有效，关闭后将丢失。"
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "关闭")
+                alert.addButton(withTitle: "取消")
+                discard = (alert.runModal() == .alertFirstButtonReturn)
+            }
+            guard discard else { return }
+        }
         guard let vc = openReaderTabs.removeValue(forKey: paperId) else { return }
         vc.prepareForClose()
         if vc.isViewLoaded { vc.view.removeFromSuperview() }
@@ -266,15 +292,15 @@ final class MultiTabMainWindowController: NSWindowController {
     func closeOtherPaperTabs(keeping paperId: String) {
         let toClose = orderedTabPaperIds.filter { $0 != paperId }
         for pid in toClose {
-            cachedTabViews.removeValue(forKey: pid)
-            if let vc = openReaderTabs.removeValue(forKey: pid) {
-                vc.prepareForClose()
-                if vc.isViewLoaded { vc.view.removeFromSuperview() }
-            }
+            closePaperTab(paperId: pid)
         }
-        orderedTabIds.removeAll { $0 != "__LIBRARY__" && $0 != paperId }
-        switchToTab(id: paperId)
+        if openReaderTabs[paperId] != nil || paperId == "__LIBRARY__" {
+            switchToTab(id: paperId)
+        } else {
+            rebuildTabBarUI()
+        }
     }
+
 
     @objc func rebuildTabBarUI() {
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -446,9 +472,9 @@ final class MultiTabMainWindowController: NSWindowController {
     @objc func configureLLMTranslationShortcut() { LLMTranslationService.shared.presentSettingsModal(from: window) }
     @objc func readerSwapColumnsShortcut() { activeReaderVC?.swapColumnsAction() }
     @objc func readerResetAlignmentShortcut() { activeReaderVC?.resetSyncAlignmentAction() }
-    @objc func readerZoomInShortcut() { activeReaderVC?.zoomInBothAction() }
-    @objc func readerZoomOutShortcut() { activeReaderVC?.zoomOutBothAction() }
-    @objc func readerZoomFitShortcut() { activeReaderVC?.zoomFitBothAction() }
+    @objc func readerZoomInShortcut() { activeReaderVC?.zoomInActiveColumnAction() }
+    @objc func readerZoomOutShortcut() { activeReaderVC?.zoomOutActiveColumnAction() }
+    @objc func readerZoomFitShortcut() { activeReaderVC?.zoomFitActiveColumnAction() }
     @objc func readerToggleDrawerShortcut() { activeReaderVC?.toggleRightDrawerAction() }
 
     private func embedViewControllerView(_ subview: NSView) {

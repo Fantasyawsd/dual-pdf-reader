@@ -40,6 +40,24 @@ final class StandaloneReaderWindowController: NSWindowController, NSWindowDelega
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// Test seam for the close-window markup alert. `true` = 关闭, `false` = 取消; `nil` = show NSAlert.
+    var testingDiscardSessionMarkupResponse: Bool? = nil
+
+    var hasUnpersistedSessionMarkup: Bool { readerVC.hasUnpersistedColumnMarkup() }
+
+    /// Closing a standalone reader window drops its tab, so warn here (quit won't see it afterwards,
+    /// which also avoids a second prompt when this was the last window).
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard hasUnpersistedSessionMarkup else { return true }
+        if let forced = testingDiscardSessionMarkupResponse { return forced }
+        let alert = NSAlert()
+        alert.messageText = "此 PDF 上的批注仅本次有效，关闭后将丢失。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "关闭")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     func windowWillClose(_ notification: Notification) {
         readerVC.prepareForClose()
         StandaloneReaderWindowManager.shared.windowDidClose(self)
@@ -61,6 +79,10 @@ final class StandaloneReaderWindowManager {
         openWindows[paperId] = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    func unpersistedSessionMarkupWindowCount() -> Int {
+        openWindows.values.filter { $0.hasUnpersistedSessionMarkup }.count
     }
 
     func windowDidClose(_ controller: StandaloneReaderWindowController) {

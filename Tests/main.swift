@@ -3,6 +3,7 @@ import PDFKit
 import WebKit
 import JavaScriptCore
 
+print("ENV os=\(ProcessInfo.processInfo.operatingSystemVersionString) screens=\(NSScreen.screens.map { "\($0.frame)@\($0.backingScaleFactor)" })")
 var passed = 0
 var failed = 0
 func check(_ condition: @autoclosure () throws -> Bool, _ name: String) {
@@ -10,6 +11,12 @@ func check(_ condition: @autoclosure () throws -> Bool, _ name: String) {
         if try condition() { passed += 1; print("PASS: \(name)") }
         else { failed += 1; print("FAIL: \(name)") }
     } catch { failed += 1; print("FAIL: \(name): \(error)") }
+}
+func geometryDiagnostics(_ column: CleanPDFColumnView) -> String {
+    let scroll = column.internalScrollView()
+    return "col=\(column.frame) pdf=\(column.pdfView.frame) scale=\(column.pdfView.scaleFactor) auto=\(column.pdfView.autoScales) " +
+        "clip=\(scroll?.contentView.bounds ?? .zero) doc=\(scroll?.documentView?.frame ?? .zero) flipped=\(scroll?.documentView?.isFlipped ?? false) " +
+        "window=\(column.window != nil) backing=\(column.window?.backingScaleFactor ?? -1)"
 }
 func waitUntil(_ condition: () -> Bool, timeout: TimeInterval = 4) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
@@ -386,7 +393,7 @@ autoreleasepool {
           "Column rejects foreign PDF IDs outside the current paper collection")
 
     // 旧第四模式已删除；无效模式不能再打开笔记或替换 PDF。
-    let modeControl = descendants(reader.view).compactMap { $0 as? NSSegmentedControl }.first { $0.segmentCount == 3 && $0.label(forSegment: 2) == "对照" }
+    let modeControl = descendants(reader.view).compactMap { $0 as? NSSegmentedControl }.first { $0.segmentCount == 3 && $0.label(forSegment: 2) == "分屏" }
     reader.openNotesSidebar()
     reader.toggleRightDrawerAction()
     let pdfSources = [reader.leftCol.contentSource, reader.rightCol.contentSource]
@@ -705,15 +712,17 @@ testReader.applyColumnSplitRatio()
 check(!testReader.canCollapseColumn(testReader.leftCol), "Left column in splitView cannot collapse on drag")
 check(!testReader.canCollapseColumn(testReader.rightCol), "Right column in splitView cannot collapse on drag")
 
-// Clamping to minimum size (cannot drag paper to disappear)
+// Relative limits keep both panes visible while preserving proportional compression.
 testReader.dualSplitView.setPosition(10, ofDividerAt: 0)
 testReader.view.layoutSubtreeIfNeeded()
-check(testReader.leftCol.frame.width >= 199, "Dragging divider too far left clamps left column to minimum size")
+check(abs(testReader.leftCol.frame.width / (testReader.dualSplitView.bounds.width - testReader.dualSplitView.dividerThickness) - 0.05) < 0.002,
+      "Dragging divider too far left clamps at five percent of the PDF canvas")
 check(testReader.rightCol.frame.width >= 199, "Dragging divider too far left keeps right column visible")
 
 testReader.dualSplitView.setPosition(testReader.dualSplitView.bounds.width - 10, ofDividerAt: 0)
 testReader.view.layoutSubtreeIfNeeded()
-check(testReader.rightCol.frame.width >= 199, "Dragging divider too far right clamps right column to minimum size")
+check(abs(testReader.rightCol.frame.width / (testReader.dualSplitView.bounds.width - testReader.dualSplitView.dividerThickness) - 0.05) < 0.002,
+      "Dragging divider too far right clamps at five percent of the PDF canvas")
 check(testReader.leftCol.frame.width >= 199, "Dragging divider too far right keeps left column visible")
 
 testReader.setColumnSplitRatioForTesting(0.5)
@@ -763,10 +772,10 @@ check(abs(testReader.leftCol.frame.width - testReader.rightCol.frame.width) <= 4
 // Sync button appearance toggle (lit vs unlit)
 testReader.syncScrollBtn.state = .on
 testReader.updateSyncButtonStyle()
-check(testReader.syncScrollBtn.title.contains("同步") && testReader.syncScrollBtn.contentTintColor == .controlAccentColor, "Sync button lit in active state")
+check(testReader.syncScrollBtn.title.isEmpty && testReader.syncScrollBtn.image != nil && testReader.syncScrollBtn.contentTintColor == .controlAccentColor, "Sync button lit in active state without text")
 testReader.syncScrollBtn.state = .off
 testReader.updateSyncButtonStyle()
-check(testReader.syncScrollBtn.title.contains("独立") && testReader.syncScrollBtn.contentTintColor == .secondaryLabelColor, "Sync button unlit in inactive state")
+check(testReader.syncScrollBtn.title.isEmpty && testReader.syncScrollBtn.image != nil && testReader.syncScrollBtn.contentTintColor == .secondaryLabelColor, "Sync button unlit in inactive state without text")
 testReader.syncScrollBtn.state = .on
 testReader.updateSyncButtonStyle()
 
@@ -918,5 +927,9 @@ do {
     check(false, "P0-2 transient library tests threw \(error)")
 }
 
+try runReaderCoreTests(root: root)
+try runPDFWidthLayoutTests(root: root)
+try runReaderToolbarTests(root: root)
+try runSessionMarkupCloseAlertTests(root: root)
 print("\nRegression tests: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)

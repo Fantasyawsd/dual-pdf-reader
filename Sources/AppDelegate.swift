@@ -51,8 +51,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// Test seam for the quit-time session-markup alert. `true` = 退出, `false` = 取消; `nil` = show NSAlert.
+    var testingQuitDiscardSessionMarkupResponse: Bool? = nil
+    /// Test seam: extra main-window controllers to inspect (tests don't go through applicationDidFinishLaunching).
+    var testingMainWindowControllers: [MultiTabMainWindowController] = []
+    /// Test seam: replaces LibraryStore.flushReadingState() so tests can observe when it runs.
+    var testingFlushReadingState: (() -> Bool)? = nil
+
+    /// Number of open reader tabs (all main windows + standalone reader windows) whose
+    /// DualPDF_Markup edits are session-only and would be lost on quit.
+    func unpersistedSessionMarkupTabCount() -> Int {
+        var seen = Set<ObjectIdentifier>()
+        var controllers: [MultiTabMainWindowController] = []
+        let candidates = [mainWindowController].compactMap { $0 }
+            + NSApp.windows.compactMap { $0.windowController as? MultiTabMainWindowController }
+            + testingMainWindowControllers
+        for wc in candidates where seen.insert(ObjectIdentifier(wc)).inserted {
+            controllers.append(wc)
+        }
+        return controllers.reduce(0) { $0 + $1.unpersistedSessionMarkupTabCount() }
+            + StandaloneReaderWindowManager.shared.unpersistedSessionMarkupWindowCount()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        LibraryStore.shared.flushReadingState() ? .terminateNow : .terminateCancel
+        let count = unpersistedSessionMarkupTabCount()
+        if count > 0 {
+            let quit: Bool
+            if let forced = testingQuitDiscardSessionMarkupResponse {
+                quit = forced
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "\(count) 个 PDF 上的批注仅本次有效，退出后将丢失。"
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "退出")
+                alert.addButton(withTitle: "取消")
+                quit = (alert.runModal() == .alertFirstButtonReturn)
+            }
+            guard quit else { return .terminateCancel }
+        }
+        let flushed = testingFlushReadingState?() ?? LibraryStore.shared.flushReadingState()
+        return flushed ? .terminateNow : .terminateCancel
     }
 
     @objc func openRecentDocumentAction(_ sender: NSMenuItem) {
@@ -190,9 +228,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(resetAlignItem)
 
         viewMenu.addItem(NSMenuItem.separator())
-        viewMenu.addItem(withTitle: "放大页面", action: #selector(MultiTabMainWindowController.readerZoomInShortcut), keyEquivalent: "=")
-        viewMenu.addItem(withTitle: "缩小页面", action: #selector(MultiTabMainWindowController.readerZoomOutShortcut), keyEquivalent: "-")
-        viewMenu.addItem(withTitle: "自适应页面宽度", action: #selector(MultiTabMainWindowController.readerZoomFitShortcut), keyEquivalent: "0")
+        viewMenu.addItem(withTitle: "放大当前栏页面", action: #selector(MultiTabMainWindowController.readerZoomInShortcut), keyEquivalent: "=")
+        viewMenu.addItem(withTitle: "缩小当前栏页面", action: #selector(MultiTabMainWindowController.readerZoomOutShortcut), keyEquivalent: "-")
+        viewMenu.addItem(withTitle: "当前栏自适应宽度", action: #selector(MultiTabMainWindowController.readerZoomFitShortcut), keyEquivalent: "0")
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(withTitle: "展开/收起右侧目录与笔记抽屉", action: #selector(MultiTabMainWindowController.readerToggleDrawerShortcut), keyEquivalent: "i")
 

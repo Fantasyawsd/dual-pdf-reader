@@ -46,7 +46,11 @@ final class PDFAnnotationRenderer {
         else { state = State(document: document); states[colKey] = state }
         let models = Dictionary(selected.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for (id, old) in state.models where models[id] != old {
-            for rendered in state.rendered.removeValue(forKey: id) ?? [] { rendered.page?.removeAnnotation(rendered) }
+            for rendered in state.rendered.removeValue(forKey: id) ?? [] {
+                guard let page = rendered.page else { continue }
+                page.removeAnnotation(rendered)
+                column.pdfView.annotationsChanged(on: page)
+            }
         }
         for (id, model) in models where state.models[id] != model {
             var rendered: [PDFAnnotation] = []
@@ -74,10 +78,16 @@ final class PDFAnnotationRenderer {
                 // 并且具备 quadrilateralPoints 的 Highlight 会触发 PDFKit 原生正片叠底混色通道，黑色正文 100% 锐利高保真，绝不遮挡字迹！
                 var quadPoints: [NSValue] = []
                 for lineRect in allRects {
-                    let p1 = NSPoint(x: lineRect.minX, y: lineRect.maxY)
-                    let p2 = NSPoint(x: lineRect.maxX, y: lineRect.maxY)
-                    let p3 = NSPoint(x: lineRect.minX, y: lineRect.minY)
-                    let p4 = NSPoint(x: lineRect.maxX, y: lineRect.minY)
+                    // PDFKit resolves quadrilateralPoints relative to the
+                    // annotation bounds origin. Page-space points are ignored
+                    // and produce an invisible highlight.
+                    let local = NSRect(x: lineRect.minX - unionBounds.minX,
+                                       y: lineRect.minY - unionBounds.minY,
+                                       width: lineRect.width, height: lineRect.height)
+                    let p1 = NSPoint(x: local.minX, y: local.maxY)
+                    let p2 = NSPoint(x: local.maxX, y: local.maxY)
+                    let p3 = NSPoint(x: local.minX, y: local.minY)
+                    let p4 = NSPoint(x: local.maxX, y: local.minY)
 
                     quadPoints.append(NSValue(point: p1))
                     quadPoints.append(NSValue(point: p2))
@@ -97,6 +107,7 @@ final class PDFAnnotationRenderer {
                 highlight.contents = tooltip
 
                 page.addAnnotation(highlight)
+                column.pdfView.annotationsChanged(on: page)
                 rendered.append(highlight)
             }
             state.rendered[id] = rendered

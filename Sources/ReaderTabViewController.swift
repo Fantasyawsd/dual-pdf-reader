@@ -22,102 +22,6 @@ final class FlippedStackView: NSStackView {
     override var isFlipped: Bool { true }
 }
 
-final class DualPDFSplitView: ReaderGeometrySplitView {
-    var onDividerDoubleClicked: (() -> Void)?
-    var splitRatioProvider: (() -> CGFloat)?
-    var onSplitRatioChanged: ((CGFloat) -> Void)?
-
-    override var dividerThickness: CGFloat {
-        let visibleCount = subviews.filter { !$0.isHidden }.count
-        return visibleCount > 1 ? 1.0 : 0.0
-    }
-
-    override var dividerColor: NSColor {
-        let visibleCount = subviews.filter { !$0.isHidden }.count
-        return visibleCount > 1 ? super.dividerColor : .clear
-    }
-
-    override func drawDivider(in rect: NSRect) {
-        let visibleCount = subviews.filter { !$0.isHidden }.count
-        guard visibleCount > 1 else { return }
-        super.drawDivider(in: rect)
-    }
-
-    override func setPosition(_ position: CGFloat, ofDividerAt dividerIndex: Int) {
-        guard dividerIndex == 0 else {
-            super.setPosition(position, ofDividerAt: dividerIndex)
-            return
-        }
-        let total = max(1, bounds.width - dividerThickness)
-        let effectiveMinW = min(200, max(50, total / 2))
-        let minRatio = effectiveMinW / total
-        let maxRatio = (total - effectiveMinW) / total
-        let ratio = max(minRatio, min(maxRatio, position / total))
-        onSplitRatioChanged?(ratio)
-        adjustSubviews()
-    }
-
-    override func adjustSubviews() {
-        onGeometryWillChange?()
-        defer { onGeometryDidChange?() }
-        guard bounds.width > 0, bounds.height > 0 else {
-            super.adjustSubviews()
-            return
-        }
-        let visibleSubviews = subviews.filter { !$0.isHidden }
-        if visibleSubviews.count == 1 {
-            if subviews.count >= 2 {
-                if subviews[0].isHidden {
-                    subviews[0].frame = NSRect(x: 0, y: 0, width: 0, height: bounds.height)
-                    subviews[1].frame = bounds
-                } else {
-                    subviews[0].frame = bounds
-                    subviews[1].frame = NSRect(x: bounds.width, y: 0, width: 0, height: bounds.height)
-                }
-            } else if let singleView = visibleSubviews.first {
-                singleView.frame = bounds
-            }
-            return
-        }
-        if subviews.count == 2 && !subviews[0].isHidden && !subviews[1].isHidden {
-            let ratio = splitRatioProvider?() ?? 0.5
-            let total = max(0, bounds.width - dividerThickness)
-            let effectiveMinW = min(200, max(50, total / 2))
-            let w0 = max(effectiveMinW, min(total - effectiveMinW, round(total * ratio)))
-            let w1 = max(0, total - w0)
-            subviews[0].frame = NSRect(x: 0, y: 0, width: w0, height: bounds.height)
-            subviews[1].frame = NSRect(x: w0 + dividerThickness, y: 0, width: w1, height: bounds.height)
-            return
-        }
-        super.adjustSubviews()
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let visibleCount = subviews.filter { !$0.isHidden }.count
-        guard visibleCount > 1 else {
-            super.mouseDown(with: event)
-            return
-        }
-        if event.clickCount == 2 {
-            let point = convert(event.locationInWindow, from: nil)
-            if subviews.count >= 2 {
-                let divX = subviews[0].frame.maxX
-                let dividerHitZone = NSRect(
-                    x: divX - 8,
-                    y: 0,
-                    width: max(dividerThickness, 6) + 16,
-                    height: bounds.height
-                )
-                if dividerHitZone.contains(point) {
-                    onDividerDoubleClicked?()
-                    return
-                }
-            }
-        }
-        super.mouseDown(with: event)
-    }
-}
-
 final class ModernCardView: NSView {
     override var isFlipped: Bool { true }
     override var wantsUpdateLayer: Bool { true }
@@ -368,9 +272,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let topBar = NSVisualEffectView()
     private let outlineToggleBtn = ModernHoverButton()
     var leftSidebarToggleBtn: NSButton { outlineToggleBtn }
-    private let modeSeg = NSSegmentedControl(labels: ["原文", "译文", "对照"], trackingMode: .selectOne, target: nil, action: nil)
+    private let modeSeg = NSSegmentedControl(labels: ["原文", "译文", "分屏"], trackingMode: .selectOne, target: nil, action: nil)
     private let swapBtn = ModernHoverButton()
     var isSwapButtonHidden: Bool { swapBtn.isHidden }
+    var isSyncButtonHidden: Bool { syncScrollBtn.isHidden }
+    var syncButtonTitle: String { syncScrollBtn.title }
+    var modeSegmentLabels: [String] { (0..<modeSeg.segmentCount).map { modeSeg.label(forSegment: $0) ?? "" } }
     var dualSplitView: DualPDFSplitView { splitView }
     func canCollapseColumn(_ col: CleanPDFColumnView) -> Bool {
         splitView(splitView, canCollapseSubview: col)
@@ -407,12 +314,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let searchNavSeg = NSSegmentedControl()
     private let searchCloseBtn = ModernHoverButton()
     private let searchContainer = NSStackView()
+    private weak var searchTargetColumn: CleanPDFColumnView?
+    private var commandScrollMonitor: Any?
+    private var undoKeyMonitor: Any?
     private let drawerToggleBtn = ModernHoverButton()
     private let saveToLibraryBtn = ModernHoverButton()
     private let transientStatusLabel = NSTextField(labelWithString: "未入库")
 
     // 左侧浮动覆盖式边栏（大纲目录与页面预览，无碰撞直接覆盖）
     private let leftOverlaySidebar = NSVisualEffectView()
+    private var outlineSidebarLeadingConstraint: NSLayoutConstraint?
+    private var outlineSidebarTrailingConstraint: NSLayoutConstraint?
     private let leftOverlaySeg = NSSegmentedControl(labels: ["大纲", "缩略图"], trackingMode: .selectOne, target: nil, action: nil)
     private let leftOverlayCloseBtn = ModernHoverButton()
     private let thumbnailsContainer = NSView()
@@ -480,6 +392,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     private let outlineContainer = NSView()
     private let outlineTableView = NSTableView()
+    private weak var outlineActiveColumn: CleanPDFColumnView?
+    private var navigationSourceColumn: CleanPDFColumnView {
+        if isLeftOverlayOpen, let active = outlineActiveColumn, !active.isHidden { return active }
+        return primaryActiveColumn()
+    }
     private var outlineItems: [(title: String, pageIndex: Int, depth: Int)] = []
     private weak var outlineSourceColumn: CleanPDFColumnView?
     private weak var outlineSourceDocument: PDFDocument?
@@ -493,14 +410,33 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // 同步滚动、对齐微调偏移与缩放状态
     private var isScrollSyncEnabled = true
-    private var isSyncingScroll = false
-    private var isSyncingZoom = false
-    private var isLoadingDocuments = false
     private var isClosed = false
-    private var isChangingLayout = false
-    private var isRestoringLayout = false
-    private var layoutRevision = 0
-    private var viewportStates: [String: PDFColumnReadingState] = [:]
+    private lazy var viewportCoordinator: PDFViewportCoordinator = {
+        let coordinator = PDFViewportCoordinator(columns: [leftCol, rightCol])
+        coordinator.layoutViews = { [weak self] in
+            guard let self = self else { return }
+            self.view.layoutSubtreeIfNeeded()
+            self.splitView.adjustSubviews()
+            self.view.layoutSubtreeIfNeeded()
+        }
+        coordinator.isTrackingGeometry = { [weak self] in
+            guard let self = self else { return false }
+            return self.splitView.isTrackingDivider || self.masterSplitView.isTrackingDivider
+        }
+        coordinator.didFinishLayout = { [weak self] in
+            guard let self = self, !self.isClosed else { return }
+            self.persistReaderState(from: self.primaryActiveColumn())
+            self.updatePageIndicatorAndSaveProgress()
+        }
+        return coordinator
+    }()
+    private var isLoadingDocuments: Bool { viewportCoordinator.phase == .loading }
+    private var isChangingLayout: Bool { viewportCoordinator.isChangingLayout }
+    private var isRestoringLayout: Bool { viewportCoordinator.phase == .restoring }
+    private var viewportStates: [String: PDFColumnReadingState] {
+        get { viewportCoordinator.states }
+        set { viewportCoordinator.states = newValue }
+    }
     private var loadedPDFFiles: [String: Date] = [:]
     private var searchGeneration = UUID()
     private let toolbarLeftStack = NSStackView()
@@ -510,7 +446,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private var toolbarCenterY: NSLayoutConstraint!
     private var toolbarSeparation: [NSLayoutConstraint] = []
     private var toolbarUsesTwoRows = false
-    private var documentLoadID = UUID()
     private var pendingLibraryFields: LibraryChange.Fields = []
     private let annotationRenderer = PDFAnnotationRenderer()
     private let searchController = PDFSearchController()
@@ -561,11 +496,21 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     deinit {
         searchTask?.cancel()
         searchController.cancel()
+        removeCommandScrollMonitor()
+        removeUndoKeyMonitor()
         NotificationCenter.default.removeObserver(self)
+    }
+
+    /// True when either column still has session DualPDF_Markup edits (undo stack non-empty).
+    /// These live only in the in-memory PDFKit document and are lost when the tab closes.
+    func hasUnpersistedColumnMarkup() -> Bool {
+        [leftCol, rightCol].contains { $0.pdfView.hasUnpersistedSessionMarkup }
     }
 
     func prepareForClose() {
         guard !isClosed else { return }
+        removeCommandScrollMonitor()
+        removeUndoKeyMonitor()
         if isViewLoaded {
             finishPendingLayout()
             persistReaderState(from: primaryActiveColumn())
@@ -573,6 +518,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         sidebarNoteView.cleanupForClose()
         LibraryStore.shared.flushReadingState()
         isClosed = true
+        viewportCoordinator.close()
         activeTranslationTask?.cancel()
         activeTranslationTask = nil
         searchTask?.cancel()
@@ -580,18 +526,28 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         NotificationCenter.default.removeObserver(self)
         notesWebView?.configuration.userContentController.removeScriptMessageHandler(forName: "noteAction")
         selectionPopover.close()
+        leftCol.pdfView.dismissTextMarkupPopover()
+        rightCol.pdfView.dismissTextMarkupPopover()
         if let sheet = activeSheetWindow { sheet.sheetParent?.endSheet(sheet) }
         annotationRenderer.reset()
         currentSearchMatches.removeAll()
+        pdfThumbnailView.pdfView = nil
         leftCol.pdfView.document = nil
         rightCol.pdfView.document = nil
+        for column in [leftCol, rightCol] {
+            splitView.removeArrangedSubview(column)
+            column.removeFromSuperview()
+        }
     }
 
     func didResignActiveTab() {
+        guard isViewLoaded, !isClosed else { return }
         finishPendingLayout()
         persistReaderState(from: primaryActiveColumn())
         sidebarNoteView.flushPendingSave()
         LibraryStore.shared.flushReadingState()
+        viewportCoordinator.isActive = false
+        invalidateSearch()
     }
 
     override func loadView() {
@@ -599,7 +555,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         root.translatesAutoresizingMaskIntoConstraints = false
         self.view = root
 
-        pageRatioOffset = currentPaper?.syncOffsetDelta ?? 0.0
+        let offset = currentPaper?.syncOffsetDelta ?? 0
+        pageRatioOffset = offset.isFinite ? offset : 0
         if let state = currentPaper?.readerState {
             viewportStates = [PDFSide.original.rawValue: state.leftColumn, PDFSide.translated.rawValue: state.rightColumn]
             leftCol.contentSource = .pdf(id: state.leftColumn.pdfDocumentId)
@@ -611,10 +568,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             let column = saved.side == .original ? leftCol : rightCol
             column.contentSource = .pdf(id: pdfID)
         }
+        viewportCoordinator.restoreAlignments(currentPaper?.readerState?.alignments ?? [], legacyOffset: pageRatioOffset)
+        pageRatioOffset = viewportCoordinator.alignmentOffset
 
         setupMainCanvasAndDrawer(in: root)
         setupFloatingBackBanners()
         setupSyncAndCallbacks()
+        installCommandScrollMonitor()
+        installUndoKeyMonitor()
         root.onGeometryWillChange = { [weak self] in self?.beginLayoutChange() }
         root.onGeometryDidChange = { [weak self] in self?.scheduleLayoutCompletion() }
         root.onLayout = { [weak self] in self?.updateToolbarLayout() }
@@ -655,7 +616,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         modeSeg.selectedSegment = (0...2).contains(savedMode) ? savedMode : 2
         modeSeg.controlSize = .regular
         modeSeg.segmentDistribution = .fillProportionally
-        modeSeg.toolTip = "切换阅读模式：仅原文 / 仅译文 / 双栏对照 (默认)"
+        modeSeg.toolTip = "切换阅读模式：原文 / 译文 / 分屏"
         modeSeg.target = self
         modeSeg.action = #selector(modeChangedAction)
         modeSeg.translatesAutoresizingMaskIntoConstraints = false
@@ -672,12 +633,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         syncScrollBtn.controlSize = .small
         syncScrollBtn.setButtonType(.pushOnPushOff)
         syncScrollBtn.state = isScrollSyncEnabled ? .on : .off
-        syncScrollBtn.imagePosition = .imageLeading
+        syncScrollBtn.imagePosition = .imageOnly
+        syncScrollBtn.title = ""
         syncScrollBtn.target = self
         syncScrollBtn.action = #selector(toggleSyncScrollAction)
         syncScrollBtn.translatesAutoresizingMaskIntoConstraints = false
-        syncScrollBtn.heightAnchor.constraint(equalToConstant: 26).isActive = true
-        syncScrollBtn.widthAnchor.constraint(greaterThanOrEqualToConstant: 58).isActive = true
+        syncScrollBtn.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        syncScrollBtn.widthAnchor.constraint(equalToConstant: 28).isActive = true
         updateSyncButtonStyle()
 
         configureToolbarButton(resetAlignBtn)
@@ -855,13 +817,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         // --- 3 个自平衡分区（左对齐组、绝对中心组、右对齐组） ---
         let leftBarStack = toolbarLeftStack
         [
-            outlineToggleBtn,
-            makeToolbarSeparator(),
             modeSeg,
             swapBtn,
             dualSep,
-            syncScrollBtn,
-            resetAlignBtn
+            syncScrollBtn
         ].forEach { leftBarStack.addArrangedSubview($0) }
         leftBarStack.orientation = .horizontal
         leftBarStack.spacing = 6
@@ -869,15 +828,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         leftBarStack.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(leftBarStack)
 
-        let colSep = makeToolbarSeparator()
-        self.dualColumnControlsSep = colSep
-
+        // 阅读器顶栏只保留模式切换与「分屏」专属的互换、同步按钮。
+        // 单栏页码与缩放改由每栏底部页码胶囊、专属工具栏和 ⌘+滚轮承担。
         let centerBarStack = toolbarCenterStack
-        [
-            leftControlsContainer,
-            colSep,
-            rightControlsContainer
-        ].forEach { centerBarStack.addArrangedSubview($0) }
         centerBarStack.orientation = .horizontal
         centerBarStack.spacing = 8
         centerBarStack.alignment = .centerY
@@ -901,6 +854,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         transientStatusLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         let rightBarStack = toolbarRightStack
+        // P0-2: 保留「未入库」与「存入文献库」；搜索默认收起；右侧边栏开关始终在最右侧。
         [
             transientStatusLabel,
             saveToLibraryBtn,
@@ -911,6 +865,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         rightBarStack.orientation = .horizontal
         rightBarStack.spacing = 6
         rightBarStack.alignment = .centerY
+        rightBarStack.detachesHiddenViews = true
         rightBarStack.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(rightBarStack)
 
@@ -1135,9 +1090,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
         container.addSubview(leftOverlaySidebar)
 
+        let outlineLeading = leftOverlaySidebar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8)
+        let outlineTrailing = leftOverlaySidebar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8)
+        outlineLeading.isActive = true
+        outlineSidebarLeadingConstraint = outlineLeading
+        outlineSidebarTrailingConstraint = outlineTrailing
+
         NSLayoutConstraint.activate([
             leftOverlaySidebar.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            leftOverlaySidebar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
             leftOverlaySidebar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
             leftOverlaySidebar.widthAnchor.constraint(equalToConstant: 280),
 
@@ -1179,6 +1139,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     @objc private func toggleSearchFieldAction() {
         if searchContainer.isHidden {
+            searchTargetColumn = nil
             openSearchAction()
         } else {
             closeSearchAction()
@@ -1189,6 +1150,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         searchContainer.isHidden = false
         searchToggleBtn.isHidden = true
         searchToggleBtn.state = .on
+        if let target = searchTargetColumn {
+            searchField.placeholderString = target === leftCol ? "在左栏中查找…" : "在右栏中查找…"
+        } else {
+            searchField.placeholderString = "页内查找 (⌘F)…"
+        }
         updateToolbarLayout()
         view.window?.makeFirstResponder(searchField)
     }
@@ -1202,6 +1168,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         leftCol.pdfView.clearSelection()
         rightCol.pdfView.clearSelection()
         searchField.stringValue = ""
+        searchField.placeholderString = "页内查找 (⌘F)…"
+        searchTargetColumn = nil
         searchNavSeg.isHidden = true
         searchMatchLabel.isHidden = true
         searchMatchLabel.stringValue = ""
@@ -3063,12 +3031,38 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     @objc func toggleLeftSidebarAction() {
+        toggleOutlineSidebar(for: primaryActiveColumn())
+    }
+
+    func toggleOutlineSidebar(for column: CleanPDFColumnView) {
         isLeftOverlayOpen.toggle()
+        if isLeftOverlayOpen {
+            outlineActiveColumn = column
+            positionOutlineSidebar(for: column)
+        } else {
+            outlineActiveColumn = nil
+        }
         leftOverlaySidebar.isHidden = !isLeftOverlayOpen
         outlineToggleBtn.state = isLeftOverlayOpen ? .on : .off
+        leftCol.columnToolbar.setOutlineActive(isLeftOverlayOpen)
+        rightCol.columnToolbar.setOutlineActive(isLeftOverlayOpen)
         if isLeftOverlayOpen {
-            pdfThumbnailView.pdfView = primaryActiveColumn().pdfView
+            pdfThumbnailView.pdfView = column.pdfView
         }
+    }
+
+    private func positionOutlineSidebar(for column: CleanPDFColumnView) {
+        let isVisualRight: Bool
+        if modeSeg.selectedSegment == 0 {
+            isVisualRight = false
+        } else if modeSeg.selectedSegment == 1 {
+            isVisualRight = true
+        } else {
+            isVisualRight = column === (isSwapped ? leftCol : rightCol)
+        }
+        outlineSidebarLeadingConstraint?.isActive = !isVisualRight
+        outlineSidebarTrailingConstraint?.isActive = isVisualRight
+        leftOverlaySidebar.layer?.shadowOffset = CGSize(width: isVisualRight ? -4 : 4, height: -2)
     }
 
     @objc private func leftOverlaySegChanged() {
@@ -3076,7 +3070,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         outlineContainer.isHidden = !isTOC
         thumbnailsContainer.isHidden = isTOC
         if !isTOC {
-            pdfThumbnailView.pdfView = primaryActiveColumn().pdfView
+            pdfThumbnailView.pdfView = navigationSourceColumn.pdfView
         }
     }
 
@@ -3108,91 +3102,33 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     private func cacheViewport(_ column: CleanPDFColumnView) {
-        guard !column.isHidden, column.pdfView.bounds.width > 0,
-              column.pdfView.document != nil,
-              let position = computeContinuousPagePosition(in: column), position.isFinite else { return }
-        let scroll = column.internalScrollView()
-        let maximumX = max(0, (scroll?.documentView?.frame.width ?? 0) - (scroll?.contentView.bounds.width ?? 0))
-        let horizontal = maximumX > 0 ? Double(min(1, max(0, (scroll?.contentView.bounds.minX ?? 0) / maximumX))) : 0
-        viewportStates[column.side.rawValue] = PDFColumnReadingState(
-            pdfDocumentId: column.activePDFDocumentId, continuousPage: position,
-            autoScales: column.pdfView.autoScales, scaleFactor: Double(column.pdfView.scaleFactor),
-            horizontalScrollFraction: horizontal)
+        viewportCoordinator.capture(column)
     }
 
-    private func captureVisibleViewports() {
-        for column in [leftCol, rightCol] { cacheViewport(column) }
-    }
+    private func captureVisibleViewports() { viewportCoordinator.captureVisible() }
 
     private func beginLayoutChange() {
-        guard isViewLoaded, !isClosed, !isLoadingDocuments, !isRestoringLayout, !isChangingLayout else { return }
-        captureVisibleViewports()
-        isChangingLayout = true
+        guard isViewLoaded, !isClosed else { return }
+        viewportCoordinator.beginLayout()
     }
 
-    private func restoreViewports() {
-        guard !isRestoringLayout else { return }
-        isRestoringLayout = true
-        defer { isRestoringLayout = false }
-        view.layoutSubtreeIfNeeded()
-        splitView.adjustSubviews()
-        view.layoutSubtreeIfNeeded()
-        for column in [leftCol, rightCol] where !column.isHidden && column.pdfView.bounds.width > 0 {
-            guard let state = viewportStates[column.side.rawValue], state.pdfDocumentId == column.activePDFDocumentId,
-                  column.pdfView.document != nil else { continue }
-            column.pdfView.autoScales = state.autoScales
-            if !state.autoScales, state.scaleFactor.isFinite {
-                column.pdfView.scaleFactor = CGFloat(max(0.25, min(5, state.scaleFactor)))
-            }
-            column.pdfView.layoutDocumentView()
-            let scroll = column.internalScrollView()
-            let maximumX = max(0, (scroll?.documentView?.frame.width ?? 0) - (scroll?.contentView.bounds.width ?? 0))
-            let horizontal = state.horizontalScrollFraction.flatMap { $0.isFinite ? CGFloat(min(1, max(0, $0))) * maximumX : nil }
-            PDFScrollSynchronizer.scroll(to: state.continuousPage, in: column, horizontalOffset: horizontal)
-        }
-        if isScrollSyncEnabled, !leftCol.isHidden, !rightCol.isHidden {
-            let source = primaryActiveColumn()
-            PDFScrollSynchronizer.synchronize(from: source, to: source === leftCol ? rightCol : leftCol,
-                offset: source === leftCol ? pageRatioOffset : -pageRatioOffset)
-        }
-    }
+    private func scheduleLayoutCompletion() { viewportCoordinator.scheduleCompletion() }
 
-    private func scheduleLayoutCompletion() {
-        guard isChangingLayout, !isRestoringLayout, !isLoadingDocuments, !isClosed,
-              !splitView.isTrackingDivider, !masterSplitView.isTrackingDivider else { return }
-        layoutRevision += 1
-        let revision = layoutRevision
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, !self.isClosed, self.isChangingLayout, self.layoutRevision == revision else { return }
-            self.restoreViewports()
-            // PDFKit can post a second batch of bounds notifications after Auto Layout.
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self, !self.isClosed, self.layoutRevision == revision else { return }
-                self.finishPendingLayout()
-            }
-        }
-    }
-
-    private func finishPendingLayout() {
-        guard isChangingLayout, !isLoadingDocuments, !isRestoringLayout else { return }
-        layoutRevision += 1
-        restoreViewports()
-        isChangingLayout = false
-        captureVisibleViewports()
-        persistReaderState(from: primaryActiveColumn())
-        updatePageIndicatorAndSaveProgress()
-    }
+    private func finishPendingLayout() { viewportCoordinator.finishLayout() }
 
     private func persistReaderState(from column: CleanPDFColumnView, markReading: Bool = false) {
         guard isViewLoaded, !isLoadingDocuments, !isChangingLayout, !isRestoringLayout, !isClosed,
-              !view.isHidden, !column.isHidden else { return }
+              viewportCoordinator.isActive, !view.isHiddenOrHasHiddenAncestor, !column.isHidden else { return }
         captureVisibleViewports()
         let left = viewportStates[leftCol.side.rawValue] ?? PDFColumnReadingState(pdfDocumentId: leftCol.activePDFDocumentId, continuousPage: 0)
         let right = viewportStates[rightCol.side.rawValue] ?? PDFColumnReadingState(pdfDocumentId: rightCol.activePDFDocumentId, continuousPage: 0)
+        viewportCoordinator.setAlignment(pageRatioOffset)
         let state = ReaderState(leftColumn: left, rightColumn: right, syncEnabled: isScrollSyncEnabled,
-            displayMode: modeSeg.selectedSegment, swapped: isSwapped, splitRatio: Double(columnSplitRatio))
+            displayMode: modeSeg.selectedSegment, swapped: isSwapped, splitRatio: Double(columnSplitRatio),
+            alignments: viewportCoordinator.savedAlignments)
         LibraryStore.shared.updateReadingState(for: paperId) { paper in
             paper.readerState = state
+            paper.syncOffsetDelta = pageRatioOffset
             if column.pdfView.document != nil, let position = viewportStates[column.side.rawValue] {
                 let count = column.pdfView.document?.pageCount ?? 1
                 let page = Int(floor(min(Double(max(0, count - 1)), max(0, position.continuousPage))))
@@ -3210,7 +3146,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     private func updateNavigationSource() {
-        let column = primaryActiveColumn()
+        let column = navigationSourceColumn
         pdfThumbnailView.pdfView = column.pdfView
         if outlineSourceColumn !== column || outlineSourceDocument !== column.pdfView.document {
             rebuildOutlineData()
@@ -3238,6 +3174,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     func pushJumpRecord(from col: CleanPDFColumnView, label: String = "返回") {
+        finishPendingLayout()
         guard col.contentSource.isPDF,
               let sv = col.internalScrollView(),
               let doc = col.pdfView.document else { return }
@@ -3266,6 +3203,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     func popBackJumpAction(for col: CleanPDFColumnView) {
+        finishPendingLayout()
         let isLeft = (col === leftCol)
         guard let record = (isLeft ? leftJumpRecord : rightJumpRecord) else {
             col.backJumpBanner.isHidden = true
@@ -3277,6 +3215,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         } else {
             rightJumpRecord = nil
         }
+        if col.isHidden { setDisplayMode(2) }
 
         if col.contentSource != .pdf(id: record.pdfDocumentId) {
             setColumnSource(col, source: .pdf(id: record.pdfDocumentId))
@@ -3284,11 +3223,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
 
         if let sv = col.internalScrollView() {
-            sv.contentView.scroll(to: NSPoint(x: sv.contentView.bounds.origin.x, y: record.scrollOriginY))
-            sv.reflectScrolledClipView(sv.contentView)
-            if isScrollSyncEnabled {
-                let opposite = (col === leftCol) ? rightCol : leftCol
-                syncScroll(from: col, to: opposite)
+            navigate(in: col) {
+                sv.contentView.scroll(to: NSPoint(x: sv.contentView.bounds.origin.x, y: record.scrollOriginY))
+                sv.reflectScrolledClipView(sv.contentView)
             }
         }
 
@@ -3325,6 +3262,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // MARK: - 4. Sync Engine + Option-Key Offset Calibration + Callbacks
     private func setupSyncAndCallbacks() {
+        // PDFKit can replace its internal clip view when a document is installed.
+        // Resolve the current clip view at delivery instead of observing an old one.
+        NotificationCenter.default.addObserver(self, selector: #selector(clipViewBoundsChanged(_:)),
+            name: NSView.boundsDidChangeNotification, object: nil)
         for col in [leftCol, rightCol] {
             col.pdfView.onInteraction = { [weak self, weak col] in
                 guard let self = self, let col = col, !col.isHidden else { return }
@@ -3332,15 +3273,41 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 self.lastReadingColumn = col
                 self.updateNavigationSource()
             }
-            if let sv = col.internalScrollView() {
-                sv.contentView.postsBoundsChangedNotifications = true
-                NotificationCenter.default.addObserver(
-                    self,
-                    selector: #selector(clipViewBoundsChanged(_:)),
-                    name: NSView.boundsDidChangeNotification,
-                    object: sv.contentView
-                )
+            col.pdfView.onMagnificationWillChange = { [weak self] in self?.beginLayoutChange() }
+            col.pdfView.onMagnificationDidChange = { [weak self, weak col] in
+                guard let self = self, let col = col else { return }
+                self.adoptZoom(from: col)
+                self.finishPendingLayout()
             }
+            col.pdfView.onPageStep = { [weak self, weak col] delta in
+                guard let self = self, let col = col else { return }
+                self.stepPage(in: col, delta: delta)
+            }
+            col.pdfView.onZoomCommand = { [weak self, weak col] automatic, scale in
+                guard let self = self, let col = col else { return }
+                self.setZoom(col, autoScales: automatic, scaleFactor: scale)
+            }
+            col.pdfView.onCommandScrollZoom = { [weak self, weak col] scale in
+                guard let self = self, let col = col else { return }
+                self.applyCommandScrollZoom(in: col, to: scale)
+            }
+            col.onPageCapsuleStep = { [weak self, weak col] delta in
+                guard let self = self, let col = col else { return }
+                self.stepPage(in: col, delta: delta)
+                col.revealPageCapsule()
+            }
+            col.onPageCapsuleCommit = { [weak self, weak col] page in
+                guard let self = self, let col = col else { return }
+                self.goToColumnPageIndex(col, pageIndex: page - 1, recordHistory: true)
+                col.revealPageCapsule()
+            }
+            col.onToolbarLayoutChanged = { [weak self] in
+                guard let self = self, !self.isClosed else { return }
+                self.beginLayoutChange()
+                self.view.layoutSubtreeIfNeeded()
+                self.scheduleLayoutCompletion()
+            }
+            self.configureColumnToolbar(for: col)
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(pdfScaleChanged(_:)),
@@ -3453,7 +3420,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
               let rightPos = computeContinuousPagePosition(in: rightCol) else { return }
         pageRatioOffset = rightPos - leftPos
         resetAlignBtn.isHidden = abs(pageRatioOffset) < 0.005
-        LibraryStore.shared.updateReadingState(for: paperId) { $0.syncOffsetDelta = pageRatioOffset }
+        viewportCoordinator.setAlignment(pageRatioOffset)
+        persistReaderState(from: primaryActiveColumn())
     }
 
     private func handleReferenceJump(
@@ -3463,77 +3431,78 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         inOppositePaneOnly: Bool
     ) -> Bool {
         finishPendingLayout()
-        guard let srcDoc = sourceCol.pdfView.document else { return false }
+        guard let srcDoc = sourceCol.pdfView.document, destPage.document === srcDoc else { return false }
         let targetPageIndex = srcDoc.index(for: destPage)
 
         if inOppositePaneOnly {
             let oppositeCol = (sourceCol === leftCol) ? rightCol : leftCol
-            pushJumpRecord(from: oppositeCol, label: "参考文献跳转前")
             if let oppDoc = oppositeCol.pdfView.document,
                targetPageIndex < oppDoc.pageCount,
                let oppPage = oppDoc.page(at: targetPageIndex) {
-                isSyncingScroll = true
-                oppositeCol.pdfView.go(to: oppPage)
-                isSyncingScroll = false
+                if oppositeCol.isHidden { setDisplayMode(2) }
+                pushJumpRecord(from: oppositeCol, label: "参考文献跳转前")
+                navigate(in: oppositeCol, synchronize: false, activate: false) { oppositeCol.pdfView.go(to: oppPage) }
+                return true
             }
-            return true
+            return false
         } else {
             pushJumpRecord(from: sourceCol, label: "正文原位")
-            return false
+            navigate(in: sourceCol) { sourceCol.pdfView.go(to: PDFDestination(page: destPage, at: point)) }
+            return true
         }
     }
 
     @objc private func clipViewBoundsChanged(_ note: Notification) {
-        guard !isLoadingDocuments, !isChangingLayout, !isRestoringLayout, !isSyncingScroll, !isSyncingZoom, !isClosed,
-              let clipView = note.object as? NSClipView else { return }
-        if !leftCol.isHidden, clipView === leftCol.internalScrollView()?.contentView {
-            scheduleReadingPositionSave(from: leftCol)
-            syncScroll(from: leftCol, to: rightCol)
-        } else if !rightCol.isHidden, clipView === rightCol.internalScrollView()?.contentView {
-            scheduleReadingPositionSave(from: rightCol)
-            syncScroll(from: rightCol, to: leftCol)
-        }
+        guard !isClosed, !view.isHiddenOrHasHiddenAncestor,
+              let clipView = note.object as? NSClipView,
+              let source = [leftCol, rightCol].first(where: { $0.internalScrollView()?.contentView === clipView }),
+              viewportCoordinator.receivedScroll(in: source) else { return }
+        lastReadingColumn = source
+        updatePageIndicatorAndSaveProgress()
+        source.revealPageCapsule()
+        syncScroll(from: source, to: source === leftCol ? rightCol : leftCol)
+        scheduleReadingPositionSave(from: source)
     }
 
     func syncScroll(from source: CleanPDFColumnView, to target: CleanPDFColumnView) {
-        guard !isLoadingDocuments, !isChangingLayout, !isSyncingScroll, !isClosed,
+        guard viewportCoordinator.acceptsEvents, !isClosed, !view.isHiddenOrHasHiddenAncestor,
               !source.isHidden, !target.isHidden, source.pdfView.bounds.width > 0, target.pdfView.bounds.width > 0 else { return }
         if NSEvent.modifierFlags.contains(.option) {
             recordOptionScrollCalibrationOffset()
             return
         }
         guard isScrollSyncEnabled else { return }
-        isSyncingScroll = true
-        defer { isSyncingScroll = false }
-        PDFScrollSynchronizer.synchronize(from: source, to: target,
-            offset: source === leftCol ? pageRatioOffset : -pageRatioOffset)
-        cacheViewport(source)
-        cacheViewport(target)
+        viewportCoordinator.performUpdate {
+            PDFScrollSynchronizer.synchronize(from: source, to: target,
+                offset: source === leftCol ? pageRatioOffset : -pageRatioOffset)
+            cacheViewport(source)
+            cacheViewport(target)
+        }
         persistReaderState(from: source)
     }
 
     @objc private func pdfScaleChanged(_ note: Notification) {
-        updateZoomIndicators()
-        guard !isLoadingDocuments, !isChangingLayout, !isClosed, !isSyncingZoom,
-              let srcPDFView = note.object as? PDFView else { return }
-        let source = srcPDFView === leftCol.pdfView ? leftCol : rightCol
-        guard !source.isHidden else { return }
-        let dstPDFView = (srcPDFView === leftCol.pdfView) ? rightCol.pdfView : leftCol.pdfView
-        isSyncingZoom = true
-        if isScrollSyncEnabled, !leftCol.isHidden, !rightCol.isHidden {
-            dstPDFView.autoScales = srcPDFView.autoScales
-            if !srcPDFView.autoScales { dstPDFView.scaleFactor = srcPDFView.scaleFactor }
-        }
-        isSyncingZoom = false
-        captureVisibleViewports()
-        persistReaderState(from: source)
+        guard viewportCoordinator.acceptsEvents, !isClosed, !view.isHiddenOrHasHiddenAncestor,
+              let pdfView = note.object as? PDFView,
+              let source = [leftCol, rightCol].first(where: { $0.pdfView === pdfView }), !source.isHidden else { return }
+        if !pdfView.autoScales, let state = viewportStates[source.side.rawValue],
+           abs(state.scaleFactor - Double(pdfView.scaleFactor)) < 0.000_001 { return }
+        // PDFKit may deliver scale notifications after its bounds have changed.
+        // Keep the last stable reading anchor and adopt only the requested zoom.
+        viewportCoordinator.beginLayout(capture: false)
+        adoptZoom(from: source)
+        finishPendingLayout()
+    }
+
+    private func adoptZoom(from source: CleanPDFColumnView) {
+        viewportCoordinator.setZoom(in: source, autoScales: source.pdfView.autoScales,
+            scaleFactor: source.pdfView.scaleFactor)
     }
 
     @objc private func pdfPageChanged(_ note: Notification) {
-        guard !isLoadingDocuments, !isChangingLayout, !isClosed else { return }
-        if !isSyncingScroll, let pdf = note.object as? PDFView {
-            scheduleReadingPositionSave(from: pdf === leftCol.pdfView ? leftCol : rightCol)
-        }
+        guard viewportCoordinator.acceptsEvents, !isClosed, !view.isHiddenOrHasHiddenAncestor else { return }
+        // Page notifications are derived display state; they must not choose the
+        // active pane or initiate a second scroll while PDFKit is still laying out.
         updatePageIndicatorAndSaveProgress()
         stripVisibleLinkAnnotationBorders()
     }
@@ -3549,14 +3518,22 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         return leftCol.pdfView.document != nil ? leftCol : rightCol
     }
 
+    private func currentPageIndex(in column: CleanPDFColumnView) -> Int {
+        guard let document = column.pdfView.document, document.pageCount > 0 else { return 0 }
+        if let position = computeContinuousPagePosition(in: column), position.isFinite {
+            return min(document.pageCount - 1, max(0, Int(floor(position))))
+        }
+        return column.pdfView.currentPage.map { min(document.pageCount - 1, max(0, document.index(for: $0))) } ?? 0
+    }
+
     private func updatePageIndicatorAndSaveProgress() {
         updateZoomIndicators()
         updateNavigationSource()
         // 更新左栏页码
         if let leftDoc = toolbarLeftColumn.pdfView.document {
             let leftTotal = leftDoc.pageCount
-            let leftIdx = toolbarLeftColumn.pdfView.currentPage.map { leftDoc.index(for: $0) } ?? 0
-            leftPageJumpBtn.title = "\(leftIdx + 1) / \(leftTotal)"
+            let leftIdx = currentPageIndex(in: toolbarLeftColumn)
+            leftPageJumpBtn.title = "\(leftIdx + 1) / \(leftTotal) 页"
             leftPrevPageBtn.isEnabled = (leftIdx > 0)
             leftNextPageBtn.isEnabled = (leftIdx + 1 < leftTotal)
         } else {
@@ -3568,8 +3545,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         // 更新右栏页码
         if let rightDoc = toolbarRightColumn.pdfView.document {
             let rightTotal = rightDoc.pageCount
-            let rightIdx = toolbarRightColumn.pdfView.currentPage.map { rightDoc.index(for: $0) } ?? 0
-            rightPageJumpBtn.title = "\(rightIdx + 1) / \(rightTotal)"
+            let rightIdx = currentPageIndex(in: toolbarRightColumn)
+            rightPageJumpBtn.title = "\(rightIdx + 1) / \(rightTotal) 页"
             rightPrevPageBtn.isEnabled = (rightIdx > 0)
             rightNextPageBtn.isEnabled = (rightIdx + 1 < rightTotal)
         } else {
@@ -3578,10 +3555,20 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             rightNextPageBtn.isEnabled = false
         }
 
+        // 每栏底部页码胶囊按该栏自己的 PDF 独立更新，互换双栏后也不会串页。
+        for column in [leftCol, rightCol] {
+            if let doc = column.pdfView.document {
+                let idx = currentPageIndex(in: column)
+                column.pageCapsule.update(page: idx + 1, total: doc.pageCount)
+            } else {
+                column.pageCapsule.update(page: 1, total: 1)
+            }
+        }
+
         // 同步高亮右侧目录当前所在章节
         let activePDF = primaryActiveColumn().pdfView
-        if let doc = activePDF.document {
-            let currentIdx = activePDF.currentPage.map { doc.index(for: $0) } ?? 0
+        if activePDF.document != nil {
+            let currentIdx = currentPageIndex(in: primaryActiveColumn())
             if let matchRow = outlineItems.lastIndex(where: { $0.pageIndex <= currentIdx }) {
                 isUpdatingOutlineSelection = true
                 outlineTableView.selectRowIndexes(IndexSet(integer: matchRow), byExtendingSelection: false)
@@ -3591,8 +3578,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
     }
 
+    private func revealVisiblePageCapsulesAfterLayout() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self = self, !self.isClosed, !self.view.isHiddenOrHasHiddenAncestor else { return }
+            for column in [self.leftCol, self.rightCol] where !column.isHidden && column.pdfView.document != nil {
+                column.revealPageCapsule()
+            }
+        }
+    }
+
     private func scheduleReadingPositionSave(from column: CleanPDFColumnView) {
-        guard !isLoadingDocuments, !isChangingLayout, !isClosed, !view.isHidden, !column.isHidden,
+        guard viewportCoordinator.acceptsEvents, !isClosed, !view.isHiddenOrHasHiddenAncestor, !column.isHidden,
               column.pdfView.document != nil else { return }
         lastReadingColumn = column
         persistReaderState(from: column, markReading: true)
@@ -3621,11 +3617,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 pdfDocumentId: position.pdfDocumentId ?? position.side.rawValue,
                 continuousPage: position.continuousPage)
         }
-        pageRatioOffset = paper.syncOffsetDelta.isFinite ? paper.syncOffsetDelta : 0
-        resetAlignBtn.isHidden = abs(pageRatioOffset) < 0.005
-        isLoadingDocuments = true
-        isChangingLayout = false
-        layoutRevision += 1
+        viewportCoordinator.setAlignment(pageRatioOffset)
+        viewportCoordinator.beginLoading()
         notesNeedRefresh = true
         linksNeedRefresh = true
         leftJumpRecord = nil
@@ -3636,12 +3629,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         rightCol.backJumpButton.keyEquivalent = ""
         lastJumpCol = nil
         invalidateSearch()
-        documentLoadID = UUID()
-        let loadID = documentLoadID
         loadedPDFFiles = pdfFileVersions(in: paper)
         for col in [leftCol, rightCol] {
             loadColumnContent(for: col, source: col.contentSource, in: paper)
         }
+        pageRatioOffset = viewportCoordinator.alignmentOffset
+        resetAlignBtn.isHidden = modeSeg.selectedSegment != 2 || abs(pageRatioOffset) < 0.005
         if lastReadingColumn == nil, let saved = paper.readingPosition {
             lastReadingColumn = saved.side == .original ? leftCol : rightCol
         }
@@ -3654,24 +3647,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         refreshLinksDrawerView()
         updateDrawerBadgeTitles()
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, !self.isClosed, self.documentLoadID == loadID else { return }
-            self.view.layoutSubtreeIfNeeded()
-            for col in [self.leftCol, self.rightCol] where !col.isHidden {
-                col.pdfView.layoutDocumentView()
-                if self.viewportStates[col.side.rawValue] == nil,
-                   let document = col.pdfView.document,
-                   let page = document.page(at: min(max(0, paper.lastReadPage), max(0, document.pageCount - 1))) {
-                    col.pdfView.go(to: page)
-                    self.cacheViewport(col)
-                }
-            }
-            self.isLoadingDocuments = false
-            self.isChangingLayout = true
-            self.finishPendingLayout()
-            self.stripVisibleLinkAnnotationBorders()
-            if !self.searchField.stringValue.isEmpty { self.performInPDFSearch() }
-        }
+        // Documents are installed synchronously. Explicit actions can now finish
+        // their layout immediately; a queued load can no longer overwrite them.
+        viewportCoordinator.documentsInstalled()
+        scheduleLayoutCompletion()
+        revealVisiblePageCapsulesAfterLayout()
+        if !searchField.stringValue.isEmpty { performInPDFSearch() }
     }
 
 
@@ -3717,6 +3698,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     func didBecomeActiveTab() {
         guard !isClosed else { return }
+        let wasActive = viewportCoordinator.isActive
+        viewportCoordinator.isActive = true
+        if !wasActive { viewportCoordinator.beginLayout(capture: false) }
         applyPendingLibraryChanges()
         if let paper = currentPaper, self.pdfFileVersions(in: paper) != loadedPDFFiles {
             loadPaperDocuments()
@@ -3728,6 +3712,8 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         view.layoutSubtreeIfNeeded()
         applyColumnSplitRatio()
         scheduleLayoutCompletion()
+        revealVisiblePageCapsulesAfterLayout()
+        if !searchField.stringValue.isEmpty { performInPDFSearch() }
     }
 
     static func stripLinkAnnotationBorders(in document: PDFDocument) {
@@ -3773,10 +3759,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     func setColumnSource(_ col: CleanPDFColumnView, source: ColumnContentSource, syncModeSeg: Bool = true) {
         guard let paper = currentPaper, !isClosed else { return }
         finishPendingLayout()
+        if source == col.contentSource, col.pdfView.document != nil { return }
         beginLayoutChange()
         invalidateSearch()
         selectionPopover.close()
+        viewportCoordinator.setAlignment(pageRatioOffset)
         loadColumnContent(for: col, source: source, in: paper)
+        pageRatioOffset = viewportCoordinator.alignmentOffset
+        resetAlignBtn.isHidden = modeSeg.selectedSegment != 2 || abs(pageRatioOffset) < 0.005
         annotationRenderer.apply(paper.annotations, to: col)
         finishPendingLayout()
         rebuildOutlineData()
@@ -3788,8 +3778,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         guard case .pdf(let requestedPDFId) = source else { return }
         let validPDFIds = Set(paper.allPDFDescriptors.map(\.id))
         let effectivePDFId = validPDFIds.contains(requestedPDFId) ? requestedPDFId : col.side.rawValue
+        let initial = isLoadingDocuments && viewportStates[col.side.rawValue] == nil ? Double(max(0, paper.lastReadPage)) + 0.5 : 0
+        viewportCoordinator.selectDocument(effectivePDFId, in: col, initialPage: initial)
         col.pdfView.highlightedSelections = nil
         col.pdfView.clearSelection()
+        col.pdfView.resetMarkupHistory()
+        col.columnToolbar.setViewMode(col.pdfView.displayMode)
         if let unlocked = TransientStore.shared.unlockedDocument(for: paperId) ?? transientSession?.document,
            (effectivePDFId == PDFSide.original.rawValue || col.side == .original) {
             ReaderTabViewController.stripLinkAnnotationBorders(in: unlocked)
@@ -3807,16 +3801,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             ReaderTabViewController.stripLinkAnnotationBorders(in: doc)
             col.applyContentSource(.pdf(id: effectivePDFId), paper: paper, hasPDFDocument: true)
             col.pdfView.document = doc
-            let saved = viewportStates[col.side.rawValue]
-            if saved?.pdfDocumentId != effectivePDFId {
-                let position = isLoadingDocuments && saved == nil ? Double(max(0, paper.lastReadPage)) + 0.5 : 0
-                viewportStates[col.side.rawValue] = PDFColumnReadingState(pdfDocumentId: effectivePDFId, continuousPage: position)
-            }
-            col.pdfView.autoScales = viewportStates[col.side.rawValue]?.autoScales ?? true
+            col.pdfView.autoScales = false
         } else {
             col.pdfView.document = nil
             col.applyContentSource(.pdf(id: effectivePDFId), paper: paper, hasPDFDocument: false)
-            viewportStates[col.side.rawValue] = PDFColumnReadingState(pdfDocumentId: effectivePDFId, continuousPage: 0)
         }
     }
 
@@ -4576,6 +4564,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     func focusSearchField() {
+        searchTargetColumn = nil
         openSearchAction()
     }
 
@@ -4630,6 +4619,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
         updateToolbarLayout()
         splitView.adjustSubviews()
+        if isLeftOverlayOpen {
+            if let active = outlineActiveColumn, active.isHidden { outlineActiveColumn = primaryActiveColumn() }
+            positionOutlineSidebar(for: outlineActiveColumn ?? primaryActiveColumn())
+        }
         if segment != 2 { lastReadingColumn = segment == 0 ? leftCol : rightCol }
         if !isLoadingDocuments { finishPendingLayout() }
         updateNavigationSource()
@@ -4637,6 +4630,158 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         if !searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             performInPDFSearch()
         }
+    }
+
+    private func configureColumnToolbar(for col: CleanPDFColumnView) {
+        let toolbar = col.columnToolbar
+        toolbar.onOutline = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            if self.isLeftOverlayOpen, self.primaryActiveColumn() !== col {
+                // Keep the existing overlay open but move it to the column
+                // whose outline button was just clicked.
+                self.lastReadingColumn = col
+                self.outlineActiveColumn = col
+                self.updateNavigationSource()
+                self.positionOutlineSidebar(for: col)
+                return
+            }
+            self.lastReadingColumn = col
+            self.updateNavigationSource()
+            self.toggleOutlineSidebar(for: col)
+        }
+        toolbar.onSpread = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.beginLayoutChange()
+            col.toggleSpreadMode()
+            self.view.layoutSubtreeIfNeeded()
+            self.scheduleLayoutCompletion()
+            self.updatePageIndicatorAndSaveProgress()
+        }
+        toolbar.onContinuous = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.beginLayoutChange()
+            col.toggleContinuousMode()
+            self.view.layoutSubtreeIfNeeded()
+            self.scheduleLayoutCompletion()
+            self.updatePageIndicatorAndSaveProgress()
+        }
+        toolbar.onFitWidth = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.fitColumn(col)
+        }
+        toolbar.onSearch = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.lastReadingColumn = col
+            self.searchTargetColumn = col
+            self.updateNavigationSource()
+            self.openSearchAction()
+            if !self.searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.performInPDFSearch()
+            }
+        }
+        toolbar.onNotes = { [weak self, weak col] in
+            guard let self = self, let col = col else { return }
+            self.lastReadingColumn = col
+            if !self.isDrawerOpen { self.toggleRightDrawerAction() }
+            self.switchWorkbenchTab(to: 1)
+        }
+        toolbar.onToolChanged = { [weak col] tool in
+            col?.pdfView.markupTool = tool
+        }
+        toolbar.onColorChanged = { [weak col] color in
+            col?.pdfView.markupColor = color
+        }
+        toolbar.onUndo = { [weak col] in col?.pdfView.undoMarkup() }
+        toolbar.onRedo = { [weak col] in col?.pdfView.redoMarkup() }
+        toolbar.setViewMode(col.pdfView.displayMode)
+        toolbar.setOutlineActive(isLeftOverlayOpen)
+        toolbar.setUndoRedoEnabled(canUndo: col.pdfView.canUndoMarkup, canRedo: col.pdfView.canRedoMarkup)
+    }
+
+    private func installCommandScrollMonitor() {
+        guard commandScrollMonitor == nil else { return }
+        commandScrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self = self, !self.isClosed,
+                  event.modifierFlags.contains(.command),
+                  !self.view.isHiddenOrHasHiddenAncestor,
+                  let window = self.view.window, event.window === window else { return event }
+            let point = self.view.convert(event.locationInWindow, from: nil)
+            guard let hit = self.view.hitTest(point) else { return event }
+            var candidate: NSView? = hit
+            var target: CleanPDFColumnView?
+            while let view = candidate {
+                if let column = view as? CleanPDFColumnView { target = column; break }
+                candidate = view.superview
+            }
+            guard let column = target, !column.isHidden, column.pdfView.document != nil else { return event }
+            self.lastReadingColumn = column
+            let step = event.hasPreciseScrollingDeltas
+                ? event.scrollingDeltaY * 0.012
+                : event.scrollingDeltaY * 0.08
+            guard step.isFinite else { return nil }
+            let proposed = column.pdfView.scaleFactor * CGFloat(exp(step))
+            let clamped = min(5.0, max(0.25, proposed))
+            if abs(clamped - column.pdfView.scaleFactor) > 0.0001 {
+                self.applyCommandScrollZoom(in: column, to: clamped)
+            }
+            return nil
+        }
+    }
+
+    private func installUndoKeyMonitor() {
+        guard undoKeyMonitor == nil else { return }
+        undoKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, !self.isClosed,
+                  !self.view.isHiddenOrHasHiddenAncestor,
+                  let window = self.view.window, event.window === window,
+                  event.modifierFlags.contains(.command),
+                  let characters = event.charactersIgnoringModifiers?.lowercased(),
+                  characters == "z" else { return event }
+            guard !self.readerIsEditingText() else { return event }
+            let column: CleanPDFColumnView?
+            if let last = self.lastReadingColumn, !last.isHidden {
+                column = last
+            } else {
+                column = self.primaryActiveColumn()
+            }
+            guard let column, !column.isHidden, column.pdfView.document != nil else { return event }
+            if event.modifierFlags.contains(.shift) {
+                column.pdfView.redoMarkup()
+            } else {
+                column.pdfView.undoMarkup()
+            }
+            return nil
+        }
+    }
+
+    private func removeUndoKeyMonitor() {
+        guard let undoKeyMonitor else { return }
+        NSEvent.removeMonitor(undoKeyMonitor)
+        self.undoKeyMonitor = nil
+    }
+
+    private func readerIsEditingText() -> Bool {
+        guard let responder = view.window?.firstResponder else { return false }
+        if responder is NSTextView { return true }
+        var node: NSView? = responder as? NSView
+        while let current = node {
+            if current is WKWebView { return true }
+            node = current.superview
+        }
+        return false
+    }
+
+    private func removeCommandScrollMonitor() {
+        guard let commandScrollMonitor else { return }
+        NSEvent.removeMonitor(commandScrollMonitor)
+        self.commandScrollMonitor = nil
+    }
+
+    private func applyCommandScrollZoom(in column: CleanPDFColumnView, to scale: CGFloat) {
+        guard !isClosed, !column.isHidden, column.pdfView.document != nil else { return }
+        let clamped = min(5.0, max(0.25, scale))
+        guard abs(column.pdfView.scaleFactor - clamped) > 0.0001 else { return }
+        setZoom(column, autoScales: false, scaleFactor: clamped)
     }
 
     @objc func swapColumnsAction() {
@@ -4655,6 +4800,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
         updateBannerPositions()
         applyColumnSplitRatio()
+        if isLeftOverlayOpen { positionOutlineSidebar(for: outlineActiveColumn ?? primaryActiveColumn()) }
         finishPendingLayout()
     }
 
@@ -4667,14 +4813,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             syncScrollBtn.normalBgColor = NSColor.controlAccentColor.withAlphaComponent(0.12)
             syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "双栏同步中")?
                 .withSymbolConfiguration(.init(pointSize: 11.5, weight: .semibold))
-            syncScrollBtn.title = " 同步"
+            syncScrollBtn.title = ""
             syncScrollBtn.toolTip = "双栏同步滚动已开启 (点击关闭)\n小技巧：按住 ⌥ Option 键滚动任意一栏可微调双栏段落对齐差"
         } else {
             syncScrollBtn.normalTintColor = .secondaryLabelColor
             syncScrollBtn.normalBgColor = .clear
             syncScrollBtn.image = NSImage(systemSymbolName: "link", accessibilityDescription: "独立滚动")?
                 .withSymbolConfiguration(.init(pointSize: 11.5, weight: .regular))
-            syncScrollBtn.title = " 独立"
+            syncScrollBtn.title = ""
             syncScrollBtn.toolTip = "双栏独立滚动 (同步已关闭，点击开启同步)"
         }
         syncScrollBtn.updateColors()
@@ -4688,12 +4834,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             let active = primaryActiveColumn()
             let opp = (active === leftCol) ? rightCol : leftCol
             syncScroll(from: active, to: opp)
-            if !active.isHidden, !opp.isHidden, active.pdfView.document != nil, opp.pdfView.document != nil {
-                opp.pdfView.autoScales = active.pdfView.autoScales
-                if !active.pdfView.autoScales {
-                    opp.pdfView.scaleFactor = active.pdfView.scaleFactor
-                }
-            }
         }
         persistReaderState(from: primaryActiveColumn())
     }
@@ -4702,13 +4842,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         finishPendingLayout()
         pageRatioOffset = 0.0
         resetAlignBtn.isHidden = true
-        if var item = currentPaper {
-            item.syncOffsetDelta = 0.0
-            LibraryStore.shared.savePaper(item, notify: false)
-        }
+        viewportCoordinator.setAlignment(0)
         let active = primaryActiveColumn()
         let opp = (active === leftCol) ? rightCol : leftCol
         syncScroll(from: active, to: opp)
+        persistReaderState(from: active)
     }
 
     // Toolbar actions resolve visual positions after a column swap.
@@ -4717,49 +4855,44 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     @objc func leftPromptPageJumpAction() { promptPageJump(for: toolbarLeftColumn) }
     @objc func leftZoomInAction() { zoomColumn(toolbarLeftColumn, factor: 1.15) }
     @objc func leftZoomOutAction() { zoomColumn(toolbarLeftColumn, factor: 1 / 1.15) }
-    @objc func leftZoomFitAction() { fitColumns(startingWith: toolbarLeftColumn) }
+    @objc func leftZoomFitAction() { fitColumn(toolbarLeftColumn) }
     @objc func rightPrevPageAction() { stepPage(in: toolbarRightColumn, delta: -1) }
     @objc func rightNextPageAction() { stepPage(in: toolbarRightColumn, delta: 1) }
     @objc func rightPromptPageJumpAction() { promptPageJump(for: toolbarRightColumn) }
     @objc func rightZoomInAction() { zoomColumn(toolbarRightColumn, factor: 1.15) }
     @objc func rightZoomOutAction() { zoomColumn(toolbarRightColumn, factor: 1 / 1.15) }
-    @objc func rightZoomFitAction() { fitColumns(startingWith: toolbarRightColumn) }
+    @objc func rightZoomFitAction() { fitColumn(toolbarRightColumn) }
 
     private func stepPage(in column: CleanPDFColumnView, delta: Int) {
         finishPendingLayout()
-        guard let doc = column.pdfView.document else { return }
-        let current = column.pdfView.currentPage.map { doc.index(for: $0) } ?? 0
+        guard column.pdfView.document != nil else { return }
+        let current = currentPageIndex(in: column)
         goToColumnPageIndex(column, pageIndex: current + delta, recordHistory: false)
     }
 
     private func zoomColumn(_ column: CleanPDFColumnView, factor: CGFloat) {
         finishPendingLayout()
         guard !column.isHidden, column.pdfView.document != nil else { return }
-        // PDFViewScaleChanged propagates this single computed value to the other visible pane.
-        let scale = max(0.25, min(column.pdfView.scaleFactor * factor, 5))
-        column.pdfView.autoScales = false
-        column.pdfView.scaleFactor = scale
-        lastReadingColumn = column
-        captureVisibleViewports()
-        syncScroll(from: column, to: column === leftCol ? rightCol : leftCol)
-        persistReaderState(from: column)
+        let scale = max(0.001, min(column.pdfView.scaleFactor * factor, 64))
+        setZoom(column, autoScales: false, scaleFactor: scale)
     }
 
-    private func fitColumns(startingWith column: CleanPDFColumnView) {
+    private func setZoom(_ column: CleanPDFColumnView, autoScales: Bool, scaleFactor: CGFloat? = nil) {
         finishPendingLayout()
+        guard !isClosed, !column.isHidden, column.pdfView.document != nil else { return }
         beginLayoutChange()
-        for col in [leftCol, rightCol] where !col.isHidden && (col === column || isScrollSyncEnabled) {
-            if var state = viewportStates[col.side.rawValue] {
-                state.autoScales = true
-                viewportStates[col.side.rawValue] = state
-            }
-        }
+        viewportCoordinator.setZoom(in: column, autoScales: autoScales, scaleFactor: scaleFactor)
+        lastReadingColumn = column
         finishPendingLayout()
+    }
+
+    private func fitColumn(_ column: CleanPDFColumnView) {
+        setZoom(column, autoScales: true)
     }
 
     private func promptPageJump(for column: CleanPDFColumnView) {
         guard let doc = column.pdfView.document, doc.pageCount > 0 else { return }
-        let cur = (column.pdfView.currentPage.map { doc.index(for: $0) } ?? 0) + 1
+        let cur = currentPageIndex(in: column) + 1
         let colName = modeSeg.selectedSegment == 2
             ? (column === toolbarLeftColumn ? "左栏" : "右栏")
             : (column === leftCol ? "原文栏" : "译文栏")
@@ -4790,12 +4923,20 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         guard !column.isHidden, let doc = column.pdfView.document,
               pageIndex >= 0, pageIndex < doc.pageCount, let page = doc.page(at: pageIndex) else { return }
         if recordHistory { pushJumpRecord(from: column, label: "页码跳转前") }
-        lastReadingColumn = column
-        isSyncingScroll = true
-        column.pdfView.go(to: page)
-        isSyncingScroll = false
-        syncScroll(from: column, to: column === leftCol ? rightCol : leftCol)
-        scheduleReadingPositionSave(from: column)
+        navigate(in: column) { column.pdfView.go(to: page) }
+    }
+
+    private func navigate(in column: CleanPDFColumnView, synchronize: Bool = true, activate: Bool = true, _ action: () -> Void) {
+        finishPendingLayout()
+        guard !isClosed, viewportCoordinator.acceptsEvents, !column.isHidden, column.pdfView.document != nil else { return }
+        if activate { lastReadingColumn = column }
+        viewportCoordinator.performUpdate {
+            action()
+            cacheViewport(column)
+        }
+        if synchronize { syncScroll(from: column, to: column === leftCol ? rightCol : leftCol) }
+        if activate { scheduleReadingPositionSave(from: column) }
+        else { persistReaderState(from: primaryActiveColumn()) }
         updatePageIndicatorAndSaveProgress()
     }
 
@@ -4803,24 +4944,9 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         goToColumnPageIndex(primaryActiveColumn(), pageIndex: pageIndex, recordHistory: recordHistory)
     }
 
-    @objc func zoomInBothAction() { zoomVisibleColumns(by: 1.15) }
-    @objc func zoomOutBothAction() { zoomVisibleColumns(by: 1 / 1.15) }
-
-    private func zoomVisibleColumns(by factor: CGFloat) {
-        if isScrollSyncEnabled { zoomColumn(primaryActiveColumn(), factor: factor) }
-        else {
-            for col in [leftCol, rightCol] where !col.isHidden { zoomColumn(col, factor: factor) }
-        }
-    }
-
-    @objc func zoomFitBothAction() {
-        finishPendingLayout()
-        beginLayoutChange()
-        for col in [leftCol, rightCol] where !col.isHidden {
-            if var state = viewportStates[col.side.rawValue] { state.autoScales = true; viewportStates[col.side.rawValue] = state }
-        }
-        finishPendingLayout()
-    }
+    @objc func zoomInActiveColumnAction() { zoomColumn(primaryActiveColumn(), factor: 1.15) }
+    @objc func zoomOutActiveColumnAction() { zoomColumn(primaryActiveColumn(), factor: 1 / 1.15) }
+    @objc func zoomFitActiveColumnAction() { fitColumn(primaryActiveColumn()) }
 
     @objc func toggleRightDrawerAction() {
         sidebarNoteView.flushPendingSave()
@@ -4929,7 +5055,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     // MARK: - 9. Right Drawer Refresh (Outline / Notes WebView / Links & Related Papers)
     private func rebuildOutlineData() {
         outlineItems.removeAll()
-        let column = primaryActiveColumn()
+        let column = navigationSourceColumn
         let docWithOutline = column.pdfView.document
         outlineSourceColumn = column
         outlineSourceDocument = docWithOutline
@@ -5079,11 +5205,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         if let doc = targetCol.pdfView.document,
            targetPageIdx >= 0, targetPageIdx < doc.pageCount,
            let page = doc.page(at: targetPageIdx) {
-            targetCol.pdfView.go(to: page)
-            let opposite = (targetCol === leftCol) ? rightCol : leftCol
-            if opposite.contentSource.isPDF {
-                syncScroll(from: targetCol, to: opposite)
-            }
+            navigate(in: targetCol) { targetCol.pdfView.go(to: page) }
         }
         updatePageIndicatorAndSaveProgress()
     }
@@ -5114,15 +5236,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         if let doc = targetCol.pdfView.document,
            annot.pageIndex >= 0, annot.pageIndex < doc.pageCount,
            let page = doc.page(at: annot.pageIndex) {
-            if let firstRect = annot.rects.first?.cgRect {
-                let dest = PDFDestination(page: page, at: NSPoint(x: firstRect.minX, y: firstRect.maxY + 40))
-                targetCol.pdfView.go(to: dest)
-            } else {
-                targetCol.pdfView.go(to: page)
-            }
-            let opposite = (targetCol === leftCol) ? rightCol : leftCol
-            if opposite.contentSource.isPDF {
-                syncScroll(from: targetCol, to: opposite)
+            navigate(in: targetCol) {
+                if let firstRect = annot.rects.first?.cgRect {
+                    let dest = PDFDestination(page: page, at: NSPoint(x: firstRect.minX, y: firstRect.maxY + 40))
+                    targetCol.pdfView.go(to: dest)
+                } else {
+                    targetCol.pdfView.go(to: page)
+                }
             }
         }
     }
@@ -5154,7 +5274,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let task = DispatchWorkItem { [weak self] in
             guard let self = self, !self.isClosed, self.searchGeneration == generation,
                   !self.searchContainer.isHidden else { return }
-            let columns = [self.leftCol, self.rightCol].filter { !$0.isHidden }
+            let visibleColumns = [self.leftCol, self.rightCol].filter { !$0.isHidden }
+            let columns: [CleanPDFColumnView]
+            if let target = self.searchTargetColumn, visibleColumns.contains(where: { $0 === target }) {
+                columns = [target]
+            } else {
+                columns = visibleColumns
+            }
             self.searchController.search(query, columns: columns) { [weak self] matches in
                 guard let self = self, !self.isClosed, self.searchGeneration == generation,
                       self.searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
@@ -5197,8 +5323,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         searchMatchLabel.stringValue = "\(index + 1)/\(currentSearchMatches.count)"
         let otherCol = (item.col === leftCol) ? rightCol : leftCol
         otherCol.pdfView.clearSelection()
-        item.col.pdfView.go(to: item.selection)
-        item.col.pdfView.setCurrentSelection(item.selection, animate: true)
+        navigate(in: item.col) {
+            item.col.pdfView.go(to: item.selection)
+            item.col.pdfView.setCurrentSelection(item.selection, animate: false)
+        }
     }
 
     private func invalidateSearch() {
@@ -5261,6 +5389,11 @@ extension ReaderTabViewController: NSTableViewDataSource, NSTableViewDelegate {
 extension ReaderTabViewController: NSSplitViewDelegate {
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard let split = notification.object as? NSSplitView else { return }
+        if split === self.splitView, self.splitView.isTrackingDivider, !isRestoringLayout,
+           !leftCol.isHidden, !rightCol.isHidden {
+            let total = max(1, split.bounds.width - split.dividerThickness)
+            columnSplitRatio = min(0.95, max(0.05, (split.subviews.first?.frame.width ?? total / 2) / total))
+        }
         if split === masterSplitView {
             updateDrawerVisibility()
             if isDrawerOpen, !masterSplitView.isTrackingDivider, rightDrawer.frame.width < 280,
@@ -5303,7 +5436,7 @@ extension ReaderTabViewController: NSSplitViewDelegate {
                 return 0
             }
             let total = splitView.bounds.width - splitView.dividerThickness
-            return min(200, max(50, total / 2))
+            return max(0, total * 0.05)
         }
         return proposedMinimumPosition
     }
@@ -5321,8 +5454,7 @@ extension ReaderTabViewController: NSSplitViewDelegate {
                 return splitView.bounds.width
             }
             let total = splitView.bounds.width - splitView.dividerThickness
-            let effectiveMin = min(200, max(50, total / 2))
-            return max(effectiveMin, splitView.bounds.width - effectiveMin - splitView.dividerThickness)
+            return max(0, total * 0.95)
         }
         return proposedMaximumPosition
     }
