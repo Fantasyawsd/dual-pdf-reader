@@ -3685,8 +3685,18 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     func adoptLibraryPaper(id newId: String) {
+        let oldId = paperId
+        // C3: keep unlocked PDFDocument across promote (re-key if needed).
+        if TransientStore.shared.unlockedDocument(for: newId) == nil {
+            TransientStore.shared.transferUnlockedDocument(from: oldId, to: newId)
+        }
         transientSession = nil
         paperId = newId
+        // Prevent didBecomeActiveTab from treating library PDF paths as a "file change"
+        // and reloading a locked document from disk.
+        if let paper = currentPaper {
+            loadedPDFFiles = pdfFileVersions(in: paper)
+        }
         refreshTransientChrome()
         // Keep current PDFView documents and viewportStates; only rebind identity.
         updateRightSidebarMetadataUI()
@@ -3814,7 +3824,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let fields = pendingLibraryFields
         pendingLibraryFields = []
         guard !fields.isEmpty else { return }
-        if fields.contains(.pdf) { loadPaperDocuments(); return }
+        if fields.contains(.pdf) {
+            // C3: after promoting an unlocked encrypted PDF, keep the in-memory document.
+            if TransientStore.shared.unlockedDocument(for: paperId) != nil,
+               leftCol.pdfView.document != nil || rightCol.pdfView.document != nil {
+                updateRightSidebarMetadataUI()
+                return
+            }
+            loadPaperDocuments(); return
+        }
         if fields.contains(.metadata) {
             updateRightSidebarMetadataUI()
         }

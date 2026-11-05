@@ -186,6 +186,7 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         let resources: [ResourceDTO]
         let isTransient: Bool
         let transientHasNotes: Bool
+        let isSourceMissing: Bool
     }
 
     private struct LibraryStatePayload: Codable {
@@ -462,11 +463,18 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
                 relatedPapers: relatedDTOs,
                 resources: resDTOs,
                 isTransient: p.isTransient,
-                transientHasNotes: p.transientHasNotes
+                transientHasNotes: p.transientHasNotes,
+                isSourceMissing: {
+                    if p.isTransient {
+                        return TransientStore.shared.pdfURL(for: p, side: .original) == nil
+                            && TransientStore.shared.pdfURL(for: p, side: .translated) == nil
+                    }
+                    return store.pdfURL(for: p, side: .original) == nil && store.pdfURL(for: p, side: .translated) == nil
+                }()
             )
         }
 
-        let recentSource = TransientStore.recentCombined(limit: 50)
+        let recentSource = TransientStore.recentCombined(limit: 30)
         let recentDTOs: [PaperDTO] = recentSource.map { p in
             let originalURL: URL? = {
                 if p.isTransient { return TransientStore.shared.pdfURL(for: p, side: .original) }
@@ -528,7 +536,14 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
                 relatedPapers: [],
                 resources: [],
                 isTransient: p.isTransient,
-                transientHasNotes: p.transientHasNotes
+                transientHasNotes: p.transientHasNotes,
+                isSourceMissing: {
+                    if p.isTransient {
+                        return TransientStore.shared.pdfURL(for: p, side: .original) == nil
+                            && TransientStore.shared.pdfURL(for: p, side: .translated) == nil
+                    }
+                    return store.pdfURL(for: p, side: .original) == nil && store.pdfURL(for: p, side: .translated) == nil
+                }()
             )
         }
 
@@ -659,8 +674,16 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         case "openPaper":
             if let pid = body["paperId"] as? String {
                 selectedPaperId = pid
-                if let paper = LibraryStore.shared.paper(withId: pid), paper.isTransient {
-                    if TransientStore.shared.pdfURL(for: paper, side: .original) == nil {
+                if let paper = LibraryStore.shared.paper(withId: pid) {
+                    let missing: Bool = {
+                        if paper.isTransient {
+                            return TransientStore.shared.pdfURL(for: paper, side: .original) == nil
+                                && TransientStore.shared.pdfURL(for: paper, side: .translated) == nil
+                        }
+                        return LibraryStore.shared.pdfURL(for: paper, side: .original) == nil
+                            && LibraryStore.shared.pdfURL(for: paper, side: .translated) == nil
+                    }()
+                    if missing {
                         presentMissingTransientAlert(paper)
                         break
                     }
@@ -677,6 +700,17 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
             if let pid = body["paperId"] as? String,
                let paper = LibraryStore.shared.paper(withId: pid) {
                 exportTransientNotes(paper)
+            }
+
+        case "removeFromRecent":
+            if let pid = body["paperId"] as? String {
+                if LibraryStore.shared.isTransientPaper(id: pid) || LibraryStore.shared.paper(withId: pid)?.isTransient == true {
+                    _ = TransientStore.shared.removeFromRecent(id: pid)
+                } else if var paper = LibraryStore.shared.paper(withId: pid) {
+                    paper.lastOpenedAt = nil
+                    _ = LibraryStore.shared.savePaper(paper, notify: true)
+                }
+                refreshAllUI()
             }
 
         case "openPaperNotesSidebar":

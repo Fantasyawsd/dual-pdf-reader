@@ -297,14 +297,15 @@ final class LibraryStore {
         readingSaveTask = nil
         for tid in transientPaperIDs { pendingReadingUpdates.removeValue(forKey: tid) }
         let updates = Array(pendingReadingUpdates.values)
-        guard !updates.isEmpty else { return true }
+        let transientOK = TransientStore.shared.flushReadingState()
+        guard !updates.isEmpty else { return transientOK }
         do {
             try storage.writeMetadata(updates)
             var fields: LibraryChange.Fields = .reading
             for paper in updates { fields.formUnion(changedFields(from: papersByID[paper.id], to: paper)) }
             for paper in updates { accept(paper) }
             publish(ids: Set(updates.map(\.id)), fields: fields)
-            return true
+            return transientOK
         } catch { report(error); return false }
     }
 

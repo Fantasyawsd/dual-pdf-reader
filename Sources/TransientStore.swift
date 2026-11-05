@@ -23,6 +23,13 @@ final class TransientStore {
     /// In-memory unlocked PDFDocuments for encrypted sources (never written to disk).
     private var unlockedDocuments: [String: PDFDocument] = [:]
     private var accessingURLs: [String: URL] = [:]
+    private var pendingReadingUpdates: [String: PaperItem] = [:]
+    private var readingSaveTask: DispatchWorkItem?
+    private let persistQueue = DispatchQueue(label: "com.dualpdf.transient.persist", qos: .utility)
+    /// Test seam: count of disk writes from reading-state flush.
+    private(set) var readingPersistCountForTests = 0
+    /// Test seam: force the next savePaper inside promoteToLibrary to fail.
+    static var testingPromoteSavePaperResult: Bool? = nil
     private let rootDirectory: URL
     private let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -179,15 +186,72 @@ final class TransientStore {
     }
 
     func updateReadingState(for paperId: String, _ update: (inout PaperItem) -> Void) {
-        guard var paper = papersByID[paperId] else { return }
+        guard var paper = pendingReadingUpdates[paperId] ?? papersByID[paperId] else { return }
         update(&paper)
         paper.isTransient = true
-        _ = persist(paper)
-        // Lightweight: no notification flood on scroll.
+        pendingReadingUpdates[paperId] = paper
+        papersByID[paperId] = paper
+        if let idx = papers.firstIndex(where: { $0.id == paperId }) {
+            papers[idx] = paper
+        }
+        readingSaveTask?.cancel()
+        let task = DispatchWorkItem { [weak self] in
+            _ = self?.flushReadingState()
+        }
+        readingSaveTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: task)
     }
 
+    /// Persist coalesced reading-state updates. Memory is updated on the caller thread;
+    /// atomic disk writes run off-main and are waited on so terminate/close see durable state.
     @discardableResult
-    func flushReadingState() -> Bool { true }
+    func flushReadingState() -> Bool {
+        readingSaveTask?.cancel()
+        readingSaveTask = nil
+        let updates = pendingReadingUpdates
+        pendingReadingUpdates.removeAll()
+        guard !updates.isEmpty else { return true }
+
+        var payloads: [(id: String, url: URL, data: Data)] = []
+        for (_, paper) in updates {
+            var item = paper
+            item.isTransient = true
+            papersByID[item.id] = item
+            if let idx = papers.firstIndex(where: { $0.id == item.id }) {
+                papers[idx] = item
+            } else {
+                papers.insert(item, at: 0)
+            }
+            LibraryStore.shared.registerTransientPaper(id: item.id)
+            do {
+                let dir = folderURL(for: item.id)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let data = try encoder.encode(item)
+                payloads.append((item.id, stateURL(for: item.id), data))
+            } catch {
+                NSLog("[DualPDF][P0-2] TransientStore encode failed: %@", error.localizedDescription)
+                return false
+            }
+        }
+
+        var ok = true
+        let group = DispatchGroup()
+        group.enter()
+        persistQueue.async {
+            for payload in payloads {
+                do {
+                    try payload.data.write(to: payload.url, options: .atomic)
+                } catch {
+                    NSLog("[DualPDF][P0-2] TransientStore flush write failed: %@", error.localizedDescription)
+                    ok = false
+                }
+            }
+            self.readingPersistCountForTests += 1
+            group.leave()
+        }
+        group.wait()
+        return ok
+    }
 
     @discardableResult
     func addTag(_ tag: String, for paperId: String) -> Bool {
@@ -341,8 +405,18 @@ final class TransientStore {
         migrated.resources = transient.resources.filter { !$0.isLocalFile }
         migrated.isTransient = false
 
-        guard LibraryStore.shared.savePaper(migrated, notify: true) else {
-            // Best-effort: leave library paper but keep transient.
+        _ = flushReadingState()
+
+        let saveOK: Bool
+        if let forced = Self.testingPromoteSavePaperResult {
+            Self.testingPromoteSavePaperResult = nil
+            saveOK = forced
+        } else {
+            saveOK = LibraryStore.shared.savePaper(migrated, notify: true)
+        }
+        guard saveOK else {
+            // C1: roll back the half-created library entry (PDF copy + folder).
+            _ = LibraryStore.shared.deletePaper(id: created.id)
             return .failure(PromoteError.writeFailed("条目已创建，但笔记迁移失败。"))
         }
 
@@ -351,12 +425,27 @@ final class TransientStore {
             LibraryStore.shared.refreshPaperArxivMetadata(paperId: migrated.id, arxivId: arxiv, completion: nil)
         }
 
-        deleteTransient(id: id)
+        // C3: keep the in-memory unlocked PDFDocument under the new library id.
+        if let unlocked = unlockedDocuments.removeValue(forKey: id) {
+            unlockedDocuments[created.id] = unlocked
+        }
+
+        deleteTransient(id: id, clearUnlocked: false)
         return .success(migrated)
     }
 
-    func deleteTransient(id: String) {
-        unlockedDocuments.removeValue(forKey: id)
+    func transferUnlockedDocument(from oldId: String, to newId: String) {
+        if let doc = unlockedDocuments.removeValue(forKey: oldId) {
+            unlockedDocuments[newId] = doc
+        }
+    }
+
+    func deleteTransient(id: String, clearUnlocked: Bool = true) {
+        _ = flushReadingState()
+        pendingReadingUpdates.removeValue(forKey: id)
+        if clearUnlocked {
+            unlockedDocuments.removeValue(forKey: id)
+        }
         for key in accessingURLs.keys.filter({ $0.hasPrefix(id) }) {
             accessingURLs[key]?.stopAccessingSecurityScopedResource()
             accessingURLs.removeValue(forKey: key)
@@ -368,14 +457,22 @@ final class TransientStore {
         publish(ids: [id])
     }
 
+    /// Soft-remove from 「最近」without deleting notes/state.
+    @discardableResult
+    func removeFromRecent(id: String) -> Bool {
+        guard var item = papersByID[id] else { return false }
+        item.lastOpenedAt = nil
+        return savePaper(item, notify: true)
+    }
+
     // MARK: - Recents helpers
 
-    /// Papers for the sidebar "最近" section (transient + library), newest first, max 50.
-    static func recentCombined(limit: Int = 50) -> [PaperItem] {
-        let library = LibraryStore.shared.papers
-        let transient = TransientStore.shared.papers
+    /// Papers for the center list when source 「最近」 is selected (transient + library), newest first, max 30.
+    static func recentCombined(limit: Int = 30) -> [PaperItem] {
+        let library = LibraryStore.shared.papers.filter { $0.lastOpenedAt != nil }
+        let transient = TransientStore.shared.papers.filter { $0.lastOpenedAt != nil }
         let merged = (library + transient).sorted {
-            ($0.lastOpenedAt ?? $0.addedAt) > ($1.lastOpenedAt ?? $1.addedAt)
+            ($0.lastOpenedAt ?? .distantPast) > ($1.lastOpenedAt ?? .distantPast)
         }
         return Array(merged.prefix(limit))
     }
@@ -472,6 +569,12 @@ final class TransientStore {
     }
 
     private func resolveBookmark(_ stored: String, accessKey: String) -> URL? {
+        if let cached = accessingURLs[accessKey], FileManager.default.fileExists(atPath: cached.path) {
+            return cached
+        }
+        if let previous = accessingURLs.removeValue(forKey: accessKey) {
+            previous.stopAccessingSecurityScopedResource()
+        }
         guard stored.hasPrefix(Self.bookmarkPrefix) else {
             let url = URL(fileURLWithPath: stored)
             return FileManager.default.fileExists(atPath: url.path) ? url : nil

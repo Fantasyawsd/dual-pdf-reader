@@ -813,6 +813,7 @@ extension MultiTabMainWindowController {
         switch TransientStore.shared.promoteToLibrary(id: paperId, fields: fields) {
         case .success(let created):
             adoptPromotedTab(from: paperId, to: created)
+            libraryVC.refreshAllUI()
         case .failure(let error):
             let alert = NSAlert()
             alert.messageText = "无法存入文献库"

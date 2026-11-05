@@ -9,6 +9,12 @@ func runP0TransientLibraryTests() throws {
     try runTransientEncryptedNoPlaintextCopyTest()
     try runLibraryStoreRoutesToTransientTest()
     try runVenueNoHardcodedArxivTest()
+    try runPromoteSaveFailureRollbackTest()
+    try runReadingStateDebounceFlushTest()
+    try runUnlockedDocumentSurvivesPromoteTest()
+    try runRecentCombinedAndRemoveTest()
+    try runSidebarSourcesOnlyIATest()
+    try runTabDedupeByPaperIdEvidenceTest()
 }
 
 private func writeMinimalPDF(to url: URL, text: String = "Hello") throws {
@@ -241,4 +247,191 @@ private func runVenueNoHardcodedArxivTest() throws {
     let js = try String(contentsOfFile: "Resources/LibraryWorkspace.js", encoding: .utf8)
     check(!js.contains("document.getElementById('mVenue').value = 'arXiv'"),
           "P0-2 venue: create modal default venue is not arXiv")
+}
+
+/// C1: if savePaper fails after createPaper, delete the half-created library entry and keep the transient.
+private func runPromoteSaveFailureRollbackTest() throws {
+    let fm = FileManager.default
+    let tRoot = fm.temporaryDirectory.appendingPathComponent("DualPDF-P02-C1T-\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: tRoot, withIntermediateDirectories: true)
+    defer {
+        TransientStore.testingPromoteSavePaperResult = nil
+        TransientStore.useTestRoot(nil)
+        try? fm.removeItem(at: tRoot)
+    }
+    TransientStore.useTestRoot(tRoot)
+
+    let pdf = fm.temporaryDirectory.appendingPathComponent("DualPDF-c1-\(UUID().uuidString).pdf")
+    try writeMinimalPDF(to: pdf, text: "C1")
+    defer { try? fm.removeItem(at: pdf) }
+
+    guard var item = TransientStore.shared.openPDFs([pdf]) else {
+        check(false, "C1: openPDFs")
+        return
+    }
+    item.noteDocuments = [PaperNoteDocument(title: "keep", markdownContent: "must-survive")]
+    check(TransientStore.shared.savePaper(item), "C1: save notes")
+
+    let beforeLibCount = LibraryStore.shared.papers.count
+    TransientStore.testingPromoteSavePaperResult = false
+    let result = TransientStore.shared.promoteToLibrary(
+        id: item.id,
+        fields: .init(title: "C1 Fail", authors: "A", year: "2026", venue: "", category: "未分类")
+    )
+    switch result {
+    case .success:
+        check(false, "C1: promote must fail when savePaper forced false")
+    case .failure:
+        check(true, "C1: promote returns failure")
+    }
+    check(TransientStore.shared.paper(withId: item.id) != nil, "C1: transient kept after rollback")
+    check(TransientStore.shared.paper(withId: item.id)?.noteDocuments?.first?.markdownContent == "must-survive",
+          "C1: transient notes intact")
+    check(LibraryStore.shared.papers.count == beforeLibCount,
+          "C1: library paper count unchanged after rollback (was \(beforeLibCount), now \(LibraryStore.shared.papers.count))")
+    let leftover = LibraryStore.shared.papers.filter { $0.title == "C1 Fail" }
+    check(leftover.isEmpty, "C1: no orphan library entry titled C1 Fail")
+}
+
+/// C2: reading-state updates coalesce (~0.75s); flush persists once.
+private func runReadingStateDebounceFlushTest() throws {
+    let fm = FileManager.default
+    let tRoot = fm.temporaryDirectory.appendingPathComponent("DualPDF-P02-C2-\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: tRoot, withIntermediateDirectories: true)
+    defer {
+        TransientStore.useTestRoot(nil)
+        try? fm.removeItem(at: tRoot)
+    }
+    TransientStore.useTestRoot(tRoot)
+
+    let pdf = fm.temporaryDirectory.appendingPathComponent("DualPDF-c2-\(UUID().uuidString).pdf")
+    try writeMinimalPDF(to: pdf, text: "C2")
+    defer { try? fm.removeItem(at: pdf) }
+
+    guard let item = TransientStore.shared.openPDFs([pdf]) else {
+        check(false, "C2: open")
+        return
+    }
+    let store = TransientStore.shared
+    let before = store.readingPersistCountForTests
+
+    store.updateReadingState(for: item.id) { $0.lastReadPage = 1 }
+    store.updateReadingState(for: item.id) { $0.lastReadPage = 2 }
+    store.updateReadingState(for: item.id) { $0.lastReadPage = 3 }
+    check(store.readingPersistCountForTests == before, "C2: debounce holds writes during burst")
+
+    check(store.flushReadingState(), "C2: flushReadingState succeeds")
+    check(store.readingPersistCountForTests == before + 1, "C2: flush performs one disk write")
+    check(store.paper(withId: item.id)?.lastReadPage == 3, "C2: memory has last value")
+
+    TransientStore.useTestRoot(tRoot)
+    check(TransientStore.shared.paper(withId: item.id)?.lastReadPage == 3, "C2: disk has last value after flush")
+}
+
+/// C3: unlocked in-memory PDFDocument is re-keyed to the library id on promote.
+private func runUnlockedDocumentSurvivesPromoteTest() throws {
+    let fm = FileManager.default
+    let tRoot = fm.temporaryDirectory.appendingPathComponent("DualPDF-P02-C3-\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: tRoot, withIntermediateDirectories: true)
+    defer {
+        TransientStore.useTestRoot(nil)
+        try? fm.removeItem(at: tRoot)
+    }
+    TransientStore.useTestRoot(tRoot)
+
+    let enc = fm.temporaryDirectory.appendingPathComponent("DualPDF-c3-\(UUID().uuidString).pdf")
+    try writeMinimalPDF(to: enc, text: "C3")
+    defer { try? fm.removeItem(at: enc) }
+    guard let unlocked = PDFDocument(url: enc) else {
+        check(false, "C3: PDFDocument")
+        return
+    }
+    guard let item = TransientStore.shared.openPDFs([enc], unlockedDocument: unlocked) else {
+        check(false, "C3: open")
+        return
+    }
+    check(TransientStore.shared.unlockedDocument(for: item.id) != nil, "C3: unlocked cached under transient id")
+
+    let result = TransientStore.shared.promoteToLibrary(
+        id: item.id,
+        fields: .init(title: "C3 Promoted", authors: "A", year: "2026", venue: "", category: "未分类")
+    )
+    guard case .success(let created) = result else {
+        check(false, "C3: promote succeeds")
+        return
+    }
+    check(TransientStore.shared.unlockedDocument(for: item.id) == nil, "C3: old id no longer holds unlocked")
+    check(TransientStore.shared.unlockedDocument(for: created.id) != nil, "C3: unlocked re-keyed to library id")
+    let readerSrc = try String(contentsOfFile: "Sources/ReaderTabViewController.swift", encoding: .utf8)
+    check(readerSrc.contains("transferUnlockedDocument(from: oldId, to: newId)"),
+          "C3 evidence: adoptLibraryPaper transfers unlocked")
+    check(readerSrc.contains("unlockedDocument(for: paperId) != nil"),
+          "C3 evidence: skip reload when unlocked present")
+}
+
+private func runRecentCombinedAndRemoveTest() throws {
+    let fm = FileManager.default
+    let tRoot = fm.temporaryDirectory.appendingPathComponent("DualPDF-P02-Recent-\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: tRoot, withIntermediateDirectories: true)
+    defer {
+        TransientStore.useTestRoot(nil)
+        try? fm.removeItem(at: tRoot)
+    }
+    TransientStore.useTestRoot(tRoot)
+
+    var ids: [String] = []
+    var pdfs: [URL] = []
+    defer { for u in pdfs { try? fm.removeItem(at: u) } }
+    for i in 0..<3 {
+        let pdf = fm.temporaryDirectory.appendingPathComponent("DualPDF-recent-\(i)-\(UUID().uuidString).pdf")
+        try writeMinimalPDF(to: pdf, text: "R\(i)")
+        pdfs.append(pdf)
+        guard var item = TransientStore.shared.openPDFs([pdf]) else {
+            check(false, "Recent: open \(i)")
+            return
+        }
+        item.lastOpenedAt = Date().addingTimeInterval(TimeInterval(i))
+        check(TransientStore.shared.savePaper(item), "Recent: save \(i)")
+        ids.append(item.id)
+    }
+    let combined = TransientStore.recentCombined(limit: 30)
+    check(combined.count >= 3, "Recent: combined includes transients")
+    check(combined.first?.id == ids[2], "Recent: sorted by lastOpenedAt desc")
+
+    check(TransientStore.shared.removeFromRecent(id: ids[2]), "Recent: removeFromRecent")
+    let after = TransientStore.recentCombined(limit: 30)
+    check(!after.contains(where: { $0.id == ids[2] }), "Recent: removed id absent from combined")
+    check(TransientStore.shared.paper(withId: ids[2]) != nil, "Recent: soft-remove keeps transient state")
+
+    let src = try String(contentsOfFile: "Sources/LibraryViewController.swift", encoding: .utf8)
+    check(src.contains("recentCombined(limit: 30)"), "Recent: payload uses limit 30")
+}
+
+/// Dot / P0-spec v1.1: sidebar hosts sources only — no per-file rows.
+private func runSidebarSourcesOnlyIATest() throws {
+    let js = try String(contentsOfFile: "Resources/LibraryWorkspace.js", encoding: .utf8)
+    check(js.contains("sidebar-section-label\">来源"), "IA: 来源 section label")
+    check(js.contains("全部文献"), "IA: 全部文献 source")
+    check(js.contains("sourceRowHTML('recent', '最近'"), "IA: 最近 source item")
+    check(!js.contains("recentPreview"), "IA: no recentPreview file rows")
+    check(!js.contains("recent-item"), "IA: no recent-item CSS class rows")
+    check(js.contains("removeFromRecent"), "IA: context menu removeFromRecent")
+    check(js.contains("存入文献库"), "IA: context menu 存入文献库")
+    check(js.contains("filterKind: 'recent'"), "IA: default filter is 最近")
+    check(js.contains("bootstrapDefaultSource"), "IA: empty-recent falls back to 全部文献")
+    let html = try String(contentsOfFile: "Resources/LibraryWorkspace.html", encoding: .utf8)
+    check(html.contains("currentViewTitle\">最近"), "IA: HTML default title 最近")
+}
+
+/// Same document from 最近 / 全部文献 opens the same tab (keyed by paperId).
+private func runTabDedupeByPaperIdEvidenceTest() throws {
+    let src = try String(contentsOfFile: "Sources/MainWindowController.swift", encoding: .utf8)
+    check(src.contains("if openReaderTabs[paperId] == nil"),
+          "Dedupe: openOrSwitchToPaperTab reuses existing tab by paperId")
+    check(src.contains("openReaderTabs[paperId] = readerVC"),
+          "Dedupe: tabs dictionary keyed by paperId")
+    let js = try String(contentsOfFile: "Resources/LibraryWorkspace.js", encoding: .utf8)
+    // Center list and recent both call openPaperDual with the same paper id.
+    check(js.contains("openPaperDual('${pidAttr}'") || js.contains("openPaperDual('${pid}'"),
+          "Dedupe: openPaperDual used from list rows")
 }

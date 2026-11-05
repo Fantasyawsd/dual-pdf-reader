@@ -1445,6 +1445,10 @@ table.zotero-table {
   background: var(--fill-quaternary, rgba(0,0,0,0.06));
   vertical-align: middle;
 }
+.transient-badge.missing {
+    background: rgba(180, 60, 60, 0.12);
+    color: #a33;
+}
 .transient-badge.accent {
   color: var(--accent, #007aff);
   background: color-mix(in srgb, var(--accent, #007aff) 14%, transparent);
