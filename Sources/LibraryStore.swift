@@ -24,6 +24,8 @@ final class LibraryStore {
     private var categories: [String] = []
     private var pendingReadingUpdates: [String: PaperItem] = [:]
     private var readingSaveTask: DispatchWorkItem?
+    /// IDs of in-memory-only opens (e.g. unlocked encrypted PDFs). Writes are no-ops.
+    private var transientPaperIDs: Set<String> = []
     private let summaryCache = PDFSummaryCache()
     private let errorHandler: ((String) -> Void)?
     private var storage: LibraryFileStorage { LibraryFileStorage(rootDirectory: rootDirectory) }
@@ -167,17 +169,60 @@ final class LibraryStore {
 
     func paper(withId id: String) -> PaperItem? { pendingReadingUpdates[id] ?? papersByID[id] }
 
+    // MARK: - Transient (in-memory) opens — never persist
+
+    func registerTransientPaper(id: String) {
+        transientPaperIDs.insert(id)
+        NSLog("[DualPDF][B2] register transient paper id=%@", id)
+    }
+
+    func unregisterTransientPaper(id: String) {
+        guard transientPaperIDs.remove(id) != nil else { return }
+        pendingReadingUpdates.removeValue(forKey: id)
+        NSLog("[DualPDF][B2] unregister transient paper id=%@", id)
+    }
+
+    func isTransientPaper(id: String) -> Bool { transientPaperIDs.contains(id) }
+
+    /// Returns true when the write must be skipped.
+    @discardableResult
+    private func blockTransientWrite(_ id: String, _ op: String) -> Bool {
+        guard transientPaperIDs.contains(id) else { return false }
+        NSLog("[DualPDF][B2] blocked %@ for transient id=%@", op, id)
+        return true
+    }
+
+
+    /// Find a library paper that already stores a PDF with the same file identity as `url`.
+    func paperContainingFile(identicalTo url: URL) -> PaperItem? {
+        for paper in papers {
+            for descriptor in paper.allPDFDescriptors {
+                guard let pdfURL = pdfURL(for: paper, pdfId: descriptor.id) else { continue }
+                if FileIdentity.sameFile(pdfURL, url) { return paper }
+            }
+        }
+        return nil
+    }
+
+
     @discardableResult
     func savePaper(_ paper: PaperItem, notify: Bool = true) -> Bool {
-        commitPapers([paper], notify: notify)
+        if blockTransientWrite(paper.id, "savePaper") { return false }
+        return commitPapers([paper], notify: notify)
     }
 
     @discardableResult
     private func commitPapers(_ updated: [PaperItem], notify: Bool, extraFields: LibraryChange.Fields = []) -> Bool {
+        let allowed = updated.filter { !transientPaperIDs.contains($0.id) }
+        if allowed.count != updated.count {
+            let blocked = updated.filter { transientPaperIDs.contains($0.id) }.map(\.id)
+            NSLog("[DualPDF][B2] commitPapers excluded transient ids=%@", blocked.joined(separator: ","))
+        }
+        guard !allowed.isEmpty else { return false }
         do {
-            try storage.writeMetadata(updated)
+            try storage.writeMetadata(allowed)
             var fields = extraFields
-            for paper in updated {
+            for paper in allowed {
                 let previous = papersByID[paper.id]
                 fields.formUnion(changedFields(from: previous, to: paper))
                 accept(paper)
@@ -187,12 +232,16 @@ final class LibraryStore {
                     catch { errorHandler?("论文已保存，但 notes.md 导出失败：\(error.localizedDescription)") }
                 }
             }
-            if notify && !fields.isEmpty { publish(ids: Set(updated.map(\.id)), fields: fields) }
+            if notify && !fields.isEmpty { publish(ids: Set(allowed.map(\.id)), fields: fields) }
             return true
         } catch { report(error); return false }
     }
 
     private func accept(_ paper: PaperItem) {
+        if transientPaperIDs.contains(paper.id) {
+            NSLog("[DualPDF][B2] accept refused for transient id=%@", paper.id)
+            return
+        }
         pendingReadingUpdates.removeValue(forKey: paper.id)
         papersByID[paper.id] = paper
         if let index = papers.firstIndex(where: { $0.id == paper.id }) { papers[index] = paper }
@@ -214,6 +263,7 @@ final class LibraryStore {
 
     /// Coalesce scroll events and persist metadata only; notes.md stays untouched.
     func updateReadingState(for paperId: String, _ update: (inout PaperItem) -> Void) {
+        if blockTransientWrite(paperId, "updateReadingState") { return }
         guard var paper = paper(withId: paperId) else { return }
         update(&paper)
         guard paper != self.paper(withId: paperId) else { return }
@@ -228,6 +278,7 @@ final class LibraryStore {
     func flushReadingState() -> Bool {
         readingSaveTask?.cancel()
         readingSaveTask = nil
+        for tid in transientPaperIDs { pendingReadingUpdates.removeValue(forKey: tid) }
         let updates = Array(pendingReadingUpdates.values)
         guard !updates.isEmpty else { return true }
         do {
@@ -242,6 +293,7 @@ final class LibraryStore {
 
     @discardableResult
     func deletePaper(id: String) -> Bool {
+        if blockTransientWrite(id, "deletePaper") { return false }
         do {
             // Finder Trash keeps an accidental removal recoverable.
             try FileManager.default.trashItem(at: folderURL(for: id), resultingItemURL: nil)
@@ -495,6 +547,7 @@ final class LibraryStore {
     /// 删除指定条目的附加资源或文件
     @discardableResult
     func deleteExternalResource(for paperId: String, resourceId: String) -> Bool {
+        if blockTransientWrite(paperId, "deleteExternalResource") { return false }
         guard var item = paper(withId: paperId) else { return false }
         guard let idx = item.resources.firstIndex(where: { $0.id == resourceId }) else { return false }
         let res = item.resources[idx]
@@ -508,6 +561,7 @@ final class LibraryStore {
     /// 向条目添加自定义外部链接
     @discardableResult
     func addExternalLink(for paperId: String, title: String, url: String) -> ExternalResource? {
+        if blockTransientWrite(paperId, "addExternalLink") { return nil }
         guard var item = paper(withId: paperId) else { return nil }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -523,6 +577,7 @@ final class LibraryStore {
     /// 移除条目的中文翻译版 PDF
     @discardableResult
     func removeTranslatedPDF(for paperId: String) -> Bool {
+        if blockTransientWrite(paperId, "removeTranslatedPDF") { return false }
         guard var item = paper(withId: paperId) else { return false }
         if let fn = item.translatedFilename {
             let path = folderURL(for: paperId).appendingPathComponent(fn)
@@ -536,6 +591,7 @@ final class LibraryStore {
     /// 为条目添加标签
     @discardableResult
     func addTag(_ tag: String, for paperId: String) -> Bool {
+        if blockTransientWrite(paperId, "addTag") { return false }
         guard var item = paper(withId: paperId) else { return false }
         let clean = tag.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, !item.tags.contains(clean) else { return false }
@@ -546,6 +602,7 @@ final class LibraryStore {
     /// 从条目中移除标签
     @discardableResult
     func removeTag(_ tag: String, for paperId: String) -> Bool {
+        if blockTransientWrite(paperId, "removeTag") { return false }
         guard var item = paper(withId: paperId) else { return false }
         guard let idx = item.tags.firstIndex(of: tag) else { return false }
         item.tags.remove(at: idx)
@@ -566,6 +623,7 @@ final class LibraryStore {
 
     @discardableResult
     func importPDF(for paperId: String, side: PDFSide, from sourceURL: URL) -> Bool {
+        if blockTransientWrite(paperId, "importPDF") { return false }
         guard var item = paper(withId: paperId) else { return false }
         let existingName = side == .original ? item.originalFilename : item.translatedFilename
         let defaultName = side == .original ? "\(item.id).pdf" : "\(item.id)_zh.pdf"
@@ -584,6 +642,7 @@ final class LibraryStore {
     /// 向当前论文（论文集）中添加新的 PDF 文档，或替换已有的附加 PDF
     @discardableResult
     func addAdditionalPDF(to paperId: String, from sourceURL: URL, title: String? = nil, replacingId: String? = nil) -> PaperPDFDocument? {
+        if blockTransientWrite(paperId, "addAdditionalPDF") { return nil }
         guard var item = paper(withId: paperId) else { return nil }
         let docId = replacingId ?? UUID().uuidString
         let cleanTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
@@ -612,6 +671,7 @@ final class LibraryStore {
 
     @discardableResult
     func removeAdditionalPDF(from paperId: String, pdfId: String) -> Bool {
+        if blockTransientWrite(paperId, "removeAdditionalPDF") { return false }
         guard var item = paper(withId: paperId),
               var extras = item.additionalPDFs,
               let target = extras.first(where: { $0.id == pdfId }) else { return false }
@@ -626,6 +686,7 @@ final class LibraryStore {
     // MARK: - Paper Note Documents Management (论文笔记与可跳转引用)
     @discardableResult
     func saveNoteDocument(for paperId: String, note: PaperNoteDocument, notify: Bool = true) -> Bool {
+        if blockTransientWrite(paperId, "saveNoteDocument") { return false }
         guard var item = paper(withId: paperId) else { return false }
         var docs = item.effectiveNoteDocuments
         var updatedNote = note
@@ -641,6 +702,7 @@ final class LibraryStore {
 
     @discardableResult
     func createNoteDocument(for paperId: String, title: String, initialContent: String = "") -> PaperNoteDocument? {
+        if blockTransientWrite(paperId, "createNoteDocument") { return nil }
         guard var item = paper(withId: paperId) else { return nil }
         var docs = item.effectiveNoteDocuments
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -659,6 +721,7 @@ final class LibraryStore {
 
     @discardableResult
     func deleteNoteDocument(for paperId: String, noteId: String) -> Bool {
+        if blockTransientWrite(paperId, "deleteNoteDocument") { return false }
         guard var item = paper(withId: paperId) else { return false }
         var docs = item.effectiveNoteDocuments
         guard docs.count > 1 else { return false }
@@ -669,6 +732,7 @@ final class LibraryStore {
 
     @discardableResult
     func appendContentToNote(for paperId: String, noteId: String? = nil, markdownSnippet: String) -> PaperNoteDocument? {
+        if blockTransientWrite(paperId, "appendContentToNote") { return nil }
         guard var item = paper(withId: paperId) else { return nil }
         var docs = item.effectiveNoteDocuments
         let targetIdx = noteId.flatMap { id in docs.firstIndex(where: { $0.id == id }) } ?? 0
@@ -702,6 +766,7 @@ final class LibraryStore {
     }
 
     func addLocalAttachment(to paperId: String, fileURL: URL, customTitle: String? = nil) -> ExternalResource? {
+        if blockTransientWrite(paperId, "addLocalAttachment") { return nil }
         guard var item = paper(withId: paperId) else { return nil }
         do {
             let destination = try storage.copyAttachment(from: fileURL, for: paperId)

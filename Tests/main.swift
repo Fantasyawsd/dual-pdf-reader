@@ -906,5 +906,11 @@ do {
     }
 }
 
+do {
+    try runP0SystemOpenTests()
+} catch {
+    check(false, "P0-1 system open tests threw \(error)")
+}
+
 print("\nRegression tests: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)

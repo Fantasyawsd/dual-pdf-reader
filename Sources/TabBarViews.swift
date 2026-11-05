@@ -32,7 +32,25 @@ extension NSWindow {
 
 // MARK: - Draggable Unified Titlebar VisualEffectView
 final class DraggableTitleBarView: NSVisualEffectView {
+    var onURLsDropped: (([URL]) -> Void)?
+    private lazy var hoverOverlay: DropHoverOverlayView = {
+        let v = DropHoverOverlayView(message: DocumentOpenCopy.dropToOpenHint)
+        v.isHidden = true
+        v.translatesAutoresizingMaskIntoConstraints = false
+        return v
+    }()
+
     override var mouseDownCanMoveWindow: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL])
+    }
 
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 {
@@ -40,6 +58,48 @@ final class DraggableTitleBarView: NSVisualEffectView {
             return
         }
         super.mouseDown(with: event)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard hasPDF(sender) else { return [] }
+        ensureHover()
+        hoverOverlay.isHidden = false
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard hasPDF(sender) else { hoverOverlay.isHidden = true; return [] }
+        hoverOverlay.isHidden = false
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) { hoverOverlay.isHidden = true }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        hoverOverlay.isHidden = true
+        let urls = readURLs(sender)
+        guard !urls.isEmpty else { return false }
+        onURLsDropped?(urls)
+        return true
+    }
+
+    private func ensureHover() {
+        guard hoverOverlay.superview == nil else { return }
+        addSubview(hoverOverlay)
+        NSLayoutConstraint.activate([
+            hoverOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hoverOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+            hoverOverlay.topAnchor.constraint(equalTo: topAnchor),
+            hoverOverlay.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    private func hasPDF(_ sender: NSDraggingInfo) -> Bool { !readURLs(sender).isEmpty }
+    private func readURLs(_ sender: NSDraggingInfo) -> [URL] {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingFileURLsOnly: true
+        ]) as? [URL] else { return [] }
+        return urls.filter { $0.pathExtension.lowercased() == "pdf" }
     }
 }
 
@@ -729,6 +789,31 @@ final class ZoteroTabItemView: NSControl, NSDraggingSource {
         cacheDisplay(in: bounds, to: representation)
         image.addRepresentation(representation)
         return image
+    }
+
+    func flashFocusHighlight() {
+        wantsLayer = true
+        let flash = CALayer()
+        flash.frame = bounds
+        flash.cornerRadius = 6
+        flash.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.28).cgColor
+        layer?.addSublayer(flash)
+        let duration: CFTimeInterval = 0.2
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(duration)
+        flash.opacity = 0
+        CATransaction.setCompletionBlock { flash.removeFromSuperlayer() }
+        CATransaction.commit()
+        // Ensure opacity animation actually runs
+        let anim = CABasicAnimation(keyPath: "opacity")
+        anim.fromValue = 1
+        anim.toValue = 0
+        anim.duration = duration
+        flash.add(anim, forKey: "fade")
+        flash.opacity = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.05) {
+            flash.removeFromSuperlayer()
+        }
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {

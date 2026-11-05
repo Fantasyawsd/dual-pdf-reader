@@ -2,12 +2,49 @@ import Cocoa
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MultiTabMainWindowController?
+    /// True once we know launch/open should show documents instead of the library.
+    private var didReceiveOpenURLs = false
+    /// URLs that arrived via application(_:open:) before the window controller existed.
+    private var pendingOpenURLs: [URL] = []
+    private var recentMenu: NSMenu?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        b1Log("[DualPDF][B1] applicationDidFinishLaunching")
         setupMainMenu()
-        mainWindowController = MultiTabMainWindowController()
-        mainWindowController?.showWindow(self)
+        let wc = MultiTabMainWindowController()
+        mainWindowController = wc
+        wc.showWindow(self)
         NSApp.activate(ignoringOtherApps: true)
+
+        if !pendingOpenURLs.isEmpty {
+            didReceiveOpenURLs = true
+            let urls = pendingOpenURLs
+            pendingOpenURLs.removeAll()
+            b1Log("[DualPDF][B1] flushing \(urls.count) pending open URL(s) after window ready")
+            wc.openDocuments(urls, origin: .systemOpen)
+        }
+
+        // Cold start: application(_:open:) may arrive before or after didFinishLaunching.
+        // Only fall back to the library when nothing is pending and no open arrived.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if !self.didReceiveOpenURLs && self.pendingOpenURLs.isEmpty {
+                self.mainWindowController?.switchToTab(id: "__LIBRARY__")
+            }
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        b1Log("[DualPDF][B1] application(_:open:) count=\(urls.count) wcReady=\(mainWindowController == nil ? 0 : 1)")
+        didReceiveOpenURLs = true
+        if let wc = mainWindowController {
+            wc.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            wc.openDocuments(urls, origin: .systemOpen)
+        } else {
+            pendingOpenURLs.append(contentsOf: urls)
+            b1Log("[DualPDF][B1] queued \(urls.count) URL(s); pending total=\(pendingOpenURLs.count)")
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -18,10 +55,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LibraryStore.shared.flushReadingState() ? .terminateNow : .terminateCancel
     }
 
+    @objc func openRecentDocumentAction(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        mainWindowController?.window?.makeKeyAndOrderFront(nil)
+        mainWindowController?.openDocuments([url], origin: .openRecent)
+    }
+
+    @objc func clearRecentDocumentsAction(_ sender: Any?) {
+        NSDocumentController.shared.clearRecentDocuments(sender)
+        rebuildRecentMenu()
+    }
+
+    @objc func rebuildRecentMenu() {
+        guard let recentMenu else { return }
+        recentMenu.removeAllItems()
+        let urls = Array(NSDocumentController.shared.recentDocumentURLs.prefix(10))
+        if urls.isEmpty {
+            let empty = NSMenuItem(title: "无记录", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            recentMenu.addItem(empty)
+        } else {
+            for url in urls {
+                let item = NSMenuItem(
+                    title: url.lastPathComponent,
+                    action: #selector(openRecentDocumentAction(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = url
+                item.toolTip = url.path
+                recentMenu.addItem(item)
+            }
+        }
+        recentMenu.addItem(NSMenuItem.separator())
+        let clear = NSMenuItem(
+            title: "清除菜单",
+            action: #selector(clearRecentDocumentsAction(_:)),
+            keyEquivalent: ""
+        )
+        clear.target = self
+        clear.isEnabled = !urls.isEmpty
+        recentMenu.addItem(clear)
+    }
+
+
+    private func b1Log(_ message: String) {
+        NSLog("%@", message)
+    }
+
+
     private func setupMainMenu() {
         let mainMenu = NSMenu()
 
-        // 1. 应用主菜单
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
@@ -35,13 +120,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "隐藏 DualPDF", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "退出 DualPDF", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
-        // 2. 文件菜单
         let fileMenuItem = NSMenuItem()
         mainMenu.addItem(fileMenuItem)
         let fileMenu = NSMenu(title: "文件")
         fileMenuItem.submenu = fileMenu
         fileMenu.addItem(withTitle: "新建 / 导入论文条目…", action: #selector(MultiTabMainWindowController.newPaperShortcutAction), keyEquivalent: "n")
         fileMenu.addItem(withTitle: "快速选择 PDF 双栏打开…", action: #selector(MultiTabMainWindowController.quickOpenPDFShortcutAction), keyEquivalent: "o")
+
+        let recentRoot = NSMenuItem(title: "打开最近使用", action: nil, keyEquivalent: "")
+        let recentSub = NSMenu(title: "打开最近使用")
+        recentRoot.submenu = recentSub
+        recentMenu = recentSub
+        fileMenu.addItem(recentRoot)
+        rebuildRecentMenu()
+        fileMenu.delegate = RecentMenuRefreshDelegate.shared
+        RecentMenuRefreshDelegate.shared.appDelegate = self
+
         fileMenu.addItem(NSMenuItem.separator())
         let revealItem = NSMenuItem(title: "在 Finder 中显示文献库", action: #selector(MultiTabMainWindowController.revealVaultInFinderShortcut), keyEquivalent: "R")
         revealItem.keyEquivalentModifierMask = [.command, .shift]
@@ -49,7 +143,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(withTitle: "关闭当前阅读标签页", action: #selector(MultiTabMainWindowController.closeActiveTabShortcut), keyEquivalent: "w")
 
-        // 3. 编辑菜单
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: "编辑")
@@ -64,7 +157,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(withTitle: "查找…", action: #selector(MultiTabMainWindowController.focusSearchShortcut), keyEquivalent: "f")
 
-        // 4. 阅读与视图菜单
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: "视图与阅读")
@@ -98,7 +190,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(withTitle: "展开/收起右侧目录与笔记抽屉", action: #selector(MultiTabMainWindowController.readerToggleDrawerShortcut), keyEquivalent: "i")
 
-        // 5. 标签页与窗口菜单
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)
         let windowMenu = NSMenu(title: "标签页与窗口")
@@ -123,3 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private final class RecentMenuRefreshDelegate: NSObject, NSMenuDelegate {
+    static let shared = RecentMenuRefreshDelegate()
+    weak var appDelegate: AppDelegate?
+
+    func menuWillOpen(_ menu: NSMenu) {
+        appDelegate?.rebuildRecentMenu()
+    }
+}

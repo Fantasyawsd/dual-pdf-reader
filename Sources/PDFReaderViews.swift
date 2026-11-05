@@ -294,6 +294,7 @@ final class InteractivePDFView: PDFView {
     var onAnnotationClicked: ((PaperAnnotation, NSPoint) -> Void)?
     var onBeforeInternalLinkJump: ((PDFPage, NSPoint, Bool) -> Bool)?
     var onFileDropped: ((URL) -> Void)?
+    var onFilesDropped: (([URL]) -> Void)?
     var onOptionScrollPerformed: (() -> Void)?
     var onContextMenuTranslate: ((String) -> Void)?
     var onContextMenuHighlight: ((PDFSelection, HighlightColor) -> Void)?
@@ -396,18 +397,25 @@ final class InteractivePDFView: PDFView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        if let url = extractPDFURL(from: sender) {
-            onFileDropped?(url)
-            return true
+        let pdfs = extractPDFURLs(from: sender)
+        guard !pdfs.isEmpty else { return super.performDragOperation(sender) }
+        if let onFilesDropped {
+            onFilesDropped(pdfs)
+        } else {
+            onFileDropped?(pdfs[0])
         }
-        return super.performDragOperation(sender)
+        return true
     }
 
     private func extractPDFURL(from sender: NSDraggingInfo) -> URL? {
+        extractPDFURLs(from: sender).first
+    }
+
+    private func extractPDFURLs(from sender: NSDraggingInfo) -> [URL] {
         guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [
             .urlReadingFileURLsOnly: true
-        ]) as? [URL] else { return nil }
-        return urls.first(where: { $0.pathExtension.lowercased() == "pdf" })
+        ]) as? [URL] else { return [] }
+        return urls.filter { $0.pathExtension.lowercased() == "pdf" }
     }
 
     // MARK: - Native macOS Context Menu
@@ -595,6 +603,7 @@ final class CleanPDFColumnView: NSView {
     var onBindPDFRequested: ((PDFSide) -> Void)?
     var onRevealPDFInFinder: ((PDFSide) -> Void)?
     var onFileDropped: ((URL) -> Void)?
+    var onFilesDropped: (([URL]) -> Void)?
     private weak var cachedScrollView: NSScrollView?
 
     init(side: PDFSide) {
@@ -757,9 +766,29 @@ final class CleanPDFColumnView: NSView {
         onBackJumpClicked?()
     }
 
+    private lazy var columnDropOverlay: DropHoverOverlayView = {
+        let v = DropHoverOverlayView(message: DocumentOpenCopy.dropOnColumnHint)
+        v.isHidden = true
+        v.translatesAutoresizingMaskIntoConstraints = false
+        return v
+    }()
+
+    private func ensureColumnDropOverlay() {
+        guard columnDropOverlay.superview == nil else { return }
+        addSubview(columnDropOverlay)
+        NSLayoutConstraint.activate([
+            columnDropOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+            columnDropOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+            columnDropOverlay.topAnchor.constraint(equalTo: topAnchor),
+            columnDropOverlay.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if extractPDFURL(from: sender) != nil {
+        if !extractPDFURLs(from: sender).isEmpty {
             dropCard.isEmphasizedCard = true
+            ensureColumnDropOverlay()
+            columnDropOverlay.isHidden = false
             return .copy
         }
         return []
@@ -767,22 +796,31 @@ final class CleanPDFColumnView: NSView {
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         dropCard.isEmphasizedCard = false
+        columnDropOverlay.isHidden = true
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         dropCard.isEmphasizedCard = false
-        if let url = extractPDFURL(from: sender) {
-            onFileDropped?(url)
-            return true
+        columnDropOverlay.isHidden = true
+        let pdfs = extractPDFURLs(from: sender)
+        guard !pdfs.isEmpty else { return false }
+        if let onFilesDropped {
+            onFilesDropped(pdfs)
+        } else {
+            onFileDropped?(pdfs[0])
         }
-        return false
+        return true
     }
 
     private func extractPDFURL(from sender: NSDraggingInfo) -> URL? {
+        extractPDFURLs(from: sender).first
+    }
+
+    private func extractPDFURLs(from sender: NSDraggingInfo) -> [URL] {
         guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [
             .urlReadingFileURLsOnly: true
-        ]) as? [URL] else { return nil }
-        return urls.first(where: { $0.pathExtension.lowercased() == "pdf" })
+        ]) as? [URL] else { return [] }
+        return urls.filter { $0.pathExtension.lowercased() == "pdf" || ((try? $0.resourceValues(forKeys: [.contentTypeKey]).contentType?.conforms(to: .pdf)) == true) }
     }
 
     override func viewDidChangeEffectiveAppearance() {
