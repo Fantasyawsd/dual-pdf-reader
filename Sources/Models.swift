@@ -367,6 +367,16 @@ struct PaperItem: Codable, Identifiable, Equatable {
         return originalFilename != nil && translatedFilename != nil
     }
 
+    /// Bound PDFs with a non-nil filename (built-in + additional).
+    var boundPDFCount: Int {
+        allPDFDescriptors.filter { $0.filename != nil }.count
+    }
+
+    /// True when this paper is the classic original+translated pair (both bound).
+    var isBuiltInOriginalTranslatedPair: Bool {
+        originalFilename != nil && translatedFilename != nil
+    }
+
     var cleanArxivId: String? {
         guard let raw = arxivId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
         return raw.replacingOccurrences(of: "^arxiv:\\s*", with: "", options: [.regularExpression, .caseInsensitive])
@@ -450,6 +460,10 @@ struct ReaderState: Codable, Equatable {
     var swapped: Bool
     var splitRatio: Double
     var alignments: [PDFSyncAlignment]? = nil
+    /// P0-3: both columns show the same PDFDocument (S4). Optional for old meta.json.
+    var sameDocumentDualView: Bool? = nil
+    /// Bound PDF count at last persist (informational; restore still trusts filenames).
+    var boundPDFCount: Int? = nil
 }
 
 // MARK: - Navigation History Entry (for Reference Jump & Back)

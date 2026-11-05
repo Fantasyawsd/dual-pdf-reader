@@ -1,4 +1,5 @@
 import Cocoa
+import QuartzCore
 import PDFKit
 import WebKit
 import UniformTypeIdentifiers
@@ -273,11 +274,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     private let outlineToggleBtn = ModernHoverButton()
     var leftSidebarToggleBtn: NSButton { outlineToggleBtn }
     private let modeSeg = NSSegmentedControl(labels: ["原文", "译文", "分屏"], trackingMode: .selectOne, target: nil, action: nil)
+    let addCompareButton = ModernHoverButton()
     private let swapBtn = ModernHoverButton()
     var isSwapButtonHidden: Bool { swapBtn.isHidden }
     var isSyncButtonHidden: Bool { syncScrollBtn.isHidden }
     var syncButtonTitle: String { syncScrollBtn.title }
     var modeSegmentLabels: [String] { (0..<modeSeg.segmentCount).map { modeSeg.label(forSegment: $0) ?? "" } }
+    var isAddCompareButtonVisibleForTesting: Bool { !addCompareButton.isHidden }
+    var addCompareButtonTitleForTesting: String { addCompareButton.title }
+    var isModeSegVisibleForTesting: Bool { !modeSeg.isHidden }
+    var isAwaitingCompareForTesting: Bool { isAwaitingCompare }
+    var isSameDocumentDualViewForTesting: Bool { isSameDocumentDualView }
     var dualSplitView: DualPDFSplitView { splitView }
     func canCollapseColumn(_ col: CleanPDFColumnView) -> Bool {
         splitView(splitView, canCollapseSubview: col)
@@ -420,6 +427,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     // 同步滚动、对齐微调偏移与缩放状态
     private var isScrollSyncEnabled = true
+    /// P0-3: S2 empty right pane awaiting a compare PDF.
+    private var isAwaitingCompare = false
+    /// P0-3: S4 both columns share one PDFDocument instance.
+    private var isSameDocumentDualView = false
     private var isClosed = false
     private lazy var viewportCoordinator: PDFViewportCoordinator = {
         let coordinator = PDFViewportCoordinator(columns: [leftCol, rightCol])
@@ -538,7 +549,192 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         }
     }
 
+
+    // MARK: - P0-3 Compare Mode
+
+    @objc func addComparePDFAction() {
+        promptAndAddComparePDF()
+    }
+
+    func refreshModeChrome() {
+        guard isViewLoaded, !isClosed else { return }
+        let count = currentPaper?.boundPDFCount ?? 0
+        let pair = currentPaper?.isBuiltInOriginalTranslatedPair == true
+        let labels = pair ? ["原文", "译文", "分屏"] : ["左栏", "右栏", "分屏"]
+        for i in 0..<min(3, modeSeg.segmentCount) {
+            modeSeg.setLabel(labels[i], forSegment: i)
+        }
+        modeSeg.toolTip = pair ? "切换阅读模式：原文 / 译文 / 分屏" : "切换阅读模式：左栏 / 右栏 / 分屏"
+
+        if isSameDocumentDualView {
+            modeSeg.isHidden = false
+            addCompareButton.isHidden = true
+            syncScrollBtn.toolTip = "同一文档双视图：两栏独立滚动"
+            if rightCol.pdfView.document != nil {
+                rightCol.cornerButton.title = "同一文档 ▾"
+            }
+            return
+        }
+
+        if count <= 1 {
+            if isAwaitingCompare || modeSeg.selectedSegment == 2 {
+                modeSeg.isHidden = true
+                addCompareButton.isHidden = true
+            } else {
+                modeSeg.isHidden = true
+                addCompareButton.isHidden = false
+            }
+        } else {
+            modeSeg.isHidden = false
+            addCompareButton.isHidden = true
+        }
+    }
+
+    func enterCompareEmptyState() {
+        isAwaitingCompare = true
+        isSameDocumentDualView = false
+        rightCol.pdfView.document = nil
+        rightCol.applyContentSource(.pdf(id: PDFSide.translated.rawValue), paper: currentPaper, hasPDFDocument: false)
+        rightCol.configureCompareEmptyState()
+        modeSeg.selectedSegment = 2
+        applyDisplayModeAnimated(2)
+        refreshModeChrome()
+        persistReaderState(from: primaryActiveColumn())
+    }
+
+    func enterCompareEmptyStateForTesting() { enterCompareEmptyState() }
+
+    func returnToSingleColumnFromCompare() {
+        isAwaitingCompare = false
+        isSameDocumentDualView = false
+        rightCol.configureDefaultEmptyState()
+        if (currentPaper?.boundPDFCount ?? 0) <= 1 {
+            rightCol.pdfView.document = nil
+        }
+        modeSeg.selectedSegment = 0
+        applyDisplayModeAnimated(0)
+        refreshModeChrome()
+        persistReaderState(from: primaryActiveColumn())
+    }
+
+    func returnToSingleColumnFromCompareForTesting() { returnToSingleColumnFromCompare() }
+
+    func openSameDocumentInRightColumn() {
+        guard let leftDoc = leftCol.pdfView.document else { return }
+        isAwaitingCompare = false
+        isSameDocumentDualView = true
+        let pdfId = leftCol.activePDFDocumentId
+        viewportCoordinator.selectDocument(pdfId, in: rightCol, initialPage: 0)
+        rightCol.applyContentSource(.pdf(id: pdfId), paper: currentPaper, hasPDFDocument: true)
+        rightCol.pdfView.document = leftDoc
+        rightCol.cornerButton.title = "同一文档 ▾"
+        isScrollSyncEnabled = false
+        syncScrollBtn.state = .off
+        syncScrollBtn.toolTip = "同一文档双视图：两栏独立滚动"
+        modeSeg.selectedSegment = 2
+        applyDisplayModeAnimated(2)
+        applyAnnotationsToPDFViews()
+        refreshModeChrome()
+        persistReaderState(from: primaryActiveColumn())
+    }
+
+    func openSameDocumentInRightColumnForTesting() { openSameDocumentInRightColumn() }
+
+    private func promptAndAddComparePDF() {
+        let panel = NSOpenPanel()
+        panel.title = "选择对照 PDF"
+        panel.allowedContentTypes = [.pdf]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addComparePDF(from: url)
+    }
+
+    func addComparePDF(from url: URL) {
+        guard let paper = currentPaper else { return }
+        isAwaitingCompare = false
+        isSameDocumentDualView = false
+        if paper.translatedFilename == nil {
+            _ = LibraryStore.shared.importPDF(for: paperId, side: .translated, from: url)
+            setColumnSource(rightCol, source: .pdf(id: PDFSide.translated.rawValue), syncModeSeg: false)
+        } else if let added = LibraryStore.shared.addAdditionalPDF(to: paperId, from: url,
+                                                                  title: url.deletingPathExtension().lastPathComponent) {
+            setColumnSource(rightCol, source: .pdf(id: added.id), syncModeSeg: false)
+        } else {
+            return
+        }
+        isScrollSyncEnabled = true
+        syncScrollBtn.state = .on
+        modeSeg.selectedSegment = 2
+        applyDisplayModeAnimated(2)
+        refreshModeChrome()
+        persistReaderState(from: primaryActiveColumn())
+    }
+
+    func removeRightComparePDFGoingToSingle() {
+        isAwaitingCompare = false
+        isSameDocumentDualView = false
+        if rightCol.activePDFDocumentId == PDFSide.translated.rawValue {
+            LibraryStore.shared.removeTranslatedPDF(for: paperId)
+        }
+        rightCol.pdfView.document = nil
+        rightCol.configureDefaultEmptyState()
+        modeSeg.selectedSegment = 0
+        applyDisplayModeAnimated(0)
+        refreshModeChrome()
+        loadPaperDocuments()
+        persistReaderState(from: primaryActiveColumn())
+    }
+
+    func closeSameDocumentSecondView() {
+        isSameDocumentDualView = false
+        rightCol.pdfView.document = nil
+        rightCol.configureDefaultEmptyState()
+        modeSeg.selectedSegment = 0
+        applyDisplayModeAnimated(0)
+        refreshModeChrome()
+        persistReaderState(from: primaryActiveColumn())
+    }
+
+    func wantsSideBySideCompareDrop(atLocationInView point: NSPoint) -> Bool {
+        guard (currentPaper?.boundPDFCount ?? 0) <= 1, !isSameDocumentDualView else { return false }
+        // Single-column S1: right third of the reader view.
+        if modeSeg.selectedSegment == 0 || (!isAwaitingCompare && addCompareButton.isHidden == false && modeSeg.isHidden) {
+            return point.x >= view.bounds.width * (2.0 / 3.0)
+        }
+        return false
+    }
+
+    @discardableResult
+    func handleSideBySideCompareDrop(urls: [URL]) -> Bool {
+        guard let url = urls.first else { return false }
+        guard (currentPaper?.boundPDFCount ?? 0) <= 1 || isAwaitingCompare else { return false }
+        addComparePDF(from: url)
+        return true
+    }
+
+    @objc func handleCompareEscapeKey() {
+        if isAwaitingCompare {
+            returnToSingleColumnFromCompare()
+        }
+    }
+
+    private var compareEscapeMonitor: Any?
+
+    private func installCompareEscapeMonitor() {
+        guard compareEscapeMonitor == nil else { return }
+        compareEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, !self.isClosed, self.isAwaitingCompare,
+                  event.keyCode == 53, // Escape
+                  self.view.window?.isKeyWindow == true else { return event }
+            self.returnToSingleColumnFromCompare()
+            return nil
+        }
+    }
+
     func prepareForClose() {
+        if let compareEscapeMonitor {
+            NSEvent.removeMonitor(compareEscapeMonitor)
+            self.compareEscapeMonitor = nil
+        }
         guard !isClosed else { return }
         removeCommandScrollMonitor()
         removeUndoKeyMonitor()
@@ -606,6 +802,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         setupFloatingBackBanners()
         setupSyncAndCallbacks()
         installCommandScrollMonitor()
+        installCompareEscapeMonitor()
         installUndoKeyMonitor()
         root.onGeometryWillChange = { [weak self] in self?.beginLayoutChange() }
         root.onGeometryDidChange = { [weak self] in self?.scheduleLayoutCompletion() }
@@ -643,8 +840,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         outlineToggleBtn.target = self
         outlineToggleBtn.action = #selector(toggleLeftSidebarAction)
 
-        let savedMode = currentPaper?.readerState?.displayMode ?? 2
-        modeSeg.selectedSegment = (0...2).contains(savedMode) ? savedMode : 2
+        let boundCount = currentPaper?.boundPDFCount ?? 0
+        let savedState = currentPaper?.readerState
+        let savedMode = savedState?.displayMode
+        let defaultMode = boundCount <= 1 ? 0 : 2
+        let initialMode = (savedMode != nil && (0...2).contains(savedMode!)) ? savedMode! : defaultMode
+        modeSeg.selectedSegment = initialMode
         modeSeg.controlSize = .regular
         modeSeg.segmentDistribution = .fillProportionally
         modeSeg.toolTip = "切换阅读模式：原文 / 译文 / 分屏"
@@ -652,6 +853,22 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         modeSeg.action = #selector(modeChangedAction)
         modeSeg.translatesAutoresizingMaskIntoConstraints = false
         modeSeg.widthAnchor.constraint(equalToConstant: 168).isActive = true
+
+        configureToolbarButton(addCompareButton)
+        addCompareButton.controlSize = .small
+        addCompareButton.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: "添加对照 PDF")?.withSymbolConfiguration(barIconConfig)
+        addCompareButton.title = "添加对照 PDF"
+        addCompareButton.imagePosition = .imageLeading
+        addCompareButton.toolTip = "添加对照 PDF"
+        addCompareButton.target = self
+        addCompareButton.action = #selector(addComparePDFAction)
+        addCompareButton.isHidden = true
+        addCompareButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        if let savedState, savedState.sameDocumentDualView == true {
+            isSameDocumentDualView = true
+            isScrollSyncEnabled = savedState.syncEnabled
+        }
 
         configureToolbarIconButton(swapBtn)
         swapBtn.controlSize = .small
@@ -859,6 +1076,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         // --- 3 个自平衡分区（左对齐组、绝对中心组、右对齐组） ---
         let leftBarStack = toolbarLeftStack
         [
+            addCompareButton,
             modeSeg,
             swapBtn,
             dualSep,
@@ -3251,9 +3469,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let left = viewportStates[leftCol.side.rawValue] ?? PDFColumnReadingState(pdfDocumentId: leftCol.activePDFDocumentId, continuousPage: 0)
         let right = viewportStates[rightCol.side.rawValue] ?? PDFColumnReadingState(pdfDocumentId: rightCol.activePDFDocumentId, continuousPage: 0)
         viewportCoordinator.setAlignment(pageRatioOffset)
+        // P0-3: never persist S2 empty-compare; reopen as S1.
+        let persistMode = isAwaitingCompare ? 0 : modeSeg.selectedSegment
         let state = ReaderState(leftColumn: left, rightColumn: right, syncEnabled: isScrollSyncEnabled,
-            displayMode: modeSeg.selectedSegment, swapped: isSwapped, splitRatio: Double(columnSplitRatio),
-            alignments: viewportCoordinator.savedAlignments)
+            displayMode: persistMode, swapped: isSwapped, splitRatio: Double(columnSplitRatio),
+            alignments: viewportCoordinator.savedAlignments,
+            sameDocumentDualView: isSameDocumentDualView,
+            boundPDFCount: currentPaper?.boundPDFCount)
         LibraryStore.shared.updateReadingState(for: paperId) { paper in
             paper.readerState = state
             paper.syncOffsetDelta = pageRatioOffset
@@ -3472,6 +3694,21 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 guard let self = self, let col = col else { return }
                 self.promptToImportOrReplacePDF(in: col)
             }
+            col.onOpenSameDocumentRequested = { [weak self] in
+                self?.openSameDocumentInRightColumn()
+            }
+            col.onReturnToSingleColumnRequested = { [weak self] in
+                self?.returnToSingleColumnFromCompare()
+            }
+            col.onRemoveComparePDFRequested = { [weak self] in
+                self?.removeRightComparePDFGoingToSingle()
+            }
+            col.onCloseSecondViewRequested = { [weak self] in
+                self?.closeSameDocumentSecondView()
+            }
+            col.sameDocumentDualViewProvider = { [weak self] in
+                self?.isSameDocumentDualView ?? false
+            }
             col.onRevealPDFInFinder = { [weak self, weak col] side in
                 guard let self = self,
                       let col = col,
@@ -3481,6 +3718,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             }
             let dropHandler: (URL) -> Void = { [weak self, weak col] url in
                 guard let self = self, let col = col else { return }
+                if self.isAwaitingCompare, col === self.rightCol {
+                    self.addComparePDF(from: url)
+                    return
+                }
+                if (self.currentPaper?.boundPDFCount ?? 0) <= 1, col === self.rightCol, self.modeSeg.selectedSegment == 2 {
+                    self.addComparePDF(from: url)
+                    return
+                }
                 self.handleDroppedPDFOnColumn(url, col: col)
             }
             let multiDropHandler: ([URL]) -> Void = { [weak self, weak col] urls in
@@ -3795,6 +4040,18 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             lastReadingColumn = saved.side == .original ? leftCol : rightCol
         }
         applyDisplayMode(modeSeg.selectedSegment)
+        if isSameDocumentDualView, let leftDoc = leftCol.pdfView.document {
+            let pdfId = leftCol.activePDFDocumentId
+            rightCol.applyContentSource(.pdf(id: pdfId), paper: paper, hasPDFDocument: true)
+            rightCol.pdfView.document = leftDoc
+            rightCol.cornerButton.title = "同一文档 ▾"
+            isScrollSyncEnabled = false
+            syncScrollBtn.state = .off
+            syncScrollBtn.toolTip = "同一文档双视图：两栏独立滚动"
+            modeSeg.selectedSegment = 2
+            applyDisplayMode(2)
+        }
+        refreshModeChrome()
         refreshSidebarNotes()
         refreshTagsTabUI()
         applyAnnotationsToPDFViews()
@@ -4751,8 +5008,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     func setDisplayMode(_ segment: Int) {
         // 非法模式回到双 PDF；笔记仅由右侧栏入口打开。
         let pdfMode = (0..<modeSeg.segmentCount).contains(segment) ? segment : 2
+        if pdfMode == 2, (currentPaper?.boundPDFCount ?? 0) <= 1, !isSameDocumentDualView {
+            enterCompareEmptyState()
+            return
+        }
+        if pdfMode != 2 { isAwaitingCompare = false }
         modeSeg.selectedSegment = pdfMode
-        applyDisplayMode(pdfMode)
+        applyDisplayModeAnimated(pdfMode)
+        refreshModeChrome()
     }
 
     private func updateZoomIndicators() {
@@ -4778,7 +5041,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     @objc func modeChangedAction() {
-        applyDisplayMode(modeSeg.selectedSegment)
+        isAwaitingCompare = false
+        if modeSeg.selectedSegment == 2, (currentPaper?.boundPDFCount ?? 0) <= 1, !isSameDocumentDualView {
+            enterCompareEmptyState()
+            return
+        }
+        applyDisplayModeAnimated(modeSeg.selectedSegment)
+        refreshModeChrome()
+        persistReaderState(from: primaryActiveColumn())
     }
 
     func applyColumnSplitRatio() {
@@ -4788,6 +5058,15 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         let total = splitView.bounds.width - splitView.dividerThickness
         guard total > 100 else { return }
         splitView.adjustSubviews()
+    }
+
+    private func applyDisplayModeAnimated(_ segment: Int) {
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = reduce ? 0 : 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            self.applyDisplayMode(segment)
+        }
     }
 
     private func applyDisplayMode(_ segment: Int) {

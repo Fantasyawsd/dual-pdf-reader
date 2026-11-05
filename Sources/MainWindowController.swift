@@ -469,6 +469,7 @@ final class MultiTabMainWindowController: NSWindowController {
     @objc func readerModeDualShortcut() { activeReaderVC?.setDisplayMode(2) }
     @objc func readerModeOrigShortcut() { activeReaderVC?.setDisplayMode(0) }
     @objc func readerModeTransShortcut() { activeReaderVC?.setDisplayMode(1) }
+    @objc func readerModeSplitShortcut() { activeReaderVC?.setDisplayMode(2) }
     @objc func configureLLMTranslationShortcut() { LLMTranslationService.shared.presentSettingsModal(from: window) }
     @objc func readerSwapColumnsShortcut() { activeReaderVC?.swapColumnsAction() }
     @objc func readerResetAlignmentShortcut() { activeReaderVC?.resetSyncAlignmentAction() }
@@ -497,6 +498,9 @@ final class MultiTabMainWindowController: NSWindowController {
 
 final class FileDropHostView: NSView {
     var onURLsDropped: (([URL]) -> Void)?
+    /// Return (message, handleAsSideBySideCompare) for the current drag location in view coords.
+    var onDragHover: ((NSPoint) -> (message: String, sideBySideCompare: Bool))?
+    private var pendingSideBySideCompare = false
     private let hoverOverlay = DropHoverOverlayView(message: DocumentOpenCopy.dropToOpenHint)
 
     override init(frame frameRect: NSRect) {
@@ -516,15 +520,26 @@ final class FileDropHostView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard hasPDF(sender) else { return [] }
-        hoverOverlay.isHidden = false
-        return .copy
+        return updateHover(sender)
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        return updateHover(sender)
+    }
+
+    private func updateHover(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard hasPDF(sender) else {
             hoverOverlay.isHidden = true
+            pendingSideBySideCompare = false
             return []
+        }
+        let point = convert(sender.draggingLocation, from: nil)
+        if let hover = onDragHover?(point) {
+            hoverOverlay.setMessage(hover.message)
+            pendingSideBySideCompare = hover.sideBySideCompare
+        } else {
+            hoverOverlay.setMessage(DocumentOpenCopy.dropToOpenHint)
+            pendingSideBySideCompare = false
         }
         hoverOverlay.isHidden = false
         return .copy
@@ -540,6 +555,12 @@ final class FileDropHostView: NSView {
         hoverOverlay.isHidden = true
         let urls = readURLs(sender)
         guard !urls.isEmpty else { return false }
+        let asCompare = pendingSideBySideCompare
+        pendingSideBySideCompare = false
+        if asCompare, let wc = window?.windowController as? MultiTabMainWindowController,
+           wc.handleSideBySideCompareDropFromWindow(urls) {
+            return true
+        }
         onURLsDropped?(urls)
         return true
     }
@@ -576,6 +597,7 @@ final class DropHoverOverlayView: NSView {
             label.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
     }
+    func setMessage(_ message: String) { label.stringValue = message }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
@@ -610,6 +632,22 @@ extension MultiTabMainWindowController {
         contentHostView.onURLsDropped = { [weak self] urls in
             self?.openDocuments(urls, origin: .windowDrop)
         }
+        contentHostView.onDragHover = { [weak self] pointInHost in
+            guard let self, let reader = self.activeReaderVC else {
+                return (DocumentOpenCopy.dropToOpenHint, false)
+            }
+            // Convert host point into reader view coordinates.
+            let pointInReader = reader.view.convert(pointInHost, from: self.contentHostView)
+            if reader.wantsSideBySideCompareDrop(atLocationInView: pointInReader) {
+                return (DocumentOpenCopy.dropSideBySideCompareHint, true)
+            }
+            return (DocumentOpenCopy.dropToOpenHint, false)
+        }
+    }
+
+    @discardableResult
+    func handleSideBySideCompareDropFromWindow(_ urls: [URL]) -> Bool {
+        activeReaderVC?.handleSideBySideCompareDrop(urls: urls) ?? false
     }
 
     func showStatusBanner(_ text: String, duration: TimeInterval? = 4, retry: (() -> Void)? = nil) {

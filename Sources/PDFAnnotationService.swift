@@ -44,7 +44,9 @@ final class PDFAnnotationRenderer {
         var hidden: Set<String> = []
         init(document: PDFDocument) { self.document = document }
     }
+    /// Keyed by PDFDocument identity so S4 dual views sharing one document never double-render.
     private var states: [ObjectIdentifier: State] = [:]
+    private var columnDocumentKeys: [ObjectIdentifier: ObjectIdentifier] = [:]
 
     func apply(_ annotations: [PaperAnnotation], to column: CleanPDFColumnView) {
         let activePDFId = column.activePDFDocumentId
@@ -52,17 +54,24 @@ final class PDFAnnotationRenderer {
         column.pdfView.storedAnnotations = selected
         let colKey = ObjectIdentifier(column)
         guard column.contentSource.isPDF, let document = column.pdfView.document else {
-            states.removeValue(forKey: colKey)
+            columnDocumentKeys.removeValue(forKey: colKey)
             return
         }
+        let docKey = ObjectIdentifier(document)
+        columnDocumentKeys[colKey] = docKey
         let state: State
-        if let existing = states[colKey], existing.document === document { state = existing }
-        else { state = State(document: document); states[colKey] = state }
+        if let existing = states[docKey], existing.document === document {
+            state = existing
+        } else {
+            state = State(document: document)
+            states[docKey] = state
+        }
         let models = Dictionary(selected.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for (id, old) in state.models where models[id] != old {
             for rendered in state.rendered.removeValue(forKey: id) ?? [] {
                 guard let page = rendered.page else { continue }
                 page.removeAnnotation(rendered.annotation)
+                pagesTouched.insert(ObjectIdentifier(page))
                 column.pdfView.annotationsChanged(on: page)
             }
         }
@@ -83,8 +92,10 @@ final class PDFAnnotationRenderer {
     }
 
     func setHidden(_ ids: Set<String>, in column: CleanPDFColumnView) {
-        let key = ObjectIdentifier(column)
-        guard let state = states[key], state.document === column.pdfView.document else { return }
+        let colKey = ObjectIdentifier(column)
+        guard let docKey = columnDocumentKeys[colKey] ?? (column.pdfView.document.map { ObjectIdentifier($0) }),
+              let state = states[docKey],
+              state.document === column.pdfView.document else { return }
         for id in ids where !state.hidden.contains(id) {
             state.hidden.insert(id)
             for item in state.rendered[id] ?? [] {
@@ -216,7 +227,7 @@ final class PDFAnnotationRenderer {
         return contents
     }
 
-    func reset() { states.removeAll() }
+    func reset() { states.removeAll(); columnDocumentKeys.removeAll() }
 }
 
 func readableTextColor(_ color: NSColor) -> NSColor {

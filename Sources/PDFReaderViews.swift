@@ -1839,7 +1839,12 @@ final class CleanPDFColumnView: NSView {
     private let cornerBadge = NSVisualEffectView()
     let cornerButton = NSButton()
     private let emptyTitleLabel = NSTextField(labelWithString: "")
+    private let emptySubtitleLabel = NSTextField(labelWithString: "")
     private let emptyBindButton = NSButton()
+    private let emptySecondaryButton = NSButton(title: "", target: nil, action: nil)
+    private let emptyCloseButton = NSButton(title: "", target: nil, action: nil)
+    private var emptyStack: NSStackView?
+    private var isCompareEmptyState = false
 
     // 浮动“返回”胶囊按钮（跳转时显示，左栏发起的在左侧，右栏发起的在右侧，仅直接显示“返回”）
     let backJumpBanner = NSVisualEffectView()
@@ -1865,6 +1870,19 @@ final class CleanPDFColumnView: NSView {
     var onRevealPDFInFinder: ((PDFSide) -> Void)?
     var onFileDropped: ((URL) -> Void)?
     var onFilesDropped: (([URL]) -> Void)?
+    var onOpenSameDocumentRequested: (() -> Void)?
+    var onReturnToSingleColumnRequested: (() -> Void)?
+    var onRemoveComparePDFRequested: (() -> Void)?
+    var onCloseSecondViewRequested: (() -> Void)?
+    var sameDocumentDualViewProvider: (() -> Bool)?
+
+    // Testing / inspection
+    var emptyStateTitleForTesting: String { emptyTitleLabel.stringValue }
+    var emptyStateSubtitleForTesting: String { emptySubtitleLabel.stringValue }
+    var emptyStatePrimaryTitleForTesting: String { emptyBindButton.title }
+    var emptyStateSecondaryTitleForTesting: String { emptySecondaryButton.title }
+    var emptyStateCloseTitleForTesting: String { emptyCloseButton.title }
+    var isCompareEmptyStateForTesting: Bool { isCompareEmptyState }
     private weak var cachedScrollView: NSScrollView?
 
     init(side: PDFSide) {
@@ -1977,10 +1995,14 @@ final class CleanPDFColumnView: NSView {
         emptyTitleLabel.stringValue = side == .original ? "尚未绑定原版 PDF" : "尚未绑定中文译版 PDF"
         emptyTitleLabel.font = .systemFont(ofSize: 15.5, weight: .semibold)
         emptyTitleLabel.textColor = .labelColor
+        emptyTitleLabel.alignment = .center
 
-        let subLbl = NSTextField(labelWithString: "将 PDF 文件直接拖入此处，或点击下方按钮选择文件")
-        subLbl.font = .systemFont(ofSize: 13)
-        subLbl.textColor = .secondaryLabelColor
+        emptySubtitleLabel.stringValue = "将 PDF 文件直接拖入此处，或点击下方按钮选择文件"
+        emptySubtitleLabel.font = .systemFont(ofSize: 13)
+        emptySubtitleLabel.textColor = .secondaryLabelColor
+        emptySubtitleLabel.alignment = .center
+        emptySubtitleLabel.maximumNumberOfLines = 3
+        emptySubtitleLabel.lineBreakMode = .byWordWrapping
 
         emptyBindButton.title = side == .original ? "选择原版 PDF 文件…" : "选择中文版 PDF 文件…"
         emptyBindButton.target = self
@@ -1988,13 +2010,32 @@ final class CleanPDFColumnView: NSView {
         emptyBindButton.bezelStyle = .rounded
         emptyBindButton.controlSize = .regular
 
-        let stack = NSStackView(views: [iconView, emptyTitleLabel, subLbl, emptyBindButton])
+        emptySecondaryButton.title = "在右栏打开同一文档"
+        emptySecondaryButton.target = self
+        emptySecondaryButton.action = #selector(openSameDocumentClicked)
+        emptySecondaryButton.bezelStyle = .recessed
+        emptySecondaryButton.isBordered = false
+        emptySecondaryButton.font = .systemFont(ofSize: 12, weight: .medium)
+        emptySecondaryButton.contentTintColor = .controlAccentColor
+        emptySecondaryButton.isHidden = true
+
+        emptyCloseButton.title = "返回单栏"
+        emptyCloseButton.target = self
+        emptyCloseButton.action = #selector(returnToSingleColumnClicked)
+        emptyCloseButton.bezelStyle = .rounded
+        emptyCloseButton.controlSize = .small
+        emptyCloseButton.isHidden = true
+        emptyCloseButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [iconView, emptyTitleLabel, emptySubtitleLabel, emptyBindButton, emptySecondaryButton])
         stack.orientation = .vertical
         stack.spacing = 9
         stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
+        emptyStack = stack
         dropCard.addSubview(stack)
         emptyPlaceholder.addSubview(dropCard)
+        emptyPlaceholder.addSubview(emptyCloseButton)
 
         addSubview(emptyPlaceholder)
 
@@ -2036,10 +2077,17 @@ final class CleanPDFColumnView: NSView {
             dropCard.centerXAnchor.constraint(equalTo: emptyPlaceholder.centerXAnchor),
             dropCard.centerYAnchor.constraint(equalTo: emptyPlaceholder.centerYAnchor),
             dropCard.widthAnchor.constraint(equalToConstant: 320),
-            dropCard.heightAnchor.constraint(equalToConstant: 215),
+            dropCard.heightAnchor.constraint(greaterThanOrEqualToConstant: 215),
 
             stack.centerXAnchor.constraint(equalTo: dropCard.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: dropCard.centerYAnchor)
+            stack.centerYAnchor.constraint(equalTo: dropCard.centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: dropCard.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: dropCard.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(greaterThanOrEqualTo: dropCard.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: dropCard.bottomAnchor, constant: -16),
+
+            emptyCloseButton.topAnchor.constraint(equalTo: emptyPlaceholder.topAnchor, constant: 10),
+            emptyCloseButton.trailingAnchor.constraint(equalTo: emptyPlaceholder.trailingAnchor, constant: -12)
         ])
 
         updateBannerPosition(isRightAligned: side == .translated)
@@ -2137,16 +2185,68 @@ final class CleanPDFColumnView: NSView {
             pdfView.isHidden = !hasPDFDocument
             emptyPlaceholder.isHidden = hasPDFDocument
             let title = paper?.pdfTitle(for: pdfId) ?? (side == .original ? "原文 EN" : "译文 ZH")
-            cornerButton.title = "\(title) ▾"
-            cornerButton.toolTip = "点击切换此栏显示的论文集 PDF"
-            emptyTitleLabel.stringValue = "尚未绑定 \(title)"
-            emptyBindButton.title = "选择 \(title) 文件…"
+            if isCompareEmptyState && !hasPDFDocument {
+                cornerButton.title = "对照 ▾"
+                cornerButton.toolTip = "添加对照 PDF"
+                configureCompareEmptyState()
+            } else {
+                cornerButton.title = "\(title) ▾"
+                cornerButton.toolTip = "点击切换此栏显示的论文集 PDF"
+                if hasPDFDocument {
+                    isCompareEmptyState = false
+                    emptySecondaryButton.isHidden = true
+                    emptyCloseButton.isHidden = true
+                } else {
+                    configureDefaultEmptyState(title: title)
+                }
+            }
 
         }
     }
 
     @objc private func bindBtnClicked() {
         onBindPDFRequested?(side)
+    }
+
+    @objc private func openSameDocumentClicked() {
+        onOpenSameDocumentRequested?()
+    }
+
+    @objc private func returnToSingleColumnClicked() {
+        onReturnToSingleColumnRequested?()
+    }
+
+    @objc private func removeComparePDFClicked() {
+        onRemoveComparePDFRequested?()
+    }
+
+    @objc private func closeSecondViewClicked() {
+        onCloseSecondViewRequested?()
+    }
+
+    /// P0-3 S2 empty right pane copy (spec 3.2, character-exact).
+    func configureCompareEmptyState() {
+        isCompareEmptyState = true
+        emptyTitleLabel.stringValue = "添加一份 PDF 进行对照"
+        emptySubtitleLabel.stringValue = "拖入 PDF 到此处，或从文件中选择。"
+        emptyBindButton.title = "选择 PDF…"
+        emptySecondaryButton.title = "在右栏打开同一文档"
+        emptySecondaryButton.isHidden = false
+        emptyCloseButton.title = "返回单栏"
+        emptyCloseButton.isHidden = false
+        emptyCloseButton.keyEquivalent = "\\"
+        emptyCloseButton.keyEquivalentModifierMask = [.command]
+    }
+
+    func configureDefaultEmptyState(title: String? = nil) {
+        isCompareEmptyState = false
+        let resolved = title ?? (side == .original ? "原文 EN" : "译文 ZH")
+        emptyTitleLabel.stringValue = "尚未绑定 \(resolved)"
+        emptySubtitleLabel.stringValue = "将 PDF 文件直接拖入此处，或点击下方按钮选择文件"
+        emptyBindButton.title = "选择 \(resolved) 文件…"
+        emptySecondaryButton.isHidden = true
+        emptyCloseButton.isHidden = true
+        emptyCloseButton.keyEquivalent = ""
     }
 
     @objc private func cornerBadgeClicked(_ sender: NSButton) {
@@ -2189,6 +2289,16 @@ final class CleanPDFColumnView: NSView {
             let revealItem = NSMenuItem(title: "在 Finder 中显示此 PDF", action: #selector(revealClicked), keyEquivalent: "")
             revealItem.target = self
             menu.addItem(revealItem)
+
+            if sameDocumentDualViewProvider?() == true, side == .translated {
+                let closeSecond = NSMenuItem(title: "关闭第二视图", action: #selector(closeSecondViewClicked), keyEquivalent: "")
+                closeSecond.target = self
+                menu.addItem(closeSecond)
+            } else if side == .translated, pdfView.document != nil {
+                let removeCompare = NSMenuItem(title: "移除此 PDF", action: #selector(removeComparePDFClicked), keyEquivalent: "")
+                removeCompare.target = self
+                menu.addItem(removeCompare)
+            }
 
             if curPDFId != PDFSide.original.rawValue && curPDFId != PDFSide.translated.rawValue {
                 let removeExtraItem = NSMenuItem(title: "从本论文集移除此附加 PDF", action: #selector(removeExtraPDFMenuItemClicked(_:)), keyEquivalent: "")

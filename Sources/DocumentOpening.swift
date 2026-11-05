@@ -30,6 +30,7 @@ enum DocumentOpenCopy {
     static let iCloudRetry = "重试"
     static let dropOnColumnHint = "松开以在此栏打开"
     static let dropToOpenHint = "松开以打开"
+    static let dropSideBySideCompareHint = "松开以并排对照"
     static let encryptedNotImported = "已临时打开加密 PDF（未写入文献库，明文不落盘）。"
 }
 

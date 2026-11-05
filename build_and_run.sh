@@ -23,7 +23,7 @@ if [[ "$MODE" == "--test" || "$MODE" == "--ui-test" ]]; then
         [[ "$source" == "Sources/main.swift" ]] || TEST_SOURCES+=("$source")
     done
     if [[ "$MODE" == "--test" ]]; then
-        swiftc "${TEST_SOURCES[@]}" Tests/FunctionalGapTests.swift Tests/P0SystemOpenTests.swift Tests/P0TransientLibraryTests.swift Tests/ReaderCoreTests.swift Tests/PDFWidthLayoutTests.swift Tests/ReaderToolbarTests.swift Tests/main.swift -target "$TARGET" "${FRAMEWORKS[@]}" -o "$BUILD_DIR/RegressionTests"
+        swiftc "${TEST_SOURCES[@]}" Tests/FunctionalGapTests.swift Tests/P0SystemOpenTests.swift Tests/P0TransientLibraryTests.swift Tests/P0CompareModeTests.swift Tests/ReaderCoreTests.swift Tests/PDFWidthLayoutTests.swift Tests/ReaderToolbarTests.swift Tests/main.swift -target "$TARGET" "${FRAMEWORKS[@]}" -o "$BUILD_DIR/RegressionTests"
         "$BUILD_DIR/RegressionTests"
     else
         swiftc "${TEST_SOURCES[@]}" Tests/LegacyUITests.swift Tests/UI/main.swift -target "$TARGET" "${FRAMEWORKS[@]}" -o "$BUILD_DIR/UITests"
