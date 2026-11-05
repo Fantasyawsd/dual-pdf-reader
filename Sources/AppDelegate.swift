@@ -101,23 +101,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func b1Log(_ message: String) {
         NSLog("%@", message)
-        let line = message + "\n"
-        let url = URL(fileURLWithPath: "/tmp/dualpdf-b1-order.log")
-        if let data = line.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: url.path),
-               let handle = try? FileHandle(forWritingTo: url) {
-                defer { try? handle.close() }
-                do {
-                    try handle.seekToEnd()
-                    try handle.write(contentsOf: data)
-                } catch {
-                    try? data.write(to: url)
-                }
-            } else {
-                try? data.write(to: url)
-            }
-        }
     }
+
 
     private func setupMainMenu() {
         let mainMenu = NSMenu()

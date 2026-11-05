@@ -248,6 +248,9 @@ final class MultiTabMainWindowController: NSWindowController {
 
     func closePaperTab(paperId: String) {
         guard let vc = openReaderTabs.removeValue(forKey: paperId) else { return }
+        if vc.isTransientOpen {
+            LibraryStore.shared.unregisterTransientPaper(id: paperId)
+        }
         vc.prepareForClose()
         if vc.isViewLoaded { vc.view.removeFromSuperview() }
         orderedTabIds.removeAll { $0 == paperId }
@@ -266,6 +269,9 @@ final class MultiTabMainWindowController: NSWindowController {
         for pid in toClose {
             cachedTabViews.removeValue(forKey: pid)
             if let vc = openReaderTabs.removeValue(forKey: pid) {
+                if vc.isTransientOpen {
+                    LibraryStore.shared.unregisterTransientPaper(id: pid)
+                }
                 vc.prepareForClose()
                 if vc.isViewLoaded { vc.view.removeFromSuperview() }
             }
@@ -725,6 +731,7 @@ extension MultiTabMainWindowController {
         }
 
         let session = TransientOpenSession(sourceURL: sourceURL, document: document)
+        LibraryStore.shared.registerTransientPaper(id: session.id)
         let readerVC = ReaderTabViewController(paperId: session.id, transientSession: session)
         readerVC.onRequestOpenPaperTab = { [weak self] targetId in
             self?.openOrSwitchToPaperTab(paperId: targetId, jumpToAnnot: nil, switchImmediately: true)
