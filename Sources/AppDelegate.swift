@@ -218,6 +218,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mTrans.keyEquivalentModifierMask = [.control]
         viewMenu.addItem(mTrans)
 
+        let mSplit = NSMenuItem(title: "分屏", action: #selector(MultiTabMainWindowController.readerModeSplitShortcut), keyEquivalent: "3")
+        mSplit.keyEquivalentModifierMask = [.command]
+        viewMenu.addItem(mSplit)
+
         viewMenu.addItem(NSMenuItem.separator())
         let swapItem = NSMenuItem(title: "左右两栏互换", action: #selector(MultiTabMainWindowController.readerSwapColumnsShortcut), keyEquivalent: "X")
         swapItem.keyEquivalentModifierMask = [.command, .shift]
