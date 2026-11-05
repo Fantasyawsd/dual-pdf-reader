@@ -86,6 +86,9 @@ final class LibraryStore {
     func folderURL(for paperId: String) -> URL { storage.folderURL(for: paperId) }
 
     func pdfURL(for paper: PaperItem, side: PDFSide) -> URL? {
+        if paper.isTransient || isTransientPaper(id: paper.id) {
+            return TransientStore.shared.pdfURL(for: paper, side: side)
+        }
         let name = side == .original ? paper.originalFilename : paper.translatedFilename
         guard let name = name else { return nil }
         let url = folderURL(for: paper.id).appendingPathComponent(name)
@@ -93,6 +96,9 @@ final class LibraryStore {
     }
 
     func pdfURL(for paper: PaperItem, pdfId: String) -> URL? {
+        if paper.isTransient || isTransientPaper(id: paper.id) {
+            return TransientStore.shared.pdfURL(for: paper, pdfId: pdfId)
+        }
         if pdfId == PDFSide.original.rawValue {
             return pdfURL(for: paper, side: .original)
         }
@@ -167,7 +173,10 @@ final class LibraryStore {
         papersByID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    func paper(withId id: String) -> PaperItem? { pendingReadingUpdates[id] ?? papersByID[id] }
+    func paper(withId id: String) -> PaperItem? {
+        if let transient = TransientStore.shared.paper(withId: id) { return transient }
+        return pendingReadingUpdates[id] ?? papersByID[id]
+    }
 
     // MARK: - Transient (in-memory) opens — never persist
 
@@ -182,12 +191,14 @@ final class LibraryStore {
         NSLog("[DualPDF][B2] unregister transient paper id=%@", id)
     }
 
-    func isTransientPaper(id: String) -> Bool { transientPaperIDs.contains(id) }
+    func isTransientPaper(id: String) -> Bool {
+        transientPaperIDs.contains(id) || TransientStore.shared.contains(id)
+    }
 
     /// Returns true when the write must be skipped.
     @discardableResult
     private func blockTransientWrite(_ id: String, _ op: String) -> Bool {
-        guard transientPaperIDs.contains(id) else { return false }
+        guard isTransientPaper(id: id) else { return false }
         NSLog("[DualPDF][B2] blocked %@ for transient id=%@", op, id)
         return true
     }
@@ -207,7 +218,9 @@ final class LibraryStore {
 
     @discardableResult
     func savePaper(_ paper: PaperItem, notify: Bool = true) -> Bool {
-        if blockTransientWrite(paper.id, "savePaper") { return false }
+        if isTransientPaper(id: paper.id) || paper.isTransient {
+            return TransientStore.shared.savePaper(paper, notify: notify)
+        }
         return commitPapers([paper], notify: notify)
     }
 
@@ -263,10 +276,14 @@ final class LibraryStore {
 
     /// Coalesce scroll events and persist metadata only; notes.md stays untouched.
     func updateReadingState(for paperId: String, _ update: (inout PaperItem) -> Void) {
-        if blockTransientWrite(paperId, "updateReadingState") { return }
-        guard var paper = paper(withId: paperId) else { return }
+        if isTransientPaper(id: paperId) {
+            TransientStore.shared.updateReadingState(for: paperId, update)
+            return
+        }
+        guard var paper = papersByID[paperId] ?? pendingReadingUpdates[paperId] else { return }
         update(&paper)
-        guard paper != self.paper(withId: paperId) else { return }
+        let previous = pendingReadingUpdates[paperId] ?? papersByID[paperId]
+        guard paper != previous else { return }
         pendingReadingUpdates[paperId] = paper
         readingSaveTask?.cancel()
         let task = DispatchWorkItem { [weak self] in self?.flushReadingState() }
@@ -326,7 +343,7 @@ final class LibraryStore {
             title: meta.title,
             authors: meta.authors,
             year: meta.year,
-            venue: "arXiv",
+            venue: meta.arxivId != nil ? "arXiv" : "",
             category: category,
             tags: [],
             arxivId: meta.arxivId,
@@ -426,7 +443,7 @@ final class LibraryStore {
         title: String,
         authors: String = "",
         year: String = String(Calendar.current.component(.year, from: Date())),
-        venue: String = "arXiv",
+        venue: String = "",
         category: String = "未分类",
         tags: [String] = [],
         arxivId: String? = nil,
@@ -561,7 +578,7 @@ final class LibraryStore {
     /// 向条目添加自定义外部链接
     @discardableResult
     func addExternalLink(for paperId: String, title: String, url: String) -> ExternalResource? {
-        if blockTransientWrite(paperId, "addExternalLink") { return nil }
+        if isTransientPaper(id: paperId) { return TransientStore.shared.addExternalLink(for: paperId, title: title, url: url) }
         guard var item = paper(withId: paperId) else { return nil }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -591,7 +608,7 @@ final class LibraryStore {
     /// 为条目添加标签
     @discardableResult
     func addTag(_ tag: String, for paperId: String) -> Bool {
-        if blockTransientWrite(paperId, "addTag") { return false }
+        if isTransientPaper(id: paperId) { return TransientStore.shared.addTag(tag, for: paperId) }
         guard var item = paper(withId: paperId) else { return false }
         let clean = tag.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, !item.tags.contains(clean) else { return false }
@@ -602,7 +619,7 @@ final class LibraryStore {
     /// 从条目中移除标签
     @discardableResult
     func removeTag(_ tag: String, for paperId: String) -> Bool {
-        if blockTransientWrite(paperId, "removeTag") { return false }
+        if isTransientPaper(id: paperId) { return TransientStore.shared.removeTag(tag, for: paperId) }
         guard var item = paper(withId: paperId) else { return false }
         guard let idx = item.tags.firstIndex(of: tag) else { return false }
         item.tags.remove(at: idx)
@@ -642,7 +659,7 @@ final class LibraryStore {
     /// 向当前论文（论文集）中添加新的 PDF 文档，或替换已有的附加 PDF
     @discardableResult
     func addAdditionalPDF(to paperId: String, from sourceURL: URL, title: String? = nil, replacingId: String? = nil) -> PaperPDFDocument? {
-        if blockTransientWrite(paperId, "addAdditionalPDF") { return nil }
+        if isTransientPaper(id: paperId) { return TransientStore.shared.addAdditionalPDF(to: paperId, from: sourceURL, title: title, replacingId: replacingId) }
         guard var item = paper(withId: paperId) else { return nil }
         let docId = replacingId ?? UUID().uuidString
         let cleanTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
@@ -686,7 +703,7 @@ final class LibraryStore {
     // MARK: - Paper Note Documents Management (论文笔记与可跳转引用)
     @discardableResult
     func saveNoteDocument(for paperId: String, note: PaperNoteDocument, notify: Bool = true) -> Bool {
-        if blockTransientWrite(paperId, "saveNoteDocument") { return false }
+        if isTransientPaper(id: paperId) { return TransientStore.shared.saveNoteDocument(for: paperId, note: note, notify: notify) }
         guard var item = paper(withId: paperId) else { return false }
         var docs = item.effectiveNoteDocuments
         var updatedNote = note
@@ -702,7 +719,7 @@ final class LibraryStore {
 
     @discardableResult
     func createNoteDocument(for paperId: String, title: String, initialContent: String = "") -> PaperNoteDocument? {
-        if blockTransientWrite(paperId, "createNoteDocument") { return nil }
+        if isTransientPaper(id: paperId) { return TransientStore.shared.createNoteDocument(for: paperId, title: title, initialContent: initialContent) }
         guard var item = paper(withId: paperId) else { return nil }
         var docs = item.effectiveNoteDocuments
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -721,7 +738,7 @@ final class LibraryStore {
 
     @discardableResult
     func deleteNoteDocument(for paperId: String, noteId: String) -> Bool {
-        if blockTransientWrite(paperId, "deleteNoteDocument") { return false }
+        if isTransientPaper(id: paperId) { return TransientStore.shared.deleteNoteDocument(for: paperId, noteId: noteId) }
         guard var item = paper(withId: paperId) else { return false }
         var docs = item.effectiveNoteDocuments
         guard docs.count > 1 else { return false }
@@ -732,7 +749,7 @@ final class LibraryStore {
 
     @discardableResult
     func appendContentToNote(for paperId: String, noteId: String? = nil, markdownSnippet: String) -> PaperNoteDocument? {
-        if blockTransientWrite(paperId, "appendContentToNote") { return nil }
+        if isTransientPaper(id: paperId) { return TransientStore.shared.appendContentToNote(for: paperId, noteId: noteId, markdownSnippet: markdownSnippet) }
         guard var item = paper(withId: paperId) else { return nil }
         var docs = item.effectiveNoteDocuments
         let targetIdx = noteId.flatMap { id in docs.firstIndex(where: { $0.id == id }) } ?? 0
@@ -766,7 +783,7 @@ final class LibraryStore {
     }
 
     func addLocalAttachment(to paperId: String, fileURL: URL, customTitle: String? = nil) -> ExternalResource? {
-        if blockTransientWrite(paperId, "addLocalAttachment") { return nil }
+        if isTransientPaper(id: paperId) { return TransientStore.shared.addLocalAttachment(to: paperId, fileURL: fileURL, customTitle: customTitle) }
         guard var item = paper(withId: paperId) else { return nil }
         do {
             let destination = try storage.copyAttachment(from: fileURL, for: paperId)

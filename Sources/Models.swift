@@ -260,6 +260,14 @@ struct PaperItem: Codable, Identifiable, Equatable {
     var additionalPDFs: [PaperPDFDocument]? = nil
     var noteDocuments: [PaperNoteDocument]? = nil
     var customSortIndex: Int? = nil
+    /// P0-2: temporary open that has not been saved into the library.
+    var isTransient: Bool = false
+    /// True when the transient document has notes/annotations worth emphasizing.
+    var transientHasNotes: Bool {
+        let hasAnnotNotes = annotations.contains { !$0.markdownNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !$0.selectedText.isEmpty }
+        let hasNoteDocs = (noteDocuments ?? []).contains { !$0.markdownContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return hasAnnotNotes || hasNoteDocs || !annotations.isEmpty
+    }
 
     var hasBothPDFs: Bool {
         return originalFilename != nil && translatedFilename != nil

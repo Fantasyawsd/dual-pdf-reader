@@ -143,6 +143,16 @@ enum DocumentOpenAlerts {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    /// Returns true when the user chooses 「导出笔记…」.
+    static func presentMissingTransientWithNotes(name: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = DocumentOpenCopy.missingTitle(name)
+        alert.informativeText = DocumentOpenCopy.missingBody
+        alert.addButton(withTitle: "导出笔记…")
+        alert.addButton(withTitle: "好")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     static func presentCombinedFailures(_ items: [(name: String, reason: String)]) {
         guard !items.isEmpty else { return }
         let alert = NSAlert()

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Stable identity for deduplicating PDF opens across symlinks / alternate paths.
 struct FileIdentity: Hashable, Equatable {
@@ -33,6 +34,26 @@ struct FileIdentity: Hashable, Equatable {
                 == b.resolvingSymlinksInPath().standardizedFileURL.path
         }
         return left == right
+    }
+
+    /// SHA-256 of the identity payload, first 16 hex chars — Transient folder name / paper id.
+    var docKey: String {
+        let data: Data
+        switch payload {
+        case .resourceID(let id):
+            data = id
+        case .path(let path):
+            data = Data(path.utf8)
+        }
+        let digest = SHA256.hash(data: data)
+        return String(digest.map { String(format: "%02x", $0) }.joined().prefix(16))
+    }
+
+    static func docKey(for url: URL) -> String {
+        if let id = FileIdentity(url: url) { return id.docKey }
+        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+        let digest = SHA256.hash(data: Data(path.utf8))
+        return String(digest.map { String(format: "%02x", $0) }.joined().prefix(16))
     }
 }
 

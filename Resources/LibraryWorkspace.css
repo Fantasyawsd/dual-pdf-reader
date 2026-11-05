@@ -1432,3 +1432,34 @@ table.zotero-table {
     border-color: var(--accent-border);
     box-shadow: 0 0 0 3px var(--accent-soft);
 }
+
+
+.transient-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-secondary, #6b7280);
+  background: var(--fill-quaternary, rgba(0,0,0,0.06));
+  vertical-align: middle;
+}
+.transient-badge.accent {
+  color: var(--accent, #007aff);
+  background: color-mix(in srgb, var(--accent, #007aff) 14%, transparent);
+  font-weight: 600;
+}
+.row-meta-muted {
+  color: var(--text-tertiary, #9ca3af);
+  font-size: 12px;
+}
+.smart-row.recent-item {
+  padding-left: 28px;
+}
+.smart-row.recent-item .smart-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}

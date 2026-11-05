@@ -184,6 +184,8 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         let annotations: [AnnotationDTO]
         let relatedPapers: [RelatedDTO]
         let resources: [ResourceDTO]
+        let isTransient: Bool
+        let transientHasNotes: Bool
     }
 
     private struct LibraryStatePayload: Codable {
@@ -192,6 +194,7 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         let categories: [String]
         let tags: [String]
         let papers: [PaperDTO]
+        let recentPapers: [PaperDTO]
     }
 
     override func loadView() {
@@ -343,6 +346,17 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         }
     }
 
+    func selectPaperInUI(_ paperId: String) {
+        selectedPaperId = paperId
+        refreshAllUI()
+        if isWebViewLoaded {
+            let escaped = paperId
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+            webView?.evaluateJavaScript("window.selectPaper && window.selectPaper('\(escaped)');", completionHandler: nil)
+        }
+    }
+
     // MARK: - Build State JSON with Cached Cover Thumbnails
     private func buildLibraryStateJSON() -> String {
         let store = LibraryStore.shared
@@ -446,7 +460,75 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
                 noteDocuments: noteDocs,
                 annotations: annotDTOs,
                 relatedPapers: relatedDTOs,
-                resources: resDTOs
+                resources: resDTOs,
+                isTransient: p.isTransient,
+                transientHasNotes: p.transientHasNotes
+            )
+        }
+
+        let recentSource = TransientStore.recentCombined(limit: 50)
+        let recentDTOs: [PaperDTO] = recentSource.map { p in
+            let originalURL: URL? = {
+                if p.isTransient { return TransientStore.shared.pdfURL(for: p, side: .original) }
+                return store.pdfURL(for: p, side: .original)
+            }()
+            let translatedURL: URL? = {
+                if p.isTransient { return TransientStore.shared.pdfURL(for: p, side: .translated) }
+                return store.pdfURL(for: p, side: .translated)
+            }()
+            var origPages = 0, origSizeKB = 0, origThumb: String? = nil
+            if let origURL = originalURL {
+                let summary = store.knownPDFSummary(for: origURL)
+                origPages = summary.pageCount
+                origSizeKB = summary.sizeKB
+                origThumb = summary.thumbnailDataURL
+            }
+            var transPages = 0, transSizeKB = 0, transThumb: String? = nil
+            if let translatedURL = translatedURL {
+                let summary = store.knownPDFSummary(for: translatedURL)
+                transPages = summary.pageCount
+                transSizeKB = summary.sizeKB
+                transThumb = summary.thumbnailDataURL
+            }
+            let noteDocs: [NoteDocDTO] = (p.noteDocuments ?? []).filter {
+                !$0.markdownContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }.map {
+                NoteDocDTO(id: $0.id, title: $0.title, markdownContent: $0.markdownContent, updatedTimestamp: $0.updatedAt.timeIntervalSince1970)
+            }
+            return PaperDTO(
+                id: p.id,
+                title: p.title,
+                authors: p.authors,
+                year: p.year,
+                venue: p.venue,
+                category: p.category,
+                tags: p.tags,
+                isFavorite: p.isFavorite,
+                statusRaw: p.status.rawValue,
+                statusDisplay: p.status.displayName,
+                hasOriginal: originalURL != nil,
+                hasTranslated: translatedURL != nil,
+                hasBothPDFs: originalURL != nil && translatedURL != nil,
+                origPages: origPages,
+                origSizeKB: origSizeKB,
+                origThumb: origThumb,
+                transPages: transPages,
+                transSizeKB: transSizeKB,
+                transThumb: transThumb,
+                lastReadPage: p.lastReadPage,
+                addedTimestamp: p.addedAt.timeIntervalSince1970,
+                lastOpenedTimestamp: (p.lastOpenedAt ?? p.addedAt).timeIntervalSince1970,
+                addedDateString: dateFormatter.string(from: p.addedAt),
+                customSortIndex: p.customSortIndex,
+                arxivId: p.arxivId,
+                citationCount: p.citationCount,
+                additionalPDFs: [],
+                noteDocuments: noteDocs,
+                annotations: [],
+                relatedPapers: [],
+                resources: [],
+                isTransient: p.isTransient,
+                transientHasNotes: p.transientHasNotes
             )
         }
 
@@ -455,7 +537,8 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
             vaultPath: store.rootDirectory.path,
             categories: store.allCategories(),
             tags: store.allTags(),
-            papers: paperDTOs
+            papers: paperDTOs,
+            recentPapers: recentDTOs
         )
 
         let encoder = JSONEncoder()
@@ -497,6 +580,37 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         return values.flatMap { $0.components(separatedBy: CharacterSet(charactersIn: ",，")) }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "^#", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+
+
+    private func presentMissingTransientAlert(_ paper: PaperItem) {
+        let alert = NSAlert()
+        alert.messageText = DocumentOpenCopy.missingTitle(paper.title)
+        alert.informativeText = DocumentOpenCopy.missingBody
+        alert.alertStyle = .warning
+        if paper.transientHasNotes {
+            alert.addButton(withTitle: "导出笔记…")
+            alert.addButton(withTitle: "好")
+        } else {
+            alert.addButton(withTitle: "好")
+        }
+        let response = alert.runModal()
+        if paper.transientHasNotes && response == .alertFirstButtonReturn {
+            exportTransientNotes(paper)
+        }
+    }
+
+    func exportTransientNotesPublic(_ paper: PaperItem) { exportTransientNotes(paper) }
+
+    private func exportTransientNotes(_ paper: PaperItem) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.utf8PlainText, .plainText]
+        panel.nameFieldStringValue = "\(paper.title)-notes.md"
+        panel.beginSheetModal(for: view.window ?? NSWindow()) { resp in
+            guard resp == .OK, let url = panel.url else { return }
+            let markdown = MarkdownNotesExporter.render(paper)
+            try? markdown.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 
     private func presentCreateCategoryDialog(moving paperId: String?) {
@@ -545,7 +659,24 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         case "openPaper":
             if let pid = body["paperId"] as? String {
                 selectedPaperId = pid
+                if let paper = LibraryStore.shared.paper(withId: pid), paper.isTransient {
+                    if TransientStore.shared.pdfURL(for: paper, side: .original) == nil {
+                        presentMissingTransientAlert(paper)
+                        break
+                    }
+                }
                 onOpenPaperInTab?(pid, nil)
+            }
+
+        case "saveTransientToLibrary":
+            if let pid = body["paperId"] as? String {
+                (view.window?.windowController as? MultiTabMainWindowController)?.presentSaveToLibrary(for: pid)
+            }
+
+        case "exportTransientNotes":
+            if let pid = body["paperId"] as? String,
+               let paper = LibraryStore.shared.paper(withId: pid) {
+                exportTransientNotes(paper)
             }
 
         case "openPaperNotesSidebar":
@@ -696,7 +827,7 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
             let rawTitle = (body["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let rawAuthors = (body["authors"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let rawYear = (body["year"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let rawVenue = (body["venue"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "arXiv"
+            let rawVenue = (body["venue"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let rawCategory = (body["category"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "大模型架构 (LLM)"
             let rawTags = (body["tags"] as? String) ?? ""
 
@@ -714,7 +845,7 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
                 title: finalTitle,
                 authors: finalAuthors,
                 year: finalYear,
-                venue: rawVenue.isEmpty ? "arXiv" : rawVenue,
+                venue: rawVenue,
                 category: rawCategory.isEmpty ? "默认分类" : rawCategory,
                 tags: tags,
                 arxivId: (body["arxivId"] as? String).flatMap { ArxivMetadataService.normalizeArxivId($0) } ?? extracted?.arxivId,
