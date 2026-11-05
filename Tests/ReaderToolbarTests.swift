@@ -695,3 +695,79 @@ func runSessionMarkupCloseAlertTests(root: URL) throws {
     check(!wc.isPaperTabOpen(paper.id), "Markup-close: forced close after quit-path checks")
 }
 
+/// Debot: failed markup save must dirty the tab so close / quit warn again.
+func runSessionMarkupPersistFailureAlertTests(root: URL) throws {
+    func settle(_ seconds: TimeInterval = 0.12) {
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    let source = root.appendingPathComponent("markup-fail-original.pdf")
+    try writePDF(source, pages: 2, text: "markup fail fixture")
+    let store = LibraryStore.shared
+    let paper = store.createPaper(title: "Markup fail \(UUID().uuidString)", originalSourceURL: source)!
+
+    let wc = MultiTabMainWindowController()
+    defer {
+        LibraryStore.testingSavePaperResult = nil
+        wc.testingDiscardSessionMarkupResponse = true
+        for pid in [paper.id] where wc.isPaperTabOpen(pid) {
+            wc.closePaperTab(paperId: pid, force: true)
+        }
+        wc.close()
+    }
+
+    wc.openOrSwitchToPaperTab(paperId: paper.id, jumpToAnnot: nil, switchImmediately: true)
+    settle(0.25)
+    guard let reader = wc.activeReaderVC else {
+        check(false, "Markup-fail: opened reader")
+        return
+    }
+    _ = reader.view
+    settle(0.2)
+    check(waitUntil({ reader.leftCol.pdfView.document != nil }, timeout: 4),
+          "Markup-fail: PDF loads")
+    guard let page = reader.leftCol.pdfView.document?.page(at: 0) else {
+        check(false, "Markup-fail: page 0")
+        return
+    }
+
+    LibraryStore.testingSavePaperResult = false
+    reader.leftCol.pdfView.addTextMarkupForTesting(text: "落盘失败", page: page, at: NSPoint(x: 80, y: 200))
+    settle()
+    check(reader.hasUnpersistedColumnMarkup(),
+          "Markup-fail: failed save marks the tab dirty")
+    check((store.paper(withId: paper.id)?.annotations.isEmpty) ?? false,
+          "Markup-fail: failed save does not commit annotations")
+
+    wc.testingDiscardSessionMarkupResponse = false
+    wc.closePaperTab(paperId: paper.id)
+    check(wc.isPaperTabOpen(paper.id),
+          "Markup-fail: choosing 取消 keeps the dirty tab open")
+
+    let app = AppDelegate()
+    app.testingMainWindowControllers = [wc]
+    var flushCount = 0
+    app.testingFlushReadingState = { flushCount += 1; return true }
+    check(app.unpersistedSessionMarkupTabCount() == 1,
+          "Markup-fail: quit counts the dirty tab")
+    app.testingQuitDiscardSessionMarkupResponse = false
+    check(app.applicationShouldTerminate(NSApp) == .terminateCancel,
+          "Markup-fail: quit 取消 keeps the app running")
+    check(flushCount == 0, "Markup-fail: quit 取消 does not flush")
+
+    // A later successful save clears the dirty flag.
+    LibraryStore.testingSavePaperResult = nil
+    reader.leftCol.pdfView.addTextMarkupForTesting(text: "落盘成功", page: page, at: NSPoint(x: 90, y: 220))
+    settle()
+    check(!reader.hasUnpersistedColumnMarkup(),
+          "Markup-fail: successful save clears the dirty flag")
+    check((store.paper(withId: paper.id)?.annotations.count ?? 0) >= 1,
+          "Markup-fail: successful save commits annotations")
+
+    wc.testingDiscardSessionMarkupResponse = false
+    wc.closePaperTab(paperId: paper.id)
+    check(!wc.isPaperTabOpen(paper.id),
+          "Markup-fail: after successful save close does not prompt")
+}
+
+

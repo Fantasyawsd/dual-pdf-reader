@@ -386,11 +386,15 @@ final class InteractivePDFView: PDFView {
     var canRedoMarkup: Bool { !markupRedoStack.isEmpty }
     var markupUndoCount: Int { markupUndoStack.count }
     var markupRedoCount: Int { markupRedoStack.count }
-    /// True only when DualPDF_Markup edits would be lost on tab close / quit.
-    /// After annotation persistence, create/update/delete are written immediately to
-    /// LibraryStore (or TransientStore for 未入库 papers). The undo stack is session
-    /// history only and must not trigger the discard warning.
-    var hasUnpersistedSessionMarkup: Bool { false }
+    /// True when DualPDF_Markup edits would be lost on tab close / quit.
+    /// Successful creates/updates/deletes clear this; a failed `savePaper` sets it.
+    /// The undo stack alone must not trigger the discard warning.
+    private(set) var markupPersistDirty = false
+    var hasUnpersistedSessionMarkup: Bool { markupPersistDirty }
+
+    func setMarkupPersistDirty(_ dirty: Bool) {
+        markupPersistDirty = dirty
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)

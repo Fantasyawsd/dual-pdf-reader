@@ -512,9 +512,30 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     /// True when either column still has DualPDF_Markup that would be lost on close.
-    /// Persisted annotations (library or transient state.json) do not count.
+    /// Set when a markup save fails; cleared after a later successful save.
     func hasUnpersistedColumnMarkup() -> Bool {
         [leftCol, rightCol].contains { $0.pdfView.hasUnpersistedSessionMarkup }
+    }
+
+    private func markMarkupPersist(succeeded: Bool, on column: CleanPDFColumnView? = nil) {
+        if succeeded {
+            for col in [leftCol, rightCol] {
+                col.pdfView.setMarkupPersistDirty(false)
+            }
+        } else if let column {
+            column.pdfView.setMarkupPersistDirty(true)
+            notifyMarkupPersistFailure()
+        } else {
+            leftCol.pdfView.setMarkupPersistDirty(true)
+            notifyMarkupPersistFailure()
+        }
+    }
+
+    private func notifyMarkupPersistFailure() {
+        let message = "批注未能保存，关闭或退出前请重试。"
+        if let wc = view.window?.windowController as? MultiTabMainWindowController {
+            wc.showStatusBanner(message)
+        }
     }
 
     func prepareForClose() {
@@ -4005,7 +4026,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 paper.annotations.append(annotation)
             }
         }
-        guard LibraryStore.shared.savePaper(paper, notify: true) else { return }
+        guard LibraryStore.shared.savePaper(paper, notify: true) else {
+            markMarkupPersist(succeeded: false, on: column)
+            return
+        }
+        markMarkupPersist(succeeded: true)
         applyAnnotationsToPDFViews()
     }
 
@@ -4016,7 +4041,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         annotation.side = column.side
         annotation.pdfDocumentId = column.activePDFDocumentId
         paper.annotations[index] = annotation
-        guard LibraryStore.shared.savePaper(paper, notify: true) else { return }
+        // Edits only change geometry/color; keep the library list quiet and refresh locally.
+        guard LibraryStore.shared.savePaper(paper, notify: false) else {
+            markMarkupPersist(succeeded: false, on: column)
+            return
+        }
+        markMarkupPersist(succeeded: true)
         applyAnnotationsToPDFViews()
     }
 
@@ -4024,7 +4054,11 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         guard var paper = currentPaper else { return }
         let idSet = Set(ids)
         paper.annotations.removeAll { idSet.contains($0.id) }
-        guard LibraryStore.shared.savePaper(paper, notify: true) else { return }
+        guard LibraryStore.shared.savePaper(paper, notify: true) else {
+            markMarkupPersist(succeeded: false)
+            return
+        }
+        markMarkupPersist(succeeded: true)
         applyAnnotationsToPDFViews()
     }
 

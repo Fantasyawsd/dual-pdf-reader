@@ -406,6 +406,17 @@ struct PaperItem: Codable, Identifiable, Equatable {
         }
         return "论文 PDF"
     }
+
+    /// Copy scroll / zoom / last-opened fields from another snapshot without touching annotations or notes.
+    mutating func applyReadingFields(from other: PaperItem) {
+        lastReadPage = other.lastReadPage
+        lastReadScrollProgress = other.lastReadScrollProgress
+        syncOffsetDelta = other.syncOffsetDelta
+        lastOpenedAt = other.lastOpenedAt
+        readingPosition = other.readingPosition
+        readerState = other.readerState
+        zoomFactor = other.zoomFactor
+    }
 }
 
 struct ReadingPosition: Codable, Equatable {
