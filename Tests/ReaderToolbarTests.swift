@@ -415,9 +415,33 @@ func runSessionMarkupCloseAlertTests(root: URL) throws {
     check(reader.hasUnpersistedColumnMarkup(),
           "Markup-close: session markup still present after cancel")
 
+    // Quit path (⌘Q / last window closed → applicationShouldTerminate) must see the same markup.
+    let app = AppDelegate()
+    app.testingMainWindowControllers = [wc]
+    var flushCount = 0
+    app.testingFlushReadingState = { flushCount += 1; return true }
+    check(app.unpersistedSessionMarkupTabCount() == 1,
+          "Quit-markup: one tab with session markup is counted")
+    app.testingQuitDiscardSessionMarkupResponse = false
+    check(app.applicationShouldTerminate(NSApp) == .terminateCancel,
+          "Quit-markup: choosing 取消 cancels termination")
+    check(flushCount == 0 && wc.isPaperTabOpen(paper.id) && reader.hasUnpersistedColumnMarkup(),
+          "Quit-markup: cancel does not flush and keeps markup")
+    app.testingQuitDiscardSessionMarkupResponse = true
+    check(app.applicationShouldTerminate(NSApp) == .terminateNow,
+          "Quit-markup: choosing 退出 terminates")
+    check(flushCount == 1, "Quit-markup: flushReadingState runs once after confirming quit")
+
     wc.testingDiscardSessionMarkupResponse = true
     wc.closePaperTab(paperId: paper.id)
     check(!wc.isPaperTabOpen(paper.id),
           "Markup-close: choosing 关闭 discards session markup and closes the tab")
+
+    // No markup left: quit must not prompt (a forced 取消 would cancel if it did).
+    app.testingQuitDiscardSessionMarkupResponse = false
+    check(app.unpersistedSessionMarkupTabCount() == 0,
+          "Quit-markup: no session markup counted after tab closed")
+    check(app.applicationShouldTerminate(NSApp) == .terminateNow && flushCount == 2,
+          "Quit-markup: without markup quit terminates without prompting and flushes")
 }
 

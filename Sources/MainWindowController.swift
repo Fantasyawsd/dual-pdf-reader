@@ -254,6 +254,11 @@ final class MultiTabMainWindowController: NSWindowController {
         }
     }
 
+    /// Open tabs whose session DualPDF_Markup edits would be lost if the app quit now.
+    func unpersistedSessionMarkupTabCount() -> Int {
+        openReaderTabs.values.filter { $0.hasUnpersistedColumnMarkup() }.count
+    }
+
     func closePaperTab(paperId: String, force: Bool = false) {
         guard let vc = openReaderTabs[paperId] else { return }
         if !force && vc.hasUnpersistedColumnMarkup() {

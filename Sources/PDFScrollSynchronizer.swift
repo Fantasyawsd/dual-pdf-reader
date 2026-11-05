@@ -116,6 +116,4 @@ enum PDFScrollSynchronizer {
             y: min(1, max(0, sourceBounds.origin.y / maximumSourceY)) * maximumTargetY))
         targetScroll.reflectScrolledClipView(targetScroll.contentView)
     }
-
-
 }
