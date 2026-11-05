@@ -15,6 +15,9 @@ func runP0TransientLibraryTests() throws {
     try runRecentCombinedAndRemoveTest()
     try runSidebarSourcesOnlyIATest()
     try runTabDedupeByPaperIdEvidenceTest()
+    try runTransientReadingFlushPreservesAnnotationsTest()
+    try runLibraryReadingFlushPreservesAnnotationsTest()
+    try runEncryptedTransientMarkupPersistsTest()
 }
 
 private func writeMinimalPDF(to url: URL, text: String = "Hello") throws {
@@ -434,4 +437,187 @@ private func runTabDedupeByPaperIdEvidenceTest() throws {
     // Center list and recent both call openPaperDual with the same paper id.
     check(js.contains("openPaperDual('${pidAttr}'") || js.contains("openPaperDual('${pid}'"),
           "Dedupe: openPaperDual used from list rows")
+}
+
+/// Debot ①: scroll → annotate → flush must keep annotations on transient papers.
+private func runTransientReadingFlushPreservesAnnotationsTest() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("DualPDF-P02-ReadAnnot-\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer {
+        TransientStore.useTestRoot(nil)
+        try? fm.removeItem(at: root)
+    }
+    TransientStore.useTestRoot(root)
+
+    let pdf = fm.temporaryDirectory.appendingPathComponent("DualPDF-read-annot-\(UUID().uuidString).pdf")
+    try writeMinimalPDF(to: pdf, text: "ReadAnnot")
+    defer { try? fm.removeItem(at: pdf) }
+
+    guard let opened = TransientStore.shared.openPDFs([pdf]) else {
+        check(false, "ReadAnnot-T: openPDFs")
+        return
+    }
+    let id = opened.id
+    TransientStore.shared.updateReadingState(for: id) { paper in
+        paper.lastReadPage = 3
+        paper.lastReadScrollProgress = 0.42
+        paper.readingPosition = ReadingPosition(side: .original, continuousPage: 3.25)
+    }
+    guard var paper = TransientStore.shared.paper(withId: id) else {
+        check(false, "ReadAnnot-T: paper after reading update")
+        return
+    }
+    let annot = PaperAnnotation(side: .original, pageIndex: 0, rects: [], selectedText: "keep-me", color: .yellow, markdownNote: "")
+    paper.annotations = [annot]
+    // Simulate a caller that only has annotations and stale reading fields.
+    paper.lastReadPage = 0
+    paper.lastReadScrollProgress = 0
+    paper.readingPosition = nil
+    check(TransientStore.shared.savePaper(paper, notify: false), "ReadAnnot-T: savePaper with annotation")
+    check(TransientStore.shared.flushReadingState(), "ReadAnnot-T: flush after annotate")
+
+    // Reload from disk the way a cold start would.
+    let stateURL = TransientStore.shared.stateURL(for: id)
+    let data = try Data(contentsOf: stateURL)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let reloaded = try decoder.decode(PaperItem.self, from: data)
+    check(reloaded.annotations.contains(where: { $0.selectedText == "keep-me" }),
+          "ReadAnnot-T: annotations survive flush")
+    check(reloaded.lastReadPage == 3 && abs(reloaded.lastReadScrollProgress - 0.42) < 0.0001,
+          "ReadAnnot-T: reading fields survive annotation save + flush")
+    check(reloaded.readingPosition?.continuousPage == 3.25,
+          "ReadAnnot-T: readingPosition survives")
+}
+
+/// Debot ①: library savePaper must keep pending reading; flush must not wipe annotations.
+private func runLibraryReadingFlushPreservesAnnotationsTest() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("DualPDF-Lib-ReadAnnot-\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: root) }
+
+    let store = LibraryStore(rootDirectory: root, seedIfEmpty: false)
+    let pdf = root.appendingPathComponent("lib-read-annot.pdf")
+    try writeMinimalPDF(to: pdf, text: "LibReadAnnot")
+    guard let created = store.createPaper(title: "Lib ReadAnnot", originalSourceURL: pdf) else {
+        check(false, "ReadAnnot-L: createPaper")
+        return
+    }
+    let id = created.id
+
+    store.updateReadingState(for: id) { paper in
+        paper.lastReadPage = 5
+        paper.lastReadScrollProgress = 0.55
+        paper.readingPosition = ReadingPosition(side: .original, continuousPage: 5.1)
+    }
+
+    // Stale snapshot: annotations only, reading fields zeroed (pending still has real reading).
+    var stale = store.paper(withId: id)!
+    stale.lastReadPage = 0
+    stale.lastReadScrollProgress = 0
+    stale.readingPosition = nil
+    stale.annotations = [
+        PaperAnnotation(side: .original, pageIndex: 0, rects: [], selectedText: "lib-keep", color: .blue, markdownNote: "")
+    ]
+    check(store.savePaper(stale, notify: false), "ReadAnnot-L: savePaper merges pending reading")
+    let afterSave = store.paper(withId: id)!
+    check(afterSave.lastReadPage == 5 && abs(afterSave.lastReadScrollProgress - 0.55) < 0.0001,
+          "ReadAnnot-L: reading kept across savePaper")
+    check(afterSave.annotations.contains(where: { $0.selectedText == "lib-keep" }),
+          "ReadAnnot-L: annotations kept across savePaper")
+
+    // Start a new pending reading update, then save more annotations, then flush.
+    store.updateReadingState(for: id) { paper in
+        paper.lastReadPage = 6
+        paper.readingPosition = ReadingPosition(side: .original, continuousPage: 6.2)
+    }
+    var again = store.paper(withId: id)!
+    // Force a stale annotation-only write relative to the new pending reading:
+    again.lastReadPage = 5
+    again.annotations.append(
+        PaperAnnotation(side: .original, pageIndex: 0, rects: [], selectedText: "lib-keep-2", color: .green, markdownNote: "")
+    )
+    check(store.savePaper(again, notify: false), "ReadAnnot-L: second savePaper")
+    check(store.flushReadingState(), "ReadAnnot-L: flush")
+
+    let meta = try Data(contentsOf: store.folderURL(for: id).appendingPathComponent("meta.json"))
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let disk = try decoder.decode(PaperItem.self, from: meta)
+    check(disk.annotations.contains(where: { $0.selectedText == "lib-keep" })
+            && disk.annotations.contains(where: { $0.selectedText == "lib-keep-2" }),
+          "ReadAnnot-L: both annotations on disk after flush")
+    check(disk.lastReadPage == 6 && disk.readingPosition?.continuousPage == 6.2,
+          "ReadAnnot-L: latest reading on disk after flush")
+}
+
+/// Debot ③: unlocked encrypted PDFs route through TransientStore; annotations land in state.json.
+private func runEncryptedTransientMarkupPersistsTest() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("DualPDF-EncMarkup-\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer {
+        TransientStore.useTestRoot(nil)
+        try? fm.removeItem(at: root)
+    }
+    TransientStore.useTestRoot(root)
+
+    let lockedURL = root.appendingPathComponent("encrypted-sample.pdf")
+    var box = CGRect(x: 0, y: 0, width: 400, height: 600)
+    guard let ctx = CGContext(lockedURL as CFURL, mediaBox: &box, nil) else {
+        throw CocoaError(.fileWriteUnknown)
+    }
+    ctx.beginPDFPage(nil)
+    ("encrypted markup fixture" as NSString).draw(at: NSPoint(x: 40, y: 500), withAttributes: [.font: NSFont.systemFont(ofSize: 18)])
+    ctx.endPDFPage()
+    ctx.closePDF()
+
+    guard let plain = PDFDocument(url: lockedURL) else {
+        check(false, "EncMarkup: plain load")
+        return
+    }
+    let password = "test-pass"
+    check(plain.write(to: lockedURL, withOptions: [
+        .userPasswordOption: password,
+        .ownerPasswordOption: password + "-owner"
+    ]), "EncMarkup: wrote encrypted sample")
+
+    guard let lockedDoc = PDFDocument(url: lockedURL) else {
+        check(false, "EncMarkup: reload locked")
+        return
+    }
+    check(lockedDoc.isLocked, "EncMarkup: sample locked")
+    check(lockedDoc.unlock(withPassword: password), "EncMarkup: unlock with test-pass")
+
+    guard let item = TransientStore.shared.openPDFs([lockedURL], unlockedDocument: lockedDoc) else {
+        check(false, "EncMarkup: openPDFs with unlocked document")
+        return
+    }
+    check(TransientStore.shared.unlockedDocument(for: item.id) === lockedDoc,
+          "EncMarkup: unlocked PDFDocument kept in memory only")
+    check(LibraryStore.shared.isTransientPaper(id: item.id),
+          "EncMarkup: id registered as transient")
+
+    var paper = item
+    paper.annotations = [
+        PaperAnnotation(side: .original, pageIndex: 0, rects: [], selectedText: "enc-keep", color: .yellow, markdownNote: "note")
+    ]
+    check(LibraryStore.shared.savePaper(paper, notify: true),
+          "EncMarkup: savePaper via LibraryStore routes to TransientStore")
+
+    let stateURL = TransientStore.shared.stateURL(for: item.id)
+    check(fm.fileExists(atPath: stateURL.path), "EncMarkup: state.json written")
+    let data = try Data(contentsOf: stateURL)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let disk = try decoder.decode(PaperItem.self, from: data)
+    check(disk.annotations.contains(where: { $0.selectedText == "enc-keep" }),
+          "EncMarkup: annotations persist in transient state.json (not session-only)")
+
+    // No plaintext unlocked PDF copy beside the original encrypted file.
+    let pdfs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil))?.filter { $0.pathExtension.lowercased() == "pdf" } ?? []
+    check(pdfs.count == 1 && pdfs[0].lastPathComponent == "encrypted-sample.pdf",
+          "EncMarkup: only the original encrypted PDF exists under the fixture root")
 }

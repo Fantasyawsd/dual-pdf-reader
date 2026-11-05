@@ -309,6 +309,16 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     var pageJumpBtn: ModernHoverButton { leftPageJumpBtn }
     var nextPageBtn: ModernHoverButton { leftNextPageBtn }
 
+    let unifiedMarkupToolbar = UnifiedMarkupToolbarView()
+    private let markupToolbarToggleBtn = ModernHoverButton()
+    private let topBarShowButton = ModernHoverButton()
+    private var unifiedMarkupHidden = false
+    private let unifiedMarkupDefaultsKey = "ReaderUnifiedMarkupHidden"
+    var isTopBarHiddenForTesting: Bool { topBar.isHidden }
+    var markupToolbarToggleForTesting: ModernHoverButton { markupToolbarToggleBtn }
+    var topBarShowButtonForTesting: ModernHoverButton { topBarShowButton }
+    var isTopBarShowButtonVisibleForTesting: Bool { !topBarShowButton.isHidden }
+
     private let searchField = NSSearchField()
     private let searchMatchLabel = NSTextField(labelWithString: "")
     private let searchNavSeg = NSSegmentedControl()
@@ -501,10 +511,31 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         NotificationCenter.default.removeObserver(self)
     }
 
-    /// True when either column still has session DualPDF_Markup edits (undo stack non-empty).
-    /// These live only in the in-memory PDFKit document and are lost when the tab closes.
+    /// True when either column still has DualPDF_Markup that would be lost on close.
+    /// Set when a markup save fails; cleared after a later successful save.
     func hasUnpersistedColumnMarkup() -> Bool {
         [leftCol, rightCol].contains { $0.pdfView.hasUnpersistedSessionMarkup }
+    }
+
+    private func markMarkupPersist(succeeded: Bool, on column: CleanPDFColumnView? = nil) {
+        if succeeded {
+            for col in [leftCol, rightCol] {
+                col.pdfView.setMarkupPersistDirty(false)
+            }
+        } else if let column {
+            column.pdfView.setMarkupPersistDirty(true)
+            notifyMarkupPersistFailure()
+        } else {
+            leftCol.pdfView.setMarkupPersistDirty(true)
+            notifyMarkupPersistFailure()
+        }
+    }
+
+    private func notifyMarkupPersistFailure() {
+        let message = "批注未能保存，关闭或退出前请重试。"
+        if let wc = view.window?.windowController as? MultiTabMainWindowController {
+            wc.showStatusBanner(message)
+        }
     }
 
     func prepareForClose() {
@@ -797,6 +828,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         searchToggleBtn.target = self
         searchToggleBtn.action = #selector(toggleSearchFieldAction)
 
+        configureToolbarIconButton(markupToolbarToggleBtn)
+        markupToolbarToggleBtn.controlSize = .small
+        markupToolbarToggleBtn.setButtonType(.pushOnPushOff)
+        markupToolbarToggleBtn.isToggleButton = true
+        markupToolbarToggleBtn.state = .on
+        markupToolbarToggleBtn.image = NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "隐藏顶栏")?
+            .withSymbolConfiguration(barIconConfig)
+        markupToolbarToggleBtn.toolTip = "隐藏顶栏"
+        markupToolbarToggleBtn.target = self
+        markupToolbarToggleBtn.action = #selector(toggleMarkupToolbarAction)
+
         configureToolbarIconButton(drawerToggleBtn)
         drawerToggleBtn.controlSize = .small
         drawerToggleBtn.setButtonType(.pushOnPushOff)
@@ -835,6 +877,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         centerBarStack.spacing = 8
         centerBarStack.alignment = .centerY
         centerBarStack.translatesAutoresizingMaskIntoConstraints = false
+        centerBarStack.addArrangedSubview(unifiedMarkupToolbar)
         topBar.addSubview(centerBarStack)
 
         configureToolbarButton(saveToLibraryBtn)
@@ -854,12 +897,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         transientStatusLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         let rightBarStack = toolbarRightStack
-        // P0-2: 保留「未入库」与「存入文献库」；搜索默认收起；右侧边栏开关始终在最右侧。
+        // P0-2「未入库」/「存入文献库」+ 统一批注顶栏显隐 + 搜索默认收起；
+        // 右侧边栏开关始终保留在顶栏最右侧。
         [
             transientStatusLabel,
             saveToLibraryBtn,
             searchContainer,
             searchToggleBtn,
+            markupToolbarToggleBtn,
             drawerToggleBtn
         ].forEach { rightBarStack.addArrangedSubview($0) }
         rightBarStack.orientation = .horizontal
@@ -875,6 +920,17 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         topBar.addSubview(sep)
 
         container.addSubview(topBar)
+
+        topBarShowButton.bezelStyle = .texturedRounded
+        topBarShowButton.controlSize = .small
+        topBarShowButton.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "显示顶栏")?
+            .withSymbolConfiguration(barSubIconConfig)
+        topBarShowButton.toolTip = "显示顶栏"
+        topBarShowButton.target = self
+        topBarShowButton.action = #selector(toggleMarkupToolbarAction)
+        topBarShowButton.translatesAutoresizingMaskIntoConstraints = false
+        topBarShowButton.isHidden = true
+        container.addSubview(topBarShowButton)
 
         toolbarHeight = topBar.heightAnchor.constraint(equalToConstant: 42)
         toolbarCenterY = centerBarStack.centerYAnchor.constraint(equalTo: topBar.topAnchor, constant: 21)
@@ -908,8 +964,14 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
             sep.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
             sep.leadingAnchor.constraint(equalTo: topBar.leadingAnchor),
-            sep.trailingAnchor.constraint(equalTo: topBar.trailingAnchor)
+            sep.trailingAnchor.constraint(equalTo: topBar.trailingAnchor),
+
+            topBarShowButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
+            topBarShowButton.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            topBarShowButton.widthAnchor.constraint(equalToConstant: 26),
+            topBarShowButton.heightAnchor.constraint(equalToConstant: 20)
         ])
+        setupUnifiedMarkupToolbar()
         updateToolbarLayout()
     }
 
@@ -923,6 +985,68 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         button.translatesAutoresizingMaskIntoConstraints = false
         button.widthAnchor.constraint(equalToConstant: 26).isActive = true
         button.heightAnchor.constraint(equalToConstant: 26).isActive = true
+    }
+
+    private func setupUnifiedMarkupToolbar() {
+        unifiedMarkupHidden = UserDefaults.standard.bool(forKey: unifiedMarkupDefaultsKey)
+        applyMarkupToolbarVisibility()
+        unifiedMarkupToolbar.setColor(leftCol.pdfView.markupColor)
+        unifiedMarkupToolbar.onToolChanged = { [weak self] tool in
+            self?.applyUnifiedMarkupTool(tool)
+        }
+        unifiedMarkupToolbar.onColorChanged = { [weak self] color in
+            guard let self = self else { return }
+            self.leftCol.pdfView.markupColor = color
+            self.rightCol.pdfView.markupColor = color
+        }
+        unifiedMarkupToolbar.onUndo = { [weak self] in
+            guard let self = self else { return }
+            self.primaryActiveColumn().pdfView.undoMarkup()
+            self.refreshUnifiedMarkupState()
+        }
+        unifiedMarkupToolbar.onRedo = { [weak self] in
+            guard let self = self else { return }
+            self.primaryActiveColumn().pdfView.redoMarkup()
+            self.refreshUnifiedMarkupState()
+        }
+        refreshUnifiedMarkupState()
+    }
+
+    private func applyMarkupToolbarVisibility() {
+        topBar.isHidden = unifiedMarkupHidden
+        toolbarHeight.constant = unifiedMarkupHidden ? 0 : (toolbarUsesTwoRows ? 80 : 42)
+        topBarShowButton.isHidden = !unifiedMarkupHidden
+        // The canvas was added after the bar; keep the restore handle above it.
+        topBarShowButton.superview?.addSubview(topBarShowButton, positioned: .above, relativeTo: nil)
+        markupToolbarToggleBtn.state = unifiedMarkupHidden ? .off : .on
+        markupToolbarToggleBtn.toolTip = unifiedMarkupHidden ? "显示顶栏" : "隐藏顶栏"
+    }
+
+    @objc func toggleReaderTopBarAction() {
+        toggleMarkupToolbarAction()
+    }
+
+    @objc private func toggleMarkupToolbarAction() {
+        unifiedMarkupHidden.toggle()
+        UserDefaults.standard.set(unifiedMarkupHidden, forKey: unifiedMarkupDefaultsKey)
+        beginLayoutChange()
+        applyMarkupToolbarVisibility()
+        view.layoutSubtreeIfNeeded()
+        scheduleLayoutCompletion()
+    }
+
+    private func applyUnifiedMarkupTool(_ tool: PDFMarkupTool) {
+        for column in [leftCol, rightCol] {
+            column.pdfView.markupTool = tool
+            column.columnToolbar.setActiveTool(tool)
+        }
+        unifiedMarkupToolbar.setSelectedTool(tool)
+    }
+
+    func refreshUnifiedMarkupState() {
+        let column = primaryActiveColumn()
+        unifiedMarkupToolbar.setUndoRedoEnabled(canUndo: column.pdfView.canUndoMarkup,
+                                               canRedo: column.pdfView.canRedoMarkup)
     }
 
     private func makeToolbarSeparator() -> NSBox {
@@ -3087,6 +3211,10 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     private func updateToolbarLayout() {
         guard toolbarHeight != nil, view.bounds.width > 0 else { return }
+        if unifiedMarkupHidden {
+            toolbarHeight.constant = 0
+            return
+        }
         let needed = toolbarCenterStack.fittingSize.width +
             2 * max(toolbarLeftStack.fittingSize.width, toolbarRightStack.fittingSize.width) + 48
         let twoRows = view.bounds.width < needed
@@ -3272,6 +3400,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 self.finishPendingLayout()
                 self.lastReadingColumn = col
                 self.updateNavigationSource()
+                self.refreshUnifiedMarkupState()
             }
             col.pdfView.onMagnificationWillChange = { [weak self] in self?.beginLayoutChange() }
             col.pdfView.onMagnificationDidChange = { [weak self, weak col] in
@@ -3301,6 +3430,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                 self.goToColumnPageIndex(col, pageIndex: page - 1, recordHistory: true)
                 col.revealPageCapsule()
             }
+            col.onMarkupStateChanged = { [weak self] in self?.refreshUnifiedMarkupState() }
             col.onToolbarLayoutChanged = { [weak self] in
                 guard let self = self, !self.isClosed else { return }
                 self.beginLayoutChange()
@@ -3374,6 +3504,27 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             col.pdfView.onAnnotationClicked = { [weak self, weak col] annot, pt in
                 guard let col = col else { return }
                 self?.showExistingAnnotationPopover(annot, in: col.pdfView, at: pt)
+            }
+            col.pdfView.onMarkupCreate = { [weak self, weak col] annotations in
+                guard let self, let col else { return }
+                self.persistMarkupCreate(annotations, in: col)
+            }
+            col.pdfView.onMarkupUpdate = { [weak self, weak col] annotation in
+                guard let self, let col else { return }
+                self.persistMarkupUpdate(annotation, in: col)
+            }
+            col.pdfView.onMarkupDelete = { [weak self] ids in
+                self?.persistMarkupDelete(ids)
+            }
+            col.pdfView.onMarkupVisibilityChanged = { [weak self, weak col] ids in
+                guard let self, let col else { return }
+                self.annotationRenderer.setHidden(ids, in: col)
+            }
+            col.pdfView.onMarkupStateChanged = { [weak col] in
+                guard let col else { return }
+                col.columnToolbar.setUndoRedoEnabled(
+                    canUndo: col.pdfView.canUndoMarkup,
+                    canRedo: col.pdfView.canRedoMarkup)
             }
             col.pdfView.onBeforeInternalLinkJump = { [weak self, weak col] destPage, destPoint, isCmdPressed in
                 guard let self = self, let col = col else { return false }
@@ -3458,9 +3609,13 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
               let source = [leftCol, rightCol].first(where: { $0.internalScrollView()?.contentView === clipView }),
               viewportCoordinator.receivedScroll(in: source) else { return }
         lastReadingColumn = source
-        updatePageIndicatorAndSaveProgress()
         source.revealPageCapsule()
         syncScroll(from: source, to: source === leftCol ? rightCol : leftCol)
+        // The target column moves programmatically inside syncScroll, where
+        // bounds notifications are suppressed. Refresh both capsules after
+        // that move so each column shows its own post-sync page.
+        updatePageIndicatorAndSaveProgress()
+        refreshUnifiedMarkupState()
         scheduleReadingPositionSave(from: source)
     }
 
@@ -3504,6 +3659,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         // Page notifications are derived display state; they must not choose the
         // active pane or initiate a second scroll while PDFKit is still laying out.
         updatePageIndicatorAndSaveProgress()
+        refreshUnifiedMarkupState()
         stripVisibleLinkAnnotationBorders()
     }
 
@@ -3852,7 +4008,58 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     private func applyAnnotationsToPDFViews() {
         guard let paper = currentPaper else { return }
-        for column in [leftCol, rightCol] { annotationRenderer.apply(paper.annotations, to: column) }
+        for column in [leftCol, rightCol] {
+            annotationRenderer.apply(paper.annotations, to: column)
+            column.pdfView.clearSelectedMarkupIfMissing()
+        }
+    }
+
+    private func persistMarkupCreate(_ annotations: [PaperAnnotation], in column: CleanPDFColumnView) {
+        guard !annotations.isEmpty, var paper = currentPaper else { return }
+        for source in annotations {
+            var annotation = source
+            annotation.side = column.side
+            annotation.pdfDocumentId = column.activePDFDocumentId
+            if let index = paper.annotations.firstIndex(where: { $0.id == annotation.id }) {
+                paper.annotations[index] = annotation
+            } else {
+                paper.annotations.append(annotation)
+            }
+        }
+        guard LibraryStore.shared.savePaper(paper, notify: true) else {
+            markMarkupPersist(succeeded: false, on: column)
+            return
+        }
+        markMarkupPersist(succeeded: true)
+        applyAnnotationsToPDFViews()
+    }
+
+    private func persistMarkupUpdate(_ annotation: PaperAnnotation, in column: CleanPDFColumnView) {
+        guard var paper = currentPaper,
+              let index = paper.annotations.firstIndex(where: { $0.id == annotation.id }) else { return }
+        var annotation = annotation
+        annotation.side = column.side
+        annotation.pdfDocumentId = column.activePDFDocumentId
+        paper.annotations[index] = annotation
+        // Edits only change geometry/color; keep the library list quiet and refresh locally.
+        guard LibraryStore.shared.savePaper(paper, notify: false) else {
+            markMarkupPersist(succeeded: false, on: column)
+            return
+        }
+        markMarkupPersist(succeeded: true)
+        applyAnnotationsToPDFViews()
+    }
+
+    private func persistMarkupDelete(_ ids: [String]) {
+        guard var paper = currentPaper else { return }
+        let idSet = Set(ids)
+        paper.annotations.removeAll { idSet.contains($0.id) }
+        guard LibraryStore.shared.savePaper(paper, notify: true) else {
+            markMarkupPersist(succeeded: false)
+            return
+        }
+        markMarkupPersist(succeeded: true)
+        applyAnnotationsToPDFViews()
     }
 
     private func showSelectionActionPopover(for pdfView: InteractivePDFView, selection: PDFSelection, rectInView: NSRect) {
@@ -3997,7 +4204,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         pdfView.clearSelection()
 
         let pdfBadge = annotation.shortSourceBadge(in: paper)
-        let compactExcerpt = annotation.selectedText
+        let compactExcerpt = annotation.displayText
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4364,6 +4571,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
               let idx = paper.annotations.firstIndex(where: { $0.id == parts[0] }),
               let newColor = HighlightColor(rawValue: parts[1]) else { return }
         paper.annotations[idx].color = newColor
+        paper.annotations[idx].colorHex = newColor.solidColor.hexString
         LibraryStore.shared.savePaper(paper, notify: true)
         selectionPopover.close()
     }
@@ -4405,6 +4613,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
                   var paper = self.currentPaper,
                   let idx = paper.annotations.firstIndex(where: { $0.id == annot.id }) else { return false }
             paper.annotations[idx].color = chosenColor
+            paper.annotations[idx].colorHex = chosenColor.solidColor.hexString
             paper.annotations[idx].markdownNote = updatedMarkdown
             guard LibraryStore.shared.savePaper(paper, notify: true) else { return false }
             if !self.isDrawerOpen {
@@ -4634,6 +4843,7 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
 
     private func configureColumnToolbar(for col: CleanPDFColumnView) {
         let toolbar = col.columnToolbar
+        toolbar.setUnifiedMarkupEnabled(true)
         toolbar.onOutline = { [weak self, weak col] in
             guard let self = self, let col = col else { return }
             if self.isLeftOverlayOpen, self.primaryActiveColumn() !== col {
@@ -4648,14 +4858,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             self.lastReadingColumn = col
             self.updateNavigationSource()
             self.toggleOutlineSidebar(for: col)
-        }
-        toolbar.onSpread = { [weak self, weak col] in
-            guard let self = self, let col = col else { return }
-            self.beginLayoutChange()
-            col.toggleSpreadMode()
-            self.view.layoutSubtreeIfNeeded()
-            self.scheduleLayoutCompletion()
-            self.updatePageIndicatorAndSaveProgress()
         }
         toolbar.onContinuous = { [weak self, weak col] in
             guard let self = self, let col = col else { return }
@@ -4685,14 +4887,25 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             if !self.isDrawerOpen { self.toggleRightDrawerAction() }
             self.switchWorkbenchTab(to: 1)
         }
-        toolbar.onToolChanged = { [weak col] tool in
-            col?.pdfView.markupTool = tool
+        toolbar.onToolChanged = { [weak self] tool in
+            self?.applyUnifiedMarkupTool(tool)
         }
-        toolbar.onColorChanged = { [weak col] color in
-            col?.pdfView.markupColor = color
+        toolbar.onColorChanged = { [weak self] color in
+            guard let self = self else { return }
+            self.leftCol.pdfView.markupColor = color
+            self.rightCol.pdfView.markupColor = color
+            self.unifiedMarkupToolbar.setColor(color)
+            self.leftCol.pdfView.updateSelectedMarkupColor(color)
+            self.rightCol.pdfView.updateSelectedMarkupColor(color)
         }
-        toolbar.onUndo = { [weak col] in col?.pdfView.undoMarkup() }
-        toolbar.onRedo = { [weak col] in col?.pdfView.redoMarkup() }
+        toolbar.onUndo = { [weak self] in
+            self?.primaryActiveColumn().pdfView.undoMarkup()
+            self?.refreshUnifiedMarkupState()
+        }
+        toolbar.onRedo = { [weak self] in
+            self?.primaryActiveColumn().pdfView.redoMarkup()
+            self?.refreshUnifiedMarkupState()
+        }
         toolbar.setViewMode(col.pdfView.displayMode)
         toolbar.setOutlineActive(isLeftOverlayOpen)
         toolbar.setUndoRedoEnabled(canUndo: col.pdfView.canUndoMarkup, canRedo: col.pdfView.canRedoMarkup)

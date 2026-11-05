@@ -180,7 +180,17 @@ final class TransientStore {
     func savePaper(_ paper: PaperItem, notify: Bool = true) -> Bool {
         var item = paper
         item.isTransient = true
+        // Merge any coalesced reading-state so annotation saves keep the latest
+        // scroll/zoom, and so a later flush cannot rewrite a stale whole-paper snapshot.
+        if let pending = pendingReadingUpdates[item.id] {
+            item.applyReadingFields(from: pending)
+        }
         guard persist(item) else { return false }
+        pendingReadingUpdates.removeValue(forKey: item.id)
+        if pendingReadingUpdates.isEmpty {
+            readingSaveTask?.cancel()
+            readingSaveTask = nil
+        }
         if notify { publish(ids: [item.id]) }
         return true
     }
@@ -213,8 +223,11 @@ final class TransientStore {
         guard !updates.isEmpty else { return true }
 
         var payloads: [(id: String, url: URL, data: Data)] = []
-        for (_, paper) in updates {
-            var item = paper
+        for (id, pending) in updates {
+            // Only overlay reading fields onto the current in-memory paper so a
+            // deferred flush cannot clobber annotations saved after the scroll.
+            var item = papersByID[id] ?? pending
+            item.applyReadingFields(from: pending)
             item.isTransient = true
             papersByID[item.id] = item
             if let idx = papers.firstIndex(where: { $0.id == item.id }) {

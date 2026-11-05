@@ -24,8 +24,11 @@ final class LibraryStore {
     private var categories: [String] = []
     private var pendingReadingUpdates: [String: PaperItem] = [:]
     private var readingSaveTask: DispatchWorkItem?
-    /// IDs of in-memory-only opens (e.g. unlocked encrypted PDFs). Writes are no-ops.
+    /// IDs owned by TransientStore (including unlocked encrypted PDFs).
+    /// `commitPapers` skips these; TransientStore persists their state.json (annotations included).
     private var transientPaperIDs: Set<String> = []
+    /// Test seam: force the next `savePaper` to return this value, then clear.
+    static var testingSavePaperResult: Bool? = nil
     private let summaryCache = PDFSummaryCache()
     private let errorHandler: ((String) -> Void)?
     private var storage: LibraryFileStorage { LibraryFileStorage(rootDirectory: rootDirectory) }
@@ -218,10 +221,19 @@ final class LibraryStore {
 
     @discardableResult
     func savePaper(_ paper: PaperItem, notify: Bool = true) -> Bool {
+        if let forced = Self.testingSavePaperResult {
+            Self.testingSavePaperResult = nil
+            return forced
+        }
         if isTransientPaper(id: paper.id) || paper.isTransient {
             return TransientStore.shared.savePaper(paper, notify: notify)
         }
-        return commitPapers([paper], notify: notify)
+        var item = paper
+        // Keep any coalesced reading-state that has not flushed yet.
+        if let pending = pendingReadingUpdates[item.id] {
+            item.applyReadingFields(from: pending)
+        }
+        return commitPapers([item], notify: notify)
     }
 
     @discardableResult
@@ -255,10 +267,13 @@ final class LibraryStore {
             NSLog("[DualPDF][B2] accept refused for transient id=%@", paper.id)
             return
         }
-        pendingReadingUpdates.removeValue(forKey: paper.id)
-        papersByID[paper.id] = paper
-        if let index = papers.firstIndex(where: { $0.id == paper.id }) { papers[index] = paper }
-        else { papers.insert(paper, at: 0) }
+        var item = paper
+        if let pending = pendingReadingUpdates.removeValue(forKey: paper.id) {
+            item.applyReadingFields(from: pending)
+        }
+        papersByID[item.id] = item
+        if let index = papers.firstIndex(where: { $0.id == item.id }) { papers[index] = item }
+        else { papers.insert(item, at: 0) }
     }
 
     private func changedFields(from previous: PaperItem?, to paper: PaperItem) -> LibraryChange.Fields {
@@ -297,14 +312,27 @@ final class LibraryStore {
         readingSaveTask = nil
         for tid in transientPaperIDs { pendingReadingUpdates.removeValue(forKey: tid) }
         let updates = Array(pendingReadingUpdates.values)
+        pendingReadingUpdates.removeAll()
         let transientOK = TransientStore.shared.flushReadingState()
         guard !updates.isEmpty else { return transientOK }
+        // Overlay reading fields onto the committed paper so a deferred flush
+        // never rewrites stale annotations / notes from the pending snapshot.
+        var merged: [PaperItem] = []
+        for pending in updates {
+            var item = papersByID[pending.id] ?? pending
+            item.applyReadingFields(from: pending)
+            merged.append(item)
+        }
         do {
-            try storage.writeMetadata(updates)
+            try storage.writeMetadata(merged)
             var fields: LibraryChange.Fields = .reading
-            for paper in updates { fields.formUnion(changedFields(from: papersByID[paper.id], to: paper)) }
-            for paper in updates { accept(paper) }
-            publish(ids: Set(updates.map(\.id)), fields: fields)
+            for paper in merged { fields.formUnion(changedFields(from: papersByID[paper.id], to: paper)) }
+            for paper in merged {
+                papersByID[paper.id] = paper
+                if let index = papers.firstIndex(where: { $0.id == paper.id }) { papers[index] = paper }
+                else { papers.insert(paper, at: 0) }
+            }
+            publish(ids: Set(merged.map(\.id)), fields: fields)
             return transientOK
         } catch { report(error); return false }
     }
