@@ -906,6 +906,11 @@ extension MultiTabMainWindowController {
         switchToTab(id: created.id)
     }
 
+    /// 编辑 › 撤销 / 重做 fallback: the markup undo stack of the active reader
+    /// (text fields and PDF views earlier in the responder chain win first).
+    @objc func undo(_ sender: Any?) { activeReaderVC?.performMarkupUndoFromMenu() }
+    @objc func redo(_ sender: Any?) { activeReaderVC?.performMarkupRedoFromMenu() }
+
     @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let sel = menuItem.action
         let id = activeTabId
@@ -914,6 +919,12 @@ extension MultiTabMainWindowController {
             LibraryStore.shared.isTransientPaper(id: id) ||
             (LibraryStore.shared.paper(withId: id)?.isTransient == true)
         )
+        if sel == #selector(undo(_:)) {
+            return activeReaderVC?.canPerformMarkupUndoFromMenu ?? false
+        }
+        if sel == #selector(redo(_:)) {
+            return activeReaderVC?.canPerformMarkupRedoFromMenu ?? false
+        }
         if sel == #selector(saveToLibraryShortcutAction) {
             return isReader && transient
         }

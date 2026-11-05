@@ -430,9 +430,12 @@ do {
     }
     let unifiedButtons = descendants(reader.unifiedMarkupToolbar).compactMap { $0 as? NSButton }
         .filter { !$0.isHiddenOrHasHiddenAncestor }
-    let unifiedOK = unifiedButtons.count >= 10 &&
-        unifiedButtons.contains { $0.toolTip == "高亮" } &&
-        unifiedButtons.contains { $0.toolTip == "矩形" }
+    // Pinned 高亮/下划线/画笔/文本/调色盘 + 「…」; the rest lives in the overflow menu.
+    let unifiedReachable = Set(reader.unifiedMarkupToolbar.visibleToolsForTesting +
+                               reader.unifiedMarkupToolbar.overflowToolsForTesting)
+    let unifiedOK = unifiedButtons.contains { $0.toolTip == "高亮" } &&
+        unifiedButtons.contains { ($0.toolTip ?? "").hasPrefix("更多批注工具") } &&
+        unifiedReachable == Set(UnifiedMarkupToolbarView.allTools)
     let capsulesFit = [reader.leftCol, reader.rightCol].allSatisfy { $0.pageCapsule.frame.width >= 140 }
     check(perColumnControlsFit && unifiedOK && capsulesFit, "L05-all-controls", "紧凑布局保留两栏视图/缩放入口、统一批注工具栏与页码胶囊，窄栏自动收进溢出菜单")
     send("closeSearchAction", to: reader)

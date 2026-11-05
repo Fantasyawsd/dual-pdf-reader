@@ -142,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
 
-    private func setupMainMenu() {
+    func setupMainMenu() {
         let mainMenu = NSMenu()
 
         let appMenuItem = NSMenuItem()

@@ -1243,16 +1243,6 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
             self.leftCol.pdfView.markupColor = color
             self.rightCol.pdfView.markupColor = color
         }
-        unifiedMarkupToolbar.onUndo = { [weak self] in
-            guard let self = self else { return }
-            self.markupUndoTargetColumn().pdfView.undoMarkup()
-            self.refreshUnifiedMarkupState()
-        }
-        unifiedMarkupToolbar.onRedo = { [weak self] in
-            guard let self = self else { return }
-            self.markupUndoTargetColumn().pdfView.redoMarkup()
-            self.refreshUnifiedMarkupState()
-        }
         refreshUnifiedMarkupState()
     }
 
@@ -1287,10 +1277,32 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         unifiedMarkupToolbar.setSelectedTool(tool)
     }
 
-    func refreshUnifiedMarkupState() {
+    /// Undo/redo are no longer on the top bar; the 编辑 menu validates through
+    /// `canPerformMarkupUndoFromMenu` / `canPerformMarkupRedoFromMenu`.
+    func refreshUnifiedMarkupState() {}
+
+    var canPerformMarkupUndoFromMenu: Bool {
         let column = markupUndoTargetColumn()
-        unifiedMarkupToolbar.setUndoRedoEnabled(canUndo: column.pdfView.canUndoMarkup,
-                                               canRedo: column.pdfView.canRedoMarkup)
+        return !column.isHidden && column.pdfView.document != nil && column.pdfView.canUndoMarkup
+    }
+
+    var canPerformMarkupRedoFromMenu: Bool {
+        let column = markupUndoTargetColumn()
+        return !column.isHidden && column.pdfView.document != nil && column.pdfView.canRedoMarkup
+    }
+
+    /// 编辑 › 撤销 when the first responder is not a PDF view or text field.
+    func performMarkupUndoFromMenu() {
+        guard canPerformMarkupUndoFromMenu else { return }
+        markupUndoTargetColumn().pdfView.undoMarkup()
+        refreshUnifiedMarkupState()
+    }
+
+    /// 编辑 › 重做 when the first responder is not a PDF view or text field.
+    func performMarkupRedoFromMenu() {
+        guard canPerformMarkupRedoFromMenu else { return }
+        markupUndoTargetColumn().pdfView.redoMarkup()
+        refreshUnifiedMarkupState()
     }
 
     private func markupUndoTargetColumn() -> CleanPDFColumnView {
@@ -3482,15 +3494,45 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         return isSwapped ? leftCol : rightCol
     }
 
+    private var topBarAvailableWidth: CGFloat {
+        topBar.bounds.width > 0 ? topBar.bounds.width : view.bounds.width
+    }
+
+    /// Re-run the top bar fitting pass (tests and window resizes).
+    func updateToolbarLayoutForTesting() { updateToolbarLayout() }
+    var topBarForTesting: NSView { topBar }
+    var toolbarUsesTwoRowsForTesting: Bool { toolbarUsesTwoRows }
+    var isDrawerOpenForTesting: Bool { isDrawerOpen }
+    var lastMarkupFitWidthForTesting: CGFloat = 0
+    /// Frames (in top bar coordinates) of every visible top bar control.
+    func topBarItemFramesForTesting() -> [(name: String, frame: NSRect)] {
+        var result: [(String, NSRect)] = []
+        func add(_ view: NSView, _ fallback: String) {
+            guard !view.isHiddenOrHasHiddenAncestor, view.frame.width > 0 else { return }
+            let name = (view as? NSControl)?.toolTip ?? (view as? NSTextField)?.stringValue ?? fallback
+            result.append((name.isEmpty ? fallback : name, view.convert(view.bounds, to: topBar)))
+        }
+        for (index, view) in toolbarLeftStack.arrangedSubviews.enumerated() { add(view, "left#\(index)") }
+        for (index, view) in toolbarRightStack.arrangedSubviews.enumerated() { add(view, "right#\(index)") }
+        for view in unifiedMarkupToolbar.subviews.flatMap({ $0.subviews }) where view is NSButton {
+            add(view, "markup")
+        }
+        return result
+    }
+
     private func updateToolbarLayout() {
         guard toolbarHeight != nil, view.bounds.width > 0 else { return }
         if unifiedMarkupHidden {
             toolbarHeight.constant = 0
             return
         }
-        let needed = toolbarCenterStack.fittingSize.width +
-            2 * max(toolbarLeftStack.fittingSize.width, toolbarRightStack.fittingSize.width) + 48
-        let twoRows = view.bounds.width < needed
+        // The centered markup bar collapses pinned tools into its「…」menu
+        // before the top bar falls back to two rows.
+        let sideWidth = max(toolbarLeftStack.fittingSize.width, toolbarRightStack.fittingSize.width)
+        let oneRowAvailable = topBarAvailableWidth - 2 * sideWidth - 48
+        let twoRows = oneRowAvailable < UnifiedMarkupToolbarView.minimumWidth
+        lastMarkupFitWidthForTesting = twoRows ? topBarAvailableWidth - 24 : oneRowAvailable
+        unifiedMarkupToolbar.fit(availableWidth: lastMarkupFitWidthForTesting)
         let separationActive = toolbarSeparation.contains { $0.isActive }
         guard twoRows != toolbarUsesTwoRows || separationActive == twoRows else { return }
         beginLayoutChange()

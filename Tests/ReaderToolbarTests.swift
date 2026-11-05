@@ -71,32 +71,63 @@ func runReaderToolbarTests(root: URL) throws {
         reader.markupToolbarToggleForTesting.performClick(nil)
         settle(0.2)
     }
-    let unifiedTips = Set(reader.unifiedMarkupToolbar.toolTipsForTesting)
-    check(unifiedTips.isSuperset(of: ["指针选择", "高亮", "下划线", "删除线", "画笔", "橡皮擦", "文本",
-                                      "矩形", "椭圆", "直线", "箭头", "选择颜色", "撤销", "重做"]),
-          "Unified toolbar exposes annotation, shape, palette and history tools")
-    check(unifiedTips.filter { $0 == "选择颜色" }.count == 1,
-          "Unified toolbar uses a single palette control")
+    let unified = reader.unifiedMarkupToolbar
+    unified.fit(availableWidth: UnifiedMarkupToolbarView.fullWidth)
+    let unifiedTips = Set(unified.toolTipsForTesting)
+    check(unifiedTips == ["高亮", "下划线", "画笔", "文本", "选择颜色", "更多批注工具"],
+          "Unified toolbar pins exactly 高亮/下划线/画笔/文本/调色盘 plus the「…」menu")
+    check(!unifiedTips.contains("撤销") && !unifiedTips.contains("重做") &&
+          !descendants(unified).compactMap { $0 as? NSButton }.contains { !$0.isHiddenOrHasHiddenAncestor && ["撤销", "重做"].contains($0.toolTip ?? "") },
+          "Undo and redo are not on the top bar")
+    let fullMenuTitles = unified.overflowMenuForTesting().items.filter { !$0.isSeparatorItem }.map(\.title)
+    check(fullMenuTitles == ["指针选择", "删除线", "橡皮擦", "矩形", "椭圆", "直线", "箭头"],
+          "「…」menu holds 指针、删除线、橡皮擦 and the shapes (got \(fullMenuTitles))")
     check(!unifiedTips.contains("琥珀黄") && !unifiedTips.contains("翠竹绿"),
           "Unified toolbar does not flatten color swatches into the toolbar")
 
-    let unifiedButtons = descendants(reader.unifiedMarkupToolbar).compactMap { $0 as? NSButton }
-    if let rectangle = unifiedButtons.first(where: { $0.toolTip == "矩形" }) {
-        rectangle.performClick(nil)
-        settle(0.15)
-        check(reader.leftCol.pdfView.markupTool == .rectangle && reader.rightCol.pdfView.markupTool == .rectangle,
-              "Choosing a shape in the unified toolbar activates it in both columns")
+    unified.chooseOverflowItemForTesting(.tool(.rectangle))
+    settle(0.15)
+    check(reader.leftCol.pdfView.markupTool == .rectangle && reader.rightCol.pdfView.markupTool == .rectangle,
+          "Choosing a shape in the「…」menu activates it in both columns")
+    check(unified.overflowButtonForTesting.state == .on &&
+          (unified.overflowButtonForTesting.toolTip ?? "").contains("矩形") &&
+          unified.overflowMenuForTesting().items.first { $0.title == "矩形" }?.state == .on,
+          "The「…」button and menu show that the overflow tool 矩形 is active")
+    unified.chooseOverflowItemForTesting(.tool(.pointer))
+    settle(0.15)
+    check(reader.leftCol.pdfView.markupTool == .pointer && reader.rightCol.pdfView.markupTool == .pointer &&
+          unified.overflowButtonForTesting.state == .off,
+          "Pointer mode from the「…」menu applies to both columns")
+    if let highlight = descendants(unified).compactMap({ $0 as? NSButton }).first(where: { $0.toolTip == "高亮" }) {
+        highlight.performClick(nil)
+        settle(0.1)
+        check(reader.leftCol.pdfView.markupTool == .highlight, "Pinned 高亮 selects the highlight tool")
+        highlight.performClick(nil)
+        settle(0.1)
+        check(reader.leftCol.pdfView.markupTool == .pointer, "Clicking the active pinned tool again returns to the pointer")
     } else {
-        check(false, "Unified toolbar provides a rectangle button")
+        check(false, "Unified toolbar provides a pinned 高亮 button")
     }
-    if let pointer = unifiedButtons.first(where: { $0.toolTip == "指针选择" }) {
-        pointer.performClick(nil)
-        settle(0.15)
-        check(reader.leftCol.pdfView.markupTool == .pointer && reader.rightCol.pdfView.markupTool == .pointer,
-              "Pointer mode in the unified toolbar applies to both columns")
-    } else {
-        check(false, "Unified toolbar provides a pointer button")
+
+    // Pure fitting: collapse pinned items right-to-left by priority.
+    let probe = UnifiedMarkupToolbarView(frame: .zero)
+    let order: [UnifiedMarkupToolbarView.Item] = UnifiedMarkupToolbarView.pinnedItems
+    for collapse in 0...order.count {
+        probe.fit(availableWidth: UnifiedMarkupToolbarView.width(collapsing: collapse))
+        check(probe.visiblePinnedItems == Array(order.prefix(order.count - collapse)) &&
+              probe.collapsedPinnedItems == Array(order.suffix(collapse)),
+              "Fitting collapses the rightmost \(collapse) pinned control(s) first")
+        let reachable = Set(probe.visibleToolsForTesting + probe.overflowToolsForTesting)
+        check(reachable == Set(UnifiedMarkupToolbarView.allTools) &&
+              (probe.visiblePinnedItems.contains(.palette) ||
+               probe.overflowMenuForTesting().items.contains { $0.title == "选择颜色…" }),
+              "With \(collapse) collapsed, pinned + overflow still cover every tool and the palette")
     }
+    probe.fit(availableWidth: UnifiedMarkupToolbarView.width(collapsing: 2))
+    probe.setSelectedTool(.text)
+    check(probe.overflowButtonForTesting.state == .on &&
+          probe.overflowMenuForTesting().items.first { $0.title == "文本" }?.state == .on,
+          "A collapsed pinned tool shows as selected in the「…」menu")
 
     if reader.isTopBarHiddenForTesting {
         reader.topBarShowButtonForTesting.performClick(nil)
@@ -117,6 +148,110 @@ func runReaderToolbarTests(root: URL) throws {
         let expectedPDFHeight = column.bounds.height - column.columnToolbar.frame.height
         check(abs(column.pdfView.frame.height - expectedPDFHeight) < 2 && column.pdfView.scaleFactor > 0.01,
               "(column.side.rawValue) PDF view keeps the correct height below its toolbar")
+    }
+
+    // Undo/redo left the top bar: the 编辑 menu still carries them and they work.
+    do {
+        let previousMenu = NSApp.mainMenu
+        AppDelegate().setupMainMenu()
+        let editItems = NSApp.mainMenu?.items.compactMap(\.submenu).first { $0.title == "编辑" }?.items ?? []
+        let undoItem = editItems.first { $0.title == "撤销" }
+        let redoItem = editItems.first { $0.title == "重做" }
+        check(undoItem?.keyEquivalent == "z" && undoItem?.action == NSSelectorFromString("undo:") &&
+              redoItem?.keyEquivalent == "Z" && redoItem?.action == NSSelectorFromString("redo:"),
+              "编辑 menu exposes 撤销 ⌘Z and 重做 ⇧⌘Z")
+        NSApp.mainMenu = previousMenu
+        check(MultiTabMainWindowController.instancesRespond(to: NSSelectorFromString("undo:")) &&
+              MultiTabMainWindowController.instancesRespond(to: NSSelectorFromString("redo:")),
+              "Main window controller answers 编辑 › 撤销/重做 for the active reader")
+
+        var menuAnn = PaperAnnotation(
+            side: .original, pageIndex: 0, rects: [RectCodable(NSRect(x: 30, y: 60, width: 60, height: 14))],
+            selectedText: "toolbar-menu-undo", color: .yellow, markdownNote: "", linkedURL: nil, linkedTitle: nil,
+            pdfDocumentId: reader.leftCol.activePDFDocumentId)
+        menuAnn.kind = .highlight
+        let countBefore = store.paper(withId: paper.id)?.annotations.count ?? 0
+        reader.leftCol.pdfView.seedMarkupCreateForTesting(menuAnn)
+        settle(0.15)
+        let countAfterCreate = store.paper(withId: paper.id)?.annotations.count ?? 0
+        check(countAfterCreate == countBefore + 1 && reader.canPerformMarkupUndoFromMenu,
+              "Menu undo is enabled after a markup edit")
+        reader.performMarkupUndoFromMenu()
+        settle(0.15)
+        check((store.paper(withId: paper.id)?.annotations.count ?? -1) == countBefore && reader.canPerformMarkupRedoFromMenu,
+              "编辑 › 撤销 removes the markup and enables 重做")
+        reader.performMarkupRedoFromMenu()
+        settle(0.15)
+        check((store.paper(withId: paper.id)?.annotations.count ?? -1) == countAfterCreate,
+              "编辑 › 重做 restores the markup")
+        reader.performMarkupUndoFromMenu()
+        settle(0.15)
+    }
+
+    // Top bar geometry: 900pt window with the right drawer open, then narrower widths.
+    do {
+        let geometryWindow = NSWindow(contentRect: NSRect(x: 60, y: 60, width: 900, height: 700),
+                                      styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        geometryWindow.contentViewController = reader
+        geometryWindow.setContentSize(NSSize(width: 900, height: 700))
+        geometryWindow.orderFront(nil)
+        reader.setDisplayMode(2)
+        settle(0.2)
+        if !reader.isDrawerOpenForTesting { reader.toggleRightDrawerAction() }
+        settle(0.3)
+        check(reader.isDrawerOpenForTesting, "Geometry fixture opens the right drawer")
+
+        func assertTopBar(width: CGFloat) -> Int {
+            geometryWindow.setContentSize(NSSize(width: width, height: 700))
+            reader.view.layoutSubtreeIfNeeded()
+            reader.updateToolbarLayoutForTesting()
+            reader.view.layoutSubtreeIfNeeded()
+            settle(0.15)
+            reader.view.layoutSubtreeIfNeeded()
+            let bar = reader.topBarForTesting
+            let items = reader.topBarItemFramesForTesting()
+            let bounds = bar.bounds
+            let outside = items.filter { !bounds.insetBy(dx: -0.5, dy: -0.5).contains($0.frame) }
+            var overlaps: [String] = []
+            for i in items.indices {
+                for j in items.indices where j > i {
+                    if items[i].frame.insetBy(dx: 0.5, dy: 0.5).intersects(items[j].frame.insetBy(dx: 0.5, dy: 0.5)) {
+                        overlaps.append("\(items[i].name)×\(items[j].name)")
+                    }
+                }
+            }
+            check(abs(bounds.width - width) < 1 && items.count >= 6,
+                  "Top bar spans the \(Int(width))pt window (\(items.count) visible items)")
+            check(outside.isEmpty, "At \(Int(width))pt every top bar control is inside the bar (outside: \(outside.map(\.name)))")
+            check(overlaps.isEmpty, "At \(Int(width))pt no top bar controls overlap (\(overlaps))")
+            let unified = reader.unifiedMarkupToolbar
+            check(unified.frame.width <= reader.lastMarkupFitWidthForTesting + 0.5 || unified.collapsedPinnedCount == UnifiedMarkupToolbarView.pinnedItems.count,
+                  "At \(Int(width))pt the markup bar fits its available width")
+            let reachable = Set(unified.visibleToolsForTesting + unified.overflowToolsForTesting)
+            check(reachable == Set(UnifiedMarkupToolbarView.allTools),
+                  "At \(Int(width))pt pinned + overflow tools equal every markup tool")
+            check(unified.visiblePinnedItems == Array(UnifiedMarkupToolbarView.pinnedItems.prefix(unified.visiblePinnedItems.count)),
+                  "At \(Int(width))pt pinned tools collapse right-to-left by priority")
+            return unified.collapsedPinnedCount
+        }
+
+        let at900 = assertTopBar(width: 900)
+        check(at900 == 0 && !reader.toolbarUsesTwoRowsForTesting,
+              "900pt with the drawer open keeps all five pinned controls on one row")
+        var sawPartialCollapse = false
+        var previous = at900
+        for width in stride(from: CGFloat(860), through: 540, by: -20) {
+            let collapsed = assertTopBar(width: width)
+            check(collapsed >= previous || reader.toolbarUsesTwoRowsForTesting,
+                  "Narrowing to \(Int(width))pt never brings a collapsed control back on the same row")
+            if collapsed > 0 && collapsed < UnifiedMarkupToolbarView.pinnedItems.count { sawPartialCollapse = true }
+            previous = collapsed
+        }
+        check(sawPartialCollapse, "Some narrower width collapses part of the pinned set into the「…」menu")
+        if reader.isDrawerOpenForTesting { reader.toggleRightDrawerAction() }
+        geometryWindow.contentViewController = nil
+        geometryWindow.orderOut(nil)
+        settle(0.1)
     }
 
     let narrowToolbar = ColumnToolbarView(frame: NSRect(x: 0, y: 0, width: 180, height: 36))
