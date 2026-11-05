@@ -735,13 +735,24 @@ function renderSidebar() {
 
     const childrenBlock = ui.treeExpanded ? `
         ${catsHTML || (categoryQuery ? '<div class="sidebar-empty-search" role="status">未找到匹配分类</div>' : '')}
-        <div class="tree-row child" style="color:var(--accent); font-size:13px;" onclick="promptCreateNewCategory(event)">
-            <span class="tree-icon" style="font-size:15px; font-weight:bold;">＋</span>
+        <div class="tree-row child tree-row-add" onclick="promptCreateNewCategory(event)">
+            <span class="tree-icon">＋</span>
             <span class="tree-label">新建分类…</span>
         </div>
     ` : '';
 
-    const totalCount = (state.papers || []).length;
+    const papers = state.papers || [];
+    const totalCount = papers.length;
+    const recentCount = papers.filter(p => !!p.lastOpenedTimestamp && p.lastOpenedTimestamp > p.addedTimestamp).length;
+    const favoriteCount = papers.filter(p => p.isFavorite).length;
+    const noteCount = papers.reduce((sum, p) => sum + (p.annotations || []).length, 0);
+    const smartRowHTML = (kind, title, iconSVG, count) => `
+        <div class="smart-row ${ui.filterKind === kind ? 'active' : ''}" onclick="setFilter('${kind}', '${title}')">
+            <span class="smart-icon">${iconSVG}</span>
+            <span class="smart-label">${title}</span>
+            ${count > 0 ? `<span class="smart-count">${count}</span>` : ''}
+        </div>
+    `;
 
     document.getElementById('sidebarScroll').innerHTML = `
         <div class="tree-row ${ui.filterKind === 'all' ? 'active' : ''}" onclick="setFilter('all', '我的文库')">
@@ -752,9 +763,15 @@ function renderSidebar() {
                 </svg>
             </span>
             <span class="tree-label">我的文库</span>
-            <span style="font-size:12px; color:var(--text-tertiary); margin-left:auto;">${totalCount}</span>
+            <span class="smart-count">${totalCount}</span>
         </div>
         ${childrenBlock}
+        ${categoryQuery ? '' : `
+        <div class="sidebar-section-label">快速访问</div>
+        ${smartRowHTML('recent', '最近阅读', '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.6"/></svg>', recentCount)}
+        ${smartRowHTML('favorites', '已加星标', '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M8 1.8l1.9 3.9 4.2.6-3 3 .7 4.2L8 11.5l-3.8 2 .7-4.2-3-3 4.2-.6L8 1.8z"/></svg>', favoriteCount)}
+        ${smartRowHTML('notes', '全部笔记', '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2.5l2.5 2.5L6 12.5H3.5V10L11 2.5z"/></svg>', noteCount)}
+        `}
     `;
 }
 
@@ -792,8 +809,9 @@ function renderCenter() {
 
         if (allAnnots.length === 0) {
             centerEl.innerHTML = `
-                <div class="empty-box" style="margin:48px auto; max-width:400px; text-align:center;">
-                    <h3 style="font-size:16px; margin-bottom:8px; color:var(--text-primary);">暂无笔记</h3>
+                <div class="empty-box">
+                    <h3>暂无笔记</h3>
+                    <p>在阅读器中选中文字即可高亮并添加笔记。</p>
                 </div>
             `;
             return;
@@ -803,9 +821,23 @@ function renderCenter() {
     }
 
     if (filtered.length === 0) {
-        centerEl.innerHTML = `
-            <div class="empty-box" style="margin:54px auto; max-width:420px; text-align:center;">
-                <h3 style="font-size:16px; margin-bottom:8px; color:var(--text-primary);">暂无论文</h3>
+        const hasQuery = !!ui.searchQuery;
+        const hasAny = (state.papers || []).length > 0;
+        centerEl.innerHTML = hasQuery ? `
+            <div class="empty-box">
+                <div class="empty-icon">⌕</div>
+                <h3>没有找到匹配“${escapeHTML(ui.searchQuery)}”的论文</h3>
+                <p>试试作者、标签或笔记中的关键词。</p>
+                <button class="btn-secondary" onclick="clearLibrarySearch()">清除搜索</button>
+            </div>
+        ` : `
+            <div class="empty-box">
+                <div class="empty-icon">
+                    <svg width="34" height="34" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round"><path d="M3.5 1.5h6l3 3v10h-9v-13z"/><path d="M9.5 1.5v3h3M8 7v4.5M6 9.5L8 11.5l2-2"/></svg>
+                </div>
+                <h3>${hasAny ? '此视图中暂无论文' : '文库还是空的'}</h3>
+                <p>将 PDF 拖到窗口中，或通过本地文件 / arXiv 导入论文。</p>
+                <button class="btn-primary" onclick="openCreatePaperModal()">导入论文</button>
             </div>
         `;
         return;
@@ -838,51 +870,60 @@ function renderZoteroTableHTML(list) {
         const pidAttr = escapeJSAttr(p.id);
         const creatorText = formatZoteroCreator(p.authors);
         const hasAnyPDF = p.hasOriginal || p.hasTranslated || ((p.additionalPDFs || []).length > 0);
-        const arxivBadge = p.arxivId ? `<span style="font-size:11px; padding:2px 6px; border-radius:4px; background:var(--bg-subtle); color:var(--text-secondary); margin-left:8px;">arXiv:${escapeHTML(p.arxivId)}</span>` : '';
-        const yearText = p.year ? `<span style="font-size:12.5px; color:var(--text-tertiary); margin-left:6px;">(${escapeHTML(p.year)})</span>` : '';
+        const metaParts = [];
+        if (creatorText && creatorText !== '—') metaParts.push(`<span title="${escapeHTML(p.authors || '')}">${escapeHTML(creatorText)}</span>`);
+        if (p.year) metaParts.push(`<span>${escapeHTML(p.year)}</span>`);
+        if (p.venue) metaParts.push(`<span>${escapeHTML(p.venue)}</span>`);
+        if (p.arxivId) metaParts.push(`<span class="row-meta-mono">arXiv:${escapeHTML(p.arxivId)}</span>`);
+        const metaHTML = metaParts.join('<span class="row-meta-dot">·</span>');
+        const noteCount = paperTotalNoteCount(p);
+        const statusPill = p.statusRaw === 'reading'
+            ? '<span class="status-pill reading">在读</span>'
+            : (p.statusRaw === 'completed' ? '<span class="status-pill completed">已读</span>' : '');
+        const fileChips = `
+            <span class="file-chip ${p.hasOriginal ? 'on' : ''}" title="${p.hasOriginal ? '原版 PDF' : '缺少原版 PDF'}">EN</span>
+            <span class="file-chip ${p.hasTranslated ? 'on' : ''}" title="${p.hasTranslated ? '中文译版 PDF' : '缺少中文译版 PDF'}">ZH</span>
+        `;
 
         let subRows = '';
+        const subRow = (label) => `
+                <tr class="zotero-subrow" ondblclick="openPaperDual('${pidAttr}', event)" onclick="selectPaper('${pidAttr}')">
+                    <td class="subrow-indent" colspan="3">${pdfAttachmentIconSVG} <span style="margin-left:6px;">${label}</span></td>
+                </tr>`;
         if (isExpanded) {
-            if (p.hasOriginal) {
-                subRows += `
-                <tr class="zotero-subrow" ondblclick="openPaperDual('${pidAttr}', event)" onclick="selectPaper('${pidAttr}')">
-                    <td class="subrow-indent">${pdfAttachmentIconSVG} <span style="margin-left:6px;">原版 PDF (Original EN · ${p.origPages || 0} 页)</span></td>
-                    <td></td>
-                    <td class="row-attach-cell"></td>
-                </tr>`;
-            }
-            if (p.hasTranslated) {
-                subRows += `
-                <tr class="zotero-subrow" ondblclick="openPaperDual('${pidAttr}', event)" onclick="selectPaper('${pidAttr}')">
-                    <td class="subrow-indent">${pdfAttachmentIconSVG} <span style="margin-left:6px;">中文译版 PDF (Translated ZH · ${p.transPages || 0} 页)</span></td>
-                    <td></td>
-                    <td class="row-attach-cell"></td>
-                </tr>`;
-            }
-            (p.additionalPDFs || []).forEach(ep => {
-                subRows += `
-                <tr class="zotero-subrow" ondblclick="openPaperDual('${pidAttr}', event)" onclick="selectPaper('${pidAttr}')">
-                    <td class="subrow-indent">${pdfAttachmentIconSVG} <span style="margin-left:6px;">${escapeHTML(ep.title)}</span></td>
-                    <td></td>
-                    <td class="row-attach-cell"></td>
-                </tr>`;
-            });
+            if (p.hasOriginal) subRows += subRow(`原版 PDF · ${p.origPages || 0} 页`);
+            if (p.hasTranslated) subRows += subRow(`中文译版 PDF · ${p.transPages || 0} 页`);
+            (p.additionalPDFs || []).forEach(ep => { subRows += subRow(escapeHTML(ep.title)); });
         }
 
         return `
-        <tr class="zotero-row ${isSelected ? 'selected' : ''}" draggable="true" ondragstart="handlePaperDragStart('${pidAttr}', event)" ondragover="handlePaperDragOver('${pidAttr}', event)" ondrop="handlePaperDrop('${pidAttr}', event)" data-paper-id="${escapeHTML(p.id)}" onclick="selectPaper('${pidAttr}')" ondblclick="openPaperDual('${pidAttr}', event)" oncontextmenu="openPaperContextMenu('${pidAttr}', event)">
-            <td style="width:65%;">
+        <tr class="zotero-row ${isSelected ? 'selected' : ''} ${p.statusRaw === 'unread' ? 'unread' : ''}" draggable="true" ondragstart="handlePaperDragStart('${pidAttr}', event)" ondragover="handlePaperDragOver('${pidAttr}', event)" ondrop="handlePaperDrop('${pidAttr}', event)" data-paper-id="${escapeHTML(p.id)}" onclick="selectPaper('${pidAttr}')" ondblclick="openPaperDual('${pidAttr}', event)" oncontextmenu="openPaperContextMenu('${pidAttr}', event)">
+            <td class="row-main-cell">
                 <div class="tbl-title-cell">
-                    <span class="row-twisty" onclick="toggleRowExpand('${pidAttr}', event)">${isExpanded ? '▾' : '▸'}</span>
+                    <span class="row-twisty ${hasAnyPDF ? '' : 'hidden'}" onclick="toggleRowExpand('${pidAttr}', event)" title="${isExpanded ? '收起附件' : '展开附件'}">${isExpanded ? '▾' : '▸'}</span>
                     <span class="row-doc-icon">${docTypeIconSVG}</span>
-                    <span class="row-title-text" style="font-weight:500; font-size:14.5px;" title="${escapeHTML(p.title)}">${escapeHTML(p.title)}</span>
-                    ${yearText}
-                    ${arxivBadge}
+                    <div class="row-text">
+                        <div class="row-title-line">
+                            <span class="unread-dot" title="未读"></span>
+                            <span class="row-title-text" title="${escapeHTML(p.title)}">${escapeHTML(p.title)}</span>
+                            ${p.isFavorite ? '<span class="row-star" title="已加星标">★</span>' : ''}
+                        </div>
+                        <div class="row-meta">${metaHTML || '<span>未填写作者</span>'}</div>
+                    </div>
                 </div>
             </td>
-            <td style="width:28%; color:var(--text-secondary); font-size:13.5px;" title="${escapeHTML(p.authors || '')}">${escapeHTML(creatorText)}</td>
-            <td class="row-attach-cell" style="width:7%;">
-                ${hasAnyPDF ? `<span class="row-pdf-badge" onclick="openPaperDual('${pidAttr}', event)" title="双击或点击打开双栏 PDF 阅读器">${pdfAttachmentIconSVG}</span>` : ''}
+            <td class="row-badge-cell">
+                <div class="row-badges">
+                    ${statusPill}
+                    ${noteCount > 0 ? `<span class="note-count" title="${noteCount} 条笔记">✎ ${noteCount}</span>` : ''}
+                    ${fileChips}
+                </div>
+            </td>
+            <td class="row-action-cell">
+                <div class="row-actions">
+                    ${hasAnyPDF ? `<button class="row-action-btn primary" onclick="openPaperDual('${pidAttr}', event)" title="在双栏阅读器中打开 (↩)">打开</button>` : ''}
+                    <button class="row-action-btn icon" onclick="event.stopPropagation(); openPaperContextMenu('${pidAttr}', event)" title="更多操作">···</button>
+                </div>
             </td>
         </tr>
         ${subRows}
@@ -976,7 +1017,7 @@ function renderInspectorInfoTab(bodyEl, p) {
             <button class="btn-secondary" style="height:34px;padding:0 12px;font-size:13.5px;font-weight:600;" onclick="sendBridge({action:'openPaperNotesSidebar', paperId:'${pidAttr}'})" title="打开阅读器，在右侧边栏编辑和预览笔记">
                 右侧笔记
             </button>
-            <button class="btn-secondary btn-icon" style="height:34px;width:34px;font-size:16px;color:${p.isFavorite ? '#f59e0b' : 'var(--text-tertiary)'};" onclick="toggleStar('${pidAttr}', event)" title="切换星标收藏">★</button>
+            <button class="btn-secondary btn-icon" style="height:34px;width:34px;font-size:16px;color:${p.isFavorite ? 'var(--semantic-favorite, #f59e0b)' : 'var(--text-tertiary)'};" onclick="toggleStar('${pidAttr}', event)" title="切换星标收藏">★</button>
         </div>
 
         <div class="seg-group" style="width:100%; display:grid; grid-template-columns:1fr 1fr 1fr; margin-bottom:10px;">
@@ -1310,6 +1351,20 @@ document.getElementById('categorySearchInput').addEventListener('keydown', (e) =
     e.target.value = '';
     ui.categorySearchQuery = '';
     renderSidebar();
+});
+function clearLibrarySearch() {
+    const input = document.getElementById('searchInput');
+    if (input) input.value = '';
+    ui.searchQuery = '';
+    renderCenter();
+    if (ui.inspectorShowingSummary) renderInspector();
+    if (input) input.focus();
+}
+document.getElementById('searchInput').addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !e.target.value) return;
+    e.preventDefault();
+    e.stopPropagation();
+    clearLibrarySearch();
 });
 document.getElementById('searchInput').addEventListener('input', (e) => {
     ui.searchQuery = e.target.value.trim();
