@@ -349,6 +349,8 @@ final class InteractivePDFView: PDFView {
     var canRedoMarkup: Bool { !markupRedoStack.isEmpty }
     var markupUndoCount: Int { markupUndoStack.count }
     var markupRedoCount: Int { markupRedoStack.count }
+    /// Session-only DualPDF_Markup edits currently applied (not persisted to the library / PDF file).
+    var hasUnpersistedSessionMarkup: Bool { canUndoMarkup }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)

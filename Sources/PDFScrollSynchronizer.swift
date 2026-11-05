@@ -90,13 +90,32 @@ enum PDFScrollSynchronizer {
               let sourceView = sourceScroll.documentView, let targetView = targetScroll.documentView else { return }
         let sourceBounds = sourceScroll.contentView.bounds
         let targetBounds = targetScroll.contentView.bounds
-        if let position = continuousPosition(in: source),
-           scroll(to: position + offset, in: target) { return }
         let maximumSourceY = sourceView.frame.height - sourceBounds.height
         let maximumTargetY = targetView.frame.height - targetBounds.height
+        if let position = continuousPosition(in: source) {
+            let proposed = position + offset
+            // Short docs clamp continuous coords well before scroll Y hits the
+            // document end (centering pageCount still leaves margin below the
+            // last page). If the target implies a source position outside
+            // [0, pageCount], do not drag the longer column backward/forward.
+            if let targetCurrent = continuousPosition(in: target) {
+                let sourceCount = Double(source.pdfView.document?.pageCount ?? 0)
+                let idealSource = targetCurrent - offset
+                let y = sourceBounds.origin.y
+                let continuousClampedEnd = idealSource > sourceCount - 0.01
+                let continuousClampedStart = idealSource < 0.01
+                let scrollClampedEnd = maximumSourceY > 1 && y >= maximumSourceY - 1
+                let scrollClampedStart = maximumSourceY > 1 && y <= 1
+                if (continuousClampedEnd || scrollClampedEnd) && targetCurrent > proposed + 0.05 { return }
+                if (continuousClampedStart || scrollClampedStart) && targetCurrent < proposed - 0.05 { return }
+            }
+            if scroll(to: proposed, in: target) { return }
+        }
         guard maximumSourceY > 0, maximumTargetY > 0 else { return }
         targetScroll.contentView.scroll(to: NSPoint(x: PDFViewportLayout.centeredX(in: target) ?? 0,
             y: min(1, max(0, sourceBounds.origin.y / maximumSourceY)) * maximumTargetY))
         targetScroll.reflectScrolledClipView(targetScroll.contentView)
     }
+
+
 }

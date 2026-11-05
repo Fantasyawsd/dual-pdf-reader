@@ -923,5 +923,6 @@ do {
 try runReaderCoreTests(root: root)
 try runPDFWidthLayoutTests(root: root)
 try runReaderToolbarTests(root: root)
+try runSessionMarkupCloseAlertTests(root: root)
 print("\nRegression tests: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)

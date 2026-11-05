@@ -348,3 +348,76 @@ func runReaderToolbarTests(root: URL) throws {
     probeWindow.orderOut(nil)
     probeView.document = nil
 }
+
+
+/// Closing a paper tab warns when session DualPDF_Markup edits are still applied.
+func runSessionMarkupCloseAlertTests(root: URL) throws {
+    func settle(_ seconds: TimeInterval = 0.12) {
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    let source = root.appendingPathComponent("markup-close-original.pdf")
+    try writePDF(source, pages: 2, text: "markup close fixture")
+    let store = LibraryStore.shared
+    let paper = store.createPaper(title: "Markup close \(UUID().uuidString)", originalSourceURL: source)!
+
+    let wc = MultiTabMainWindowController()
+    defer {
+        wc.testingDiscardSessionMarkupResponse = true
+        for pid in [paper.id] where wc.isPaperTabOpen(pid) {
+            wc.closePaperTab(paperId: pid, force: true)
+        }
+        wc.close()
+    }
+
+    // --- No markup: close immediately ---
+    wc.openOrSwitchToPaperTab(paperId: paper.id, jumpToAnnot: nil, switchImmediately: true)
+    settle(0.25)
+    guard let readerNoMarkup = wc.activeReaderVC else {
+        check(false, "Markup-close: opened reader without markup")
+        return
+    }
+    _ = readerNoMarkup.view
+    settle(0.2)
+    check(waitUntil({ readerNoMarkup.leftCol.pdfView.document != nil }, timeout: 4),
+          "Markup-close: PDF loads for no-markup case")
+    check(!readerNoMarkup.hasUnpersistedColumnMarkup(),
+          "Markup-close: fresh tab has no session markup")
+    wc.testingDiscardSessionMarkupResponse = false // would cancel if prompted; should not prompt
+    wc.closePaperTab(paperId: paper.id)
+    check(!wc.isPaperTabOpen(paper.id),
+          "Markup-close: tab without markup closes without needing confirm")
+
+    // --- With markup: cancel keeps tab; confirm closes ---
+    wc.openOrSwitchToPaperTab(paperId: paper.id, jumpToAnnot: nil, switchImmediately: true)
+    settle(0.25)
+    guard let reader = wc.activeReaderVC else {
+        check(false, "Markup-close: reopened reader")
+        return
+    }
+    _ = reader.view
+    settle(0.2)
+    check(waitUntil({ reader.leftCol.pdfView.document != nil }, timeout: 4),
+          "Markup-close: PDF loads for markup case")
+    guard let page = reader.leftCol.pdfView.document?.page(at: 0) else {
+        check(false, "Markup-close: page 0 available")
+        return
+    }
+    reader.leftCol.pdfView.addTextMarkupForTesting(text: "仅本次", page: page, at: NSPoint(x: 80, y: 200))
+    settle()
+    check(reader.hasUnpersistedColumnMarkup() && reader.leftCol.pdfView.canUndoMarkup,
+          "Markup-close: session markup present after DualPDF_Markup edit")
+
+    wc.testingDiscardSessionMarkupResponse = false
+    wc.closePaperTab(paperId: paper.id)
+    check(wc.isPaperTabOpen(paper.id),
+          "Markup-close: choosing 取消 keeps the tab open")
+    check(reader.hasUnpersistedColumnMarkup(),
+          "Markup-close: session markup still present after cancel")
+
+    wc.testingDiscardSessionMarkupResponse = true
+    wc.closePaperTab(paperId: paper.id)
+    check(!wc.isPaperTabOpen(paper.id),
+          "Markup-close: choosing 关闭 discards session markup and closes the tab")
+}
+

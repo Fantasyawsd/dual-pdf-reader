@@ -501,6 +501,12 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
         NotificationCenter.default.removeObserver(self)
     }
 
+    /// True when either column still has session DualPDF_Markup edits (undo stack non-empty).
+    /// These live only in the in-memory PDFKit document and are lost when the tab closes.
+    func hasUnpersistedColumnMarkup() -> Bool {
+        [leftCol, rightCol].contains { $0.pdfView.hasUnpersistedSessionMarkup }
+    }
+
     func prepareForClose() {
         guard !isClosed else { return }
         removeCommandScrollMonitor()
