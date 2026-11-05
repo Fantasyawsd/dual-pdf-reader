@@ -71,7 +71,6 @@ final class PDFAnnotationRenderer {
             for rendered in state.rendered.removeValue(forKey: id) ?? [] {
                 guard let page = rendered.page else { continue }
                 page.removeAnnotation(rendered.annotation)
-                pagesTouched.insert(ObjectIdentifier(page))
                 column.pdfView.annotationsChanged(on: page)
             }
         }
