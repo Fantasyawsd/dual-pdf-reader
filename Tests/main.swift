@@ -836,7 +836,8 @@ do {
     let keys = ["DualPDF_LLM_Endpoint", "DualPDF_LLM_APIKey"]
     let saved = defaults.dictionaryRepresentation().filter { keys.contains($0.key) }
     defer { for key in keys { defaults.set(saved[key], forKey: key) } }
-    defaults.set("http://[", forKey: keys[0])
+    // Rejected before any request, so the hosted runner does not depend on network or URL parsing.
+    defaults.set("ftp://127.0.0.1/dual-pdf-regression", forKey: keys[0])
     defaults.set("regression-test-key", forKey: keys[1])
 
     func translationDescendants(_ view: NSView) -> [NSView] {
@@ -849,8 +850,9 @@ do {
     if let source = source, let status = status {
         source.string = "A failed request must never become a usable translation."
         NSApp.sendAction(NSSelectorFromString("sidebarTranslateAction"), to: testReader, from: nil)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        check(status.stringValue.contains("翻译失败"), "Translation workbench displays endpoint failure")
+        // Failure is applied on the next main-queue turn. run(until:) can return immediately
+        // on macos-latest, so poll until the callback lands before snapshotting or switching tabs.
+        check(waitUntil { status.stringValue.contains("翻译失败") }, "Translation workbench displays endpoint failure")
         let resultButtons = views.compactMap { $0 as? NSButton }.filter {
             $0.action == NSSelectorFromString("sidebarCopyTranslationAction") ||
             $0.action == NSSelectorFromString("sidebarInsertTranslationToNoteAction")
@@ -864,7 +866,12 @@ do {
         source.string = "This queued failure belongs to the cleared request."
         NSApp.sendAction(NSSelectorFromString("sidebarTranslateAction"), to: testReader, from: nil)
         NSApp.sendAction(NSSelectorFromString("sidebarClearTransSourceAction"), to: testReader, from: nil)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        // The rejected callback is already queued. Keep turning the main loop so a stale
+        // completion would still be able to clobber the cleared status.
+        let staleDeadline = Date().addingTimeInterval(0.5)
+        while Date() < staleDeadline {
+            _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
         check(source.string.isEmpty && !status.stringValue.contains("翻译失败"), "Clearing translation ignores the queued stale callback")
         check(resultButtons.allSatisfy { !$0.isEnabled }, "Clearing translation keeps result actions disabled")
     } else {
