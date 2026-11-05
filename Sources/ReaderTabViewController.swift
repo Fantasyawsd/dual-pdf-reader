@@ -5061,18 +5061,26 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     private func applyDisplayModeAnimated(_ segment: Int) {
-        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        // Headless tests (no window) and Reduce Motion: apply instantly so layout is final.
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || view.window == nil
         if reduce {
             applyDisplayMode(segment)
+            view.layoutSubtreeIfNeeded()
+            finishPendingLayout()
             return
         }
-        NSAnimationContext.runAnimationGroup { ctx in
+        NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.15
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             ctx.allowsImplicitAnimation = true
             self.applyDisplayMode(segment)
             self.view.layoutSubtreeIfNeeded()
-        }
+        }, completionHandler: { [weak self] in
+            guard let self = self else { return }
+            self.view.layoutSubtreeIfNeeded()
+            self.finishPendingLayout()
+        })
+        // Ensure model layout is final immediately for callers that read frames right away.
         view.layoutSubtreeIfNeeded()
         finishPendingLayout()
     }
