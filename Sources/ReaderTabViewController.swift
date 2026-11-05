@@ -5061,28 +5061,22 @@ final class ReaderTabViewController: NSViewController, NSSearchFieldDelegate, WK
     }
 
     private func applyDisplayModeAnimated(_ segment: Int) {
-        // Headless tests (no window) and Reduce Motion: apply instantly so layout is final.
+        // Structural layout must land on model frames immediately: NSSplitView width/isHidden
+        // changes under allowsImplicitAnimation leave pdfView/scale mid-transition and break
+        // callers (and UI tests) that read geometry right after setDisplayMode.
         let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || view.window == nil
-        if reduce {
-            applyDisplayMode(segment)
-            view.layoutSubtreeIfNeeded()
-            finishPendingLayout()
-            return
-        }
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.15
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            ctx.allowsImplicitAnimation = true
-            self.applyDisplayMode(segment)
-            self.view.layoutSubtreeIfNeeded()
-        }, completionHandler: { [weak self] in
-            guard let self = self else { return }
-            self.view.layoutSubtreeIfNeeded()
-            self.finishPendingLayout()
-        })
-        // Ensure model layout is final immediately for callers that read frames right away.
+        applyDisplayMode(segment)
         view.layoutSubtreeIfNeeded()
         finishPendingLayout()
+        guard !reduce, view.window != nil else { return }
+        // Spec 3.4: 150ms easeOut polish — fade the PDF canvas only; do not animate frames.
+        splitView.wantsLayer = true
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.82
+        fade.toValue = 1.0
+        fade.duration = 0.15
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        splitView.layer?.add(fade, forKey: "p0-3-display-mode-fade")
     }
 
     private func applyDisplayMode(_ segment: Int) {
