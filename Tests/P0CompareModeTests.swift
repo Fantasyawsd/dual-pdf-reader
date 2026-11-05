@@ -205,7 +205,8 @@ func runP0CompareModeTests(root: URL) throws {
     check(waitReady(dropReader), "drop fixture loads")
     settle(0.15)
     check(dropReader.rightCol.isHidden, "drop fixture starts S1")
-    let originalDoc = dropReader.leftCol.pdfView.document
+    let leftPDFIdBefore = dropReader.leftCol.activePDFDocumentId
+    let originalFilenameBefore = store.paper(withId: dropPaper.id)?.originalFilename
     let rightThird = NSPoint(x: dropReader.view.bounds.width * 0.85, y: dropReader.view.bounds.height * 0.5)
     let routedCompare = dropReader.routeColumnPDFDropForTesting(
         urls: [dropCompare], atLocationInReader: rightThird, column: dropReader.leftCol)
@@ -213,8 +214,10 @@ func runP0CompareModeTests(root: URL) throws {
     check(routedCompare, "right-third drop routes")
     check(!dropReader.rightCol.isHidden && dropReader.rightCol.pdfView.document != nil,
           "right-third drop enters S3 with right PDF")
-    check(dropReader.leftCol.pdfView.document === originalDoc,
-          "right-third drop does not replace left document")
+    check(dropReader.leftCol.activePDFDocumentId == leftPDFIdBefore,
+          "right-third drop keeps left column on the original PDF id")
+    check(store.paper(withId: dropPaper.id)?.originalFilename == originalFilenameBefore,
+          "right-third drop does not replace the paper's original PDF file")
     check((store.paper(withId: dropPaper.id)?.boundPDFCount ?? 0) >= 2,
           "right-third drop binds a second PDF")
 
