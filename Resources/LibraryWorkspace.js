@@ -1017,7 +1017,7 @@ function renderInspectorInfoTab(bodyEl, p) {
             <button class="btn-secondary" style="height:34px;padding:0 12px;font-size:13.5px;font-weight:600;" onclick="sendBridge({action:'openPaperNotesSidebar', paperId:'${pidAttr}'})" title="打开阅读器，在右侧边栏编辑和预览笔记">
                 右侧笔记
             </button>
-            <button class="btn-secondary btn-icon" style="height:34px;width:34px;font-size:16px;color:${p.isFavorite ? '#f59e0b' : 'var(--text-tertiary)'};" onclick="toggleStar('${pidAttr}', event)" title="切换星标收藏">★</button>
+            <button class="btn-secondary btn-icon" style="height:34px;width:34px;font-size:16px;color:${p.isFavorite ? 'var(--semantic-favorite, #f59e0b)' : 'var(--text-tertiary)'};" onclick="toggleStar('${pidAttr}', event)" title="切换星标收藏">★</button>
         </div>
 
         <div class="seg-group" style="width:100%; display:grid; grid-template-columns:1fr 1fr 1fr; margin-bottom:10px;">

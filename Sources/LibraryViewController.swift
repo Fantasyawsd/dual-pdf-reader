@@ -6,6 +6,12 @@ import UniformTypeIdentifiers
 // MARK: - Drag-Aware Modern WebView for Library Workspace
 final class LibraryWorkspaceWebView: WKWebView {
     var onPDFsDroppedIntoLibrary: (([URL], String?) -> Void)?
+    var onEffectiveAppearanceChange: (() -> Void)?
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onEffectiveAppearanceChange?()
+    }
 
     /// Synced from DOM getBoundingClientRect() in top-left (flipped) coordinates
     var areInspectorPDFSlotsActive: Bool = true
@@ -205,6 +211,39 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
         )
         NotificationCenter.default.addObserver(self, selector: #selector(scheduleRefresh),
             name: LibraryStore.pdfSummaryDidChangeNotification, object: LibraryStore.shared)
+        NotificationCenter.default.addObserver(self, selector: #selector(injectSystemAccentCSSVariables),
+            name: NSColor.systemColorsDidChangeNotification, object: nil)
+    }
+
+    /// 将系统强调色 / 星标橙色注入 WebView 的 CSS 变量（CSS 中保留蓝色回退值）
+    @objc private func injectSystemAccentCSSVariables() {
+        guard let webView = webView, isWebViewLoaded else { return }
+        let appearance = webView.effectiveAppearance
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        var vars: [String: String] = [:]
+        appearance.performAsCurrentDrawingAppearance {
+            let base = NSColor.controlAccentColor
+            // hover：浅色略深（向黑 15%），深色略浅（向白 20%）
+            let hover = base.blended(withFraction: isDark ? 0.20 : 0.15, of: isDark ? .white : .black) ?? base
+            vars["--accent"] = cssColorString(from: base)
+            vars["--accent-hover"] = cssColorString(from: hover)
+            vars["--accent-soft"] = cssColorString(from: base, alpha: isDark ? 0.16 : 0.10)
+            vars["--accent-border"] = cssColorString(from: base, alpha: isDark ? 0.42 : 0.35)
+            vars["--semantic-favorite"] = cssColorString(from: .systemOrange)
+        }
+        let js = vars.map { "document.documentElement.style.setProperty('\($0.key)','\($0.value)');" }.joined()
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    private func cssColorString(from color: NSColor, alpha: CGFloat? = nil) -> String {
+        let rgb = color.usingColorSpace(.sRGB) ?? color
+        let r = Int((rgb.redComponent * 255).rounded())
+        let g = Int((rgb.greenComponent * 255).rounded())
+        let b = Int((rgb.blueComponent * 255).rounded())
+        if let alpha = alpha {
+            return "rgba(\(r), \(g), \(b), \(alpha))"
+        }
+        return "rgb(\(r), \(g), \(b))"
     }
 
     private func setupModernWorkspaceWebView(in root: NSView) {
@@ -219,6 +258,9 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
 
         webView.onPDFsDroppedIntoLibrary = { [weak self] urls, zone in
             self?.handleDroppedPDFs(urls, targetZone: zone)
+        }
+        webView.onEffectiveAppearanceChange = { [weak self] in
+            self?.injectSystemAccentCSSVariables()
         }
 
         root.addSubview(webView)
@@ -236,6 +278,7 @@ final class LibraryViewController: NSViewController, WKScriptMessageHandler, WKN
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         isWebViewLoaded = true
+        injectSystemAccentCSSVariables()
         if let pending = pendingStateJSON {
             pendingStateJSON = nil
             pushStateToWebView(pending)
