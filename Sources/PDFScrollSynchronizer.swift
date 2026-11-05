@@ -26,9 +26,30 @@ enum PDFScrollSynchronizer {
               pageIndex >= 0, pageIndex < doc.pageCount,
               let page = doc.page(at: pageIndex) else { return nil }
         let rectInView = col.pdfView.convert(page.bounds(for: col.pdfView.displayBox), from: page)
-        let rect = docView.convert(rectInView, from: col.pdfView)
+        let rect = readingRect(docView.convert(rectInView, from: col.pdfView), in: docView)
         guard rect.minY.isFinite, rect.height.isFinite, rect.height > 0 else { return nil }
         return rect
+    }
+
+    // PDFKit's document view is flipped on some macOS builds and unflipped on
+    // others (e.g. macOS 26.6 runners). All position math uses a top-down
+    // "reading" Y axis, and converts at the clip-view boundary.
+    private static func readingRect(_ rect: NSRect, in docView: NSView) -> NSRect {
+        guard !docView.isFlipped else { return rect }
+        return NSRect(x: rect.minX, y: docView.frame.height - rect.maxY, width: rect.width, height: rect.height)
+    }
+
+    /// Clip bounds with Y measured from the top of the document.
+    static func readingBounds(of scroll: NSScrollView) -> NSRect {
+        let bounds = scroll.contentView.bounds
+        guard let docView = scroll.documentView else { return bounds }
+        return readingRect(bounds, in: docView)
+    }
+
+    /// Converts a top-down clip origin Y back to the clip view's own coordinates.
+    static func clipOriginY(forReadingTop top: CGFloat, in scroll: NSScrollView) -> CGFloat {
+        guard let docView = scroll.documentView, !docView.isFlipped else { return top }
+        return docView.frame.height - top - scroll.contentView.bounds.height
     }
 
     private static func pageStepHeight(_ pageIndex: Int, in col: CleanPDFColumnView) -> CGFloat {
@@ -46,7 +67,7 @@ enum PDFScrollSynchronizer {
         guard let sv = col.internalScrollView(),
               let doc = col.pdfView.document,
               doc.pageCount > 0, sv.contentView.bounds.height > 0 else { return nil }
-        let midY = sv.contentView.bounds.midY
+        let midY = readingBounds(of: sv).midY
         guard midY.isFinite else { return nil }
         // Find by vertical geometry: currentPage / nearest page can lag behind a
         // scroll and can select the wrong page when the pointer is in a wide margin.
@@ -75,7 +96,8 @@ enum PDFScrollSynchronizer {
         guard let rect = pageRectInDocView(index, in: column) else { return false }
         let centerY = rect.origin.y + CGFloat(clamped - Double(index)) * pageStepHeight(index, in: column)
         let availableY = documentView.frame.height - scroll.contentView.bounds.height
-        let y = availableY > 0 ? min(max(centerY - scroll.contentView.bounds.height / 2, 0), availableY) : availableY / 2
+        let top = availableY > 0 ? min(max(centerY - scroll.contentView.bounds.height / 2, 0), availableY) : availableY / 2
+        let y = clipOriginY(forReadingTop: top, in: scroll)
         let x = PDFViewportLayout.centeredX(in: column) ?? 0
         guard x.isFinite, y.isFinite else { return false }
         scroll.contentView.scroll(to: NSPoint(x: x, y: y))
@@ -101,7 +123,7 @@ enum PDFScrollSynchronizer {
             if let targetCurrent = continuousPosition(in: target) {
                 let sourceCount = Double(source.pdfView.document?.pageCount ?? 0)
                 let idealSource = targetCurrent - offset
-                let y = sourceBounds.origin.y
+                let y = readingBounds(of: sourceScroll).origin.y
                 let continuousClampedEnd = idealSource > sourceCount - 0.01
                 let continuousClampedStart = idealSource < 0.01
                 let scrollClampedEnd = maximumSourceY > 1 && y >= maximumSourceY - 1
@@ -112,8 +134,9 @@ enum PDFScrollSynchronizer {
             if scroll(to: proposed, in: target) { return }
         }
         guard maximumSourceY > 0, maximumTargetY > 0 else { return }
+        let fraction = min(1, max(0, readingBounds(of: sourceScroll).origin.y / maximumSourceY))
         targetScroll.contentView.scroll(to: NSPoint(x: PDFViewportLayout.centeredX(in: target) ?? 0,
-            y: min(1, max(0, sourceBounds.origin.y / maximumSourceY)) * maximumTargetY))
+            y: clipOriginY(forReadingTop: fraction * maximumTargetY, in: targetScroll)))
         targetScroll.reflectScrolledClipView(targetScroll.contentView)
     }
 }
